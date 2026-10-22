@@ -567,11 +567,11 @@ class Check(unittest.TestCase):
         self.assertEqual(hsnotify.access_of(steps), {"state": "ok", "anon_read": "ok", "anon_write": "ok"})
         anon = [c for c in http.calls if "Authorization" not in c["headers"]]
         self.assertEqual([(c["method"], c["url"]) for c in anon if c["url"] != "https://ntfy.example.com/v1/health"],
-                         [("GET", "https://ntfy.example.com/cockpit-h/json?poll=1&since=latest"),
+                         [("GET", "https://ntfy.example.com/cockpit-h/json?poll=1&since=1m"),
                           ("POST", "https://ntfy.example.com/")])
         with_token = [(c["method"], c["url"]) for c in http.calls if "Authorization" in c["headers"]]
         self.assertEqual(with_token, [("POST", "https://ntfy.example.com/"),
-                                      ("GET", "https://ntfy.example.com/cockpit-h/json?poll=1&since=latest")])
+                                      ("GET", "https://ntfy.example.com/cockpit-h/json?poll=1&since=1m")])
         probe = anon[-1]["body"]
         self.assertEqual(probe["topic"], "cockpit-h")
         self.assertIn("auth-default-access: deny-all", probe["message"])

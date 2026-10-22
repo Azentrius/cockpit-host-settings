@@ -172,9 +172,9 @@ therefore not used yet; the page says so.
 | `reach` | `GET URL/v1/health` | ok on any HTTP answer; failed (tls, timeout, network) skips the rest |
 | `tls` | (the address) | ok for https, warning for http |
 | `publish` | the test message with the token | ok, or failed (`no-token` when refused without one) |
-| `anon-read` | `GET URL/TOPIC/json?poll=1&since=latest` without a login | warning on 2xx (readable), ok on 401/403, info otherwise |
+| `anon-read` | `GET URL/TOPIC/json?poll=1&since=1m` without a login | warning on 2xx (readable), ok on 401/403, info otherwise |
 | `anon-write` | a message without a login, which is itself the warning | warning on 2xx (writable), ok on 401/403, info otherwise |
-| `token` | `GET URL/TOPIC/json?poll=1&since=latest` with the token | ok on 401/403 (write-only), info on 2xx (it may read too) or otherwise |
+| `token` | `GET URL/TOPIC/json?poll=1&since=1m` with the token | ok on 401/403 (write-only), info on 2xx (it may read too) or otherwise |
 
 `access` from the steps: warning when the topic is readable or writable without a login, ok
 when both are closed, none when not known. The daily check of the run keeps the write result of

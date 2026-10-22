@@ -551,6 +551,9 @@ def send_mail(cfg, msg, fqdn, smtp=None):
 # "Check connection" (concept 3.6)
 
 STEPS = ("reach", "tls", "publish", "anon-read", "anon-write", "token")
+# Reading a topic without waiting: the messages of the last minute, which are thrown away. Not
+# since=latest: ntfy 2.11 answers it with 400 (job e2e, on a topic open to reading).
+READ_PROBE = "poll=1&since=1m"
 
 
 def check_ntfy(cfg, token, lang, host, request=http, steps=STEPS):
@@ -587,7 +590,7 @@ def check_ntfy(cfg, token, lang, host, request=http, steps=STEPS):
                 step(sid, "ok" if ok else "failed", "no-token" if reason == "rejected" and not token else reason,
                      code)
             elif sid == "anon-read":
-                code, _ = request("GET", f"{base}/{topic}/json?poll=1&since=latest")
+                code, _ = request("GET", f"{base}/{topic}/json?" + READ_PROBE)
                 if 200 <= code < 300:
                     step(sid, "warning", "readable", code)
                 elif code in (401, 403):
@@ -608,7 +611,7 @@ def check_ntfy(cfg, token, lang, host, request=http, steps=STEPS):
                 if not token:
                     step(sid, "skipped", "no-token")
                     continue
-                code, _ = request("GET", f"{base}/{topic}/json?poll=1&since=latest", None,
+                code, _ = request("GET", f"{base}/{topic}/json?" + READ_PROBE, None,
                                   {"Authorization": "Bearer " + token})
                 if 200 <= code < 300:
                     step(sid, "info", "can-read", code)

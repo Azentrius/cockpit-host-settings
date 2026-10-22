@@ -166,7 +166,7 @@ class Runs(unittest.TestCase):
     def test_the_daily_check_and_a_new_target(self):
         host = Host()
         host.run()
-        gets = lambda: [c for c in host.http.calls if c["url"].endswith("/json?poll=1&since=latest")]  # noqa: E731
+        gets = lambda: [c for c in host.http.calls if c["url"].endswith("/json?poll=1&since=1m")]  # noqa: E731
         self.assertEqual(len(gets()), 1)
         host.now += 3600
         host.run()
