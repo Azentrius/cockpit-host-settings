@@ -1,0 +1,4 @@
+{
+    "menu": { "index": { "label": { "html": "<b>not text</b>" } }, "other": { "label": "Shapes" } },
+    "azentrius": { "status": "/usr/lib/cockpit-shapes/status" }
+}

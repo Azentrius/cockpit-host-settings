@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "addon": "cronjobs",
+  "label": "Cron Jobs",
+  "version": "2.8.0",
+  "checked_at": "2026-10-19T18:50:03Z",
+  "state": "danger",
+  "summary": "2 runs failed in the last 24 hours",
+  "items": [
+    {
+      "id": "failed-runs",
+      "state": "danger",
+      "title": "Failed runs (24 h)",
+      "value": "2",
+      "detail": "backup-files, update-geoip",
+      "checked_at": "2026-10-19T18:50:03Z",
+      "stale_after": 7200
+    },
+    {
+      "id": "unrecorded",
+      "state": "none",
+      "title": "Jobs without records",
+      "value": "4"
+    }
+  ],
+  "future_field": {"ignored": true}
+}

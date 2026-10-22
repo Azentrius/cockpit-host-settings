@@ -1,0 +1,4 @@
+{
+    "menu": { "index": { "label": "Extra Arguments" } },
+    "azentrius": { "status": ["/usr/lib/cockpit-extra/status-helper", "status", "--delete-everything", "--lang", "fr"] }
+}

@@ -1,0 +1,10 @@
+{
+    "version": 0,
+    "requires": { "cockpit": "264" },
+    "menu": {
+        "index": { "label": "Image Update Monitor", "order": 35 }
+    },
+    "azentrius": {
+        "status": ["/usr/lib/cockpit-image-updates/diun-update.py", "status"]
+    }
+}

@@ -1,0 +1,130 @@
+/* Host Settings: only what this page needs on top of azentrius.css (tokens for
+ * light and dark, page frame, buttons, cards, tables, labels, fields, dialogs).
+ * Colours always come from the tokens there.
+ * SPDX-License-Identifier: Apache-2.0 */
+
+*, *::before, *::after { box-sizing: border-box; }
+/* The az classes set display; [hidden] must win. */
+[hidden] { display: none !important; }
+html { background: var(--bg-page); }
+.az-alert__body { overflow-wrap: anywhere; }
+.az-card code, .az-alert code, .hs-dialog code {
+    padding: 0 4px;
+    border-radius: var(--radius-tiny);
+    background: var(--tint-neutral);
+    color: var(--on-tint-neutral);
+    font-family: var(--az-font-code);
+    font-size: 0.92em;
+    overflow-wrap: anywhere;
+}
+
+/* ---------- busy states ---------- */
+
+@keyframes hs-spin { to { transform: rotate(360deg); } }
+.hs-btn-spinner {
+    display: none;
+    flex: none;
+    inline-size: 1em;
+    block-size: 1em;
+    border: 2px solid currentColor;
+    border-inline-end-color: transparent;
+    border-radius: 50%;
+    animation: hs-spin 0.8s linear infinite;
+}
+.az-btn.is-busy .hs-btn-spinner { display: inline-block; }
+.az-btn.is-busy .az-icon { display: none; }
+.az-btn.is-busy { cursor: progress; }
+.hs-loading { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-xl) var(--space-lg); }
+.hs-spinner {
+    flex: none;
+    inline-size: 22px;
+    block-size: 22px;
+    border: 2px solid var(--line-control);
+    border-block-start-color: var(--text-subtle);
+    border-radius: 50%;
+    animation: hs-spin 0.8s linear infinite;
+}
+.hs-loading-title { display: block; font-weight: 600; }
+.hs-loading-sub { display: block; margin-block-start: 2px; color: var(--text-subtle); font-size: 13px; }
+.hs-panel.is-busy { opacity: 0.6; transition: opacity 120ms ease; }
+
+/* ---------- page and cards ---------- */
+
+.hs-status-list { display: flex; flex-direction: column; gap: var(--space-sm); }
+.hs-status-list:empty { display: none; }
+.hs-panel { display: flex; flex-direction: column; gap: var(--space-lg); }
+.hs-panel:empty { display: none; }
+.hs-card { scroll-margin-block-start: var(--space-lg); }
+.hs-card .az-card__body { display: flex; flex-direction: column; gap: var(--space-md); }
+.hs-card .az-card__body > p, .hs-card .az-card__body > ul { margin: 0; }
+.hs-intro { margin: 0; color: var(--text-subtle); }
+.hs-note { margin: 0; color: var(--text-subtle); font-size: 13px; }
+.hs-sub { display: block; color: var(--text-subtle); font-size: 13px; }
+.hs-sub-title { margin: 0; font-size: 14px; font-weight: 600; }
+.hs-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin: 0; }
+.hs-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+.hs-plain-list { margin: 0; padding-inline-start: 1.2em; display: flex; flex-direction: column; gap: var(--space-xs); }
+.hs-plain-list li::marker { color: var(--text-subtle); }
+.hs-plain-list li { overflow-wrap: anywhere; }
+.hs-summary-list, .hs-steps { list-style: none; padding-inline-start: 0; gap: var(--space-sm); }
+.hs-steps li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-xs) var(--space-sm); }
+.hs-steps .hs-step-title { font-weight: 600; }
+.hs-kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-sm) var(--space-lg); margin: 0; align-items: baseline; }
+.hs-kv dt { font-weight: 600; font-size: 13px; }
+.hs-kv dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); overflow-wrap: anywhere; }
+.hs-card .az-btn--link { white-space: normal; text-align: start; }
+
+/* The commands for the ntfy server. */
+.hs-commands {
+    margin: 0;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-small);
+    background: var(--bg-page);
+    font-family: var(--az-font-code);
+    font-size: 13px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* ---------- tables ---------- */
+
+.az-table td { vertical-align: top; }
+/* One element per cell: on a phone the cell is a row of label and value. */
+.az-table td > .hs-v { display: block; min-width: 0; overflow-wrap: anywhere; }
+.hs-findings { margin: 0; padding-inline-start: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-xs); }
+
+/* ---------- dialog ---------- */
+
+dialog.hs-dialog { padding: 0; border: 0; }
+dialog.hs-dialog:not([open]) { display: none; }
+dialog.hs-dialog::backdrop { background: var(--backdrop); }
+.hs-dialog .az-modal__body { padding-block-end: var(--space-xs); }
+.hs-dialog-desc, .hs-dialog-note, .hs-dialog-result { margin: 0; }
+.hs-dialog-fields { display: flex; flex-direction: column; gap: var(--space-md); }
+.hs-dialog-fields:empty { display: none; }
+.hs-dialog-note { color: var(--text-subtle); font-size: 13px; }
+.hs-dialog-log {
+    margin: 0;
+    max-block-size: 16rem;
+    overflow: auto;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-small);
+    background: var(--bg-page);
+    font-family: var(--az-font-code);
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.hs-dialog-result:empty { display: none; }
+.hs-dialog-result.is-ok { color: var(--status-success); }
+.hs-dialog-result.is-error { color: var(--danger-text); }
+.hs-dialog-result .az-icon { margin-inline-end: var(--space-xs); }
+
+@media (max-width: 640px) {
+    .hs-kv { grid-template-columns: 1fr; }
+    .hs-kv dd { margin-block-end: var(--space-xs); }
+    .az-table--stack td > .hs-v { text-align: end; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .hs-spinner, .hs-btn-spinner { animation: none; }
+}

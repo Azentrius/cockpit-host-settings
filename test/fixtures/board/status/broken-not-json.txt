@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/usr/lib/cockpit-update-gaps/gaps-status.py", line 12, in <module>
+    data = json.load(f)
+PermissionError: [Errno 13] Permission denied: '/var/lib/update-gaps/status.json'

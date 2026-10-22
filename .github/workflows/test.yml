@@ -1,0 +1,155 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Everything that runs without a server: lint, the offline tests, the packages (built twice to
+  # the same bytes), installed on Debian and Fedora with a run of the notifier as its own user and
+  # the status verb as nobody.
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Check tools (pinned in test/requirements.txt)
+        run: pip install -r test/requirements.txt
+      - name: Lint (shellcheck, ruff, systemd units and their hardening)
+        run: make lint
+      # The notifier against Status Board's own fixtures and recorded answers of an ntfy server,
+      # whole runs with stand-ins, the verbs of the page; the page under jsdom; texts, files,
+      # design, version, the pinned board fixtures.
+      - name: Offline tests
+        run: make check
+      - name: Packages (.deb, .rpm) with valid AppStream data, built twice to the same bytes
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends rpm appstream > /dev/null
+          appstreamcli validate --no-net packaging/*.metainfo.xml
+          make packages
+          (cd dist && sha256sum *.deb *.rpm) > first.sha256
+          rm -rf dist && make packages > /dev/null
+          (cd dist && sha256sum -c ../first.sha256)
+      - name: Package dependencies name the minimum versions (Cockpit 264, Python 3.8, systemd 247)
+        run: |
+          test "$(dpkg-deb -f dist/*.deb Depends)" = "cockpit-bridge (>= 264), python3 (>= 3.8), systemd (>= 247), iproute2"
+          rpm -qp --requires dist/*.rpm | grep -qx 'cockpit-bridge >= 264'
+          rpm -qp --requires dist/*.rpm | grep -qx 'python3 >= 3.8'
+          rpm -qp --requires dist/*.rpm | grep -qx 'systemd >= 247'
+      - name: Install and remove the .deb on Debian 13, the .rpm on Fedora 43
+        run: |
+          for image in debian:13 fedora:43; do
+            docker run --rm -e IMAGE="$image" -v "$PWD/dist:/dist:ro" "$image" sh -ec '
+              case "$IMAGE" in
+                debian*) apt-get update -qq; apt-get install -y -qq /dist/*.deb > /dev/null ;;
+                fedora*) dnf install -y -q /dist/*.rpm ;;
+              esac
+              test -x /usr/lib/cockpit-host-settings/host-settings.py
+              test -x /usr/lib/cockpit-host-settings/host-settings-notify.py
+              test -f /usr/lib/systemd/system/cockpit-host-settings-notify.timer
+              test -f "/usr/lib/systemd/system/cockpit-host-settings-test@.service"
+              test -f /usr/share/cockpit/host-settings/manifest.json
+              test "$(stat -c %a /usr/lib/cockpit-host-settings/hslib.py)" = 644
+              test "$(stat -c "%a %U" /etc/cockpit-host-settings/ntfy.token)" = "600 root"
+              uid=$(getent passwd cockpit-host-settings | cut -d: -f3)
+              test -n "$uid"
+              test "$(stat -c %U /var/lib/cockpit-host-settings)" = cockpit-host-settings
+              # A run as the notifier user, without a channel: it reads, tells nobody, writes its state.
+              python3 -c "import os, sys; u = int(sys.argv[1]); os.setgroups([]); os.setgid(u); os.setuid(u); os.execv(sys.argv[2], sys.argv[2:])" \
+                "$uid" /usr/lib/cockpit-host-settings/host-settings-notify.py run
+              test "$(stat -c %a /var/lib/cockpit-host-settings/status.json)" = 644
+              test "$(stat -c %a /var/lib/cockpit-host-settings/last.json)" = 600
+              # The status verb as nobody (65534 in both images; the Fedora image has no su).
+              python3 -c "import os, sys; os.setgroups([]); os.setgid(65534); os.setuid(65534); os.execv(sys.argv[1], sys.argv[1:])" \
+                /usr/lib/cockpit-host-settings/host-settings.py status --lang de | python3 -c "import json, sys; d = json.load(sys.stdin); print(d[\"state\"], d[\"summary\"]); assert d[\"schema\"] == 1 and d[\"version\"] != \"unknown\" and d[\"state\"] == \"none\""
+              case "$IMAGE" in
+                debian*) apt-get remove -y -qq cockpit-host-settings > /dev/null ;;
+                fedora*) dnf remove -y -q cockpit-host-settings ;;
+              esac
+              test ! -e /usr/lib/cockpit-host-settings
+              test ! -e /var/lib/cockpit-host-settings
+              test -e /etc/cockpit-host-settings/ntfy.token'
+          done
+
+  # The oldest Python the helpers support (README, Requirements): the helper tests on 3.8.
+  python-min:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Helper tests on Python 3.8
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src/test python:3.8-slim sh -ec '
+            python3 --version
+            for t in notify_test.py run_test.py helper_test.py; do
+              python3 -B "$t" > "/tmp/$t.log" 2>&1 || { cat "/tmp/$t.log"; exit 1; }; echo "PASS $t"; done'
+
+  # On this throw-away runner: the package with its real units, a real ntfy server (deny-all, a
+  # user with write-only access, a reader) and postfix for local mail (test/e2e/run.sh). The
+  # commands the page shows run on the server as shown; "Check connection" against a closed and an
+  # open topic; the first run's summary, a change, no message without one; the status verb as
+  # nobody; the token in no file but its own and in no log. The steps and the raw answers are in
+  # the artifact e2e-session.
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The package of this build
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends rpm > /dev/null
+          make packages
+      - name: ntfy, postfix and the add-on (test/e2e/run.sh)
+        run: sudo env OUT="$PWD/e2e-session" sh test/e2e/run.sh dist/*.deb
+      - name: Report and logs
+        if: always()
+        run: |
+          mkdir -p e2e-session
+          [ ! -f e2e-session/report.md ] || cat e2e-session/report.md >> "$GITHUB_STEP_SUMMARY"
+          sudo journalctl --no-pager -n 2000 -u 'cockpit-host-settings*' > e2e-session/journal.txt || true
+          sudo docker logs ntfy > e2e-session/ntfy.log 2>&1 || true
+          sudo chown -R "$(id -u)" e2e-session || true
+      - name: Keep the report and the logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-session
+          path: e2e-session/
+
+  # Secrets in the files and in the whole history (gitleaks, pinned with its checksum). The
+  # findings are redacted in the log; GitHub's own secret scanning with push protection runs
+  # as well (repository settings).
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: gitleaks 8.21.2 over the history and the files
+        run: |
+          curl -fsSLo gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+          echo "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba  gitleaks.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf gitleaks.tar.gz -C "$RUNNER_TEMP/gitleaks" gitleaks
+          rm gitleaks.tar.gz
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --redact --no-banner --verbose .
+          "$RUNNER_TEMP/gitleaks/gitleaks" dir --redact --no-banner .

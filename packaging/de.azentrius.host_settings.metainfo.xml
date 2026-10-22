@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: CC0-1.0 -->
+<!-- AppStream data: Cockpit lists the page under Applications and opens it from there. -->
+<component type="addon">
+  <id>de.azentrius.host_settings</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>Host Settings</name>
+  <summary>Messages through ntfy or e-mail when an Azentrius add-on on a server needs attention</summary>
+  <summary xml:lang="de">Nachrichten per ntfy oder E-Mail, wenn ein Azentrius-Add-on auf einem Server Aufmerksamkeit braucht</summary>
+  <description>
+    <p>
+      Every 5 minutes the notifier reads the status of the Azentrius add-ons on the server,
+      through the status contract they share, and sends a message through ntfy, e-mail or both
+      when a finding turns to a warning or a danger, and when it is OK again. The messages hold
+      only what the add-ons report and the server's name. The page sets up the channels, shows
+      the commands the ntfy server needs for this server's user, topic and token, and checks that
+      the topic is closed to anyone without a login. The notifier runs as a user of its own,
+      never as root.
+    </p>
+    <p xml:lang="de">
+      Alle 5 Minuten liest der Notifier den Status der Azentrius-Add-ons auf dem Server über den
+      gemeinsamen Status-Vertrag und schickt eine Nachricht per ntfy, E-Mail oder beides, wenn ein
+      Befund zur Warnung oder Gefahr wird und wenn er wieder in Ordnung ist. Die Nachrichten
+      enthalten nur, was die Add-ons melden, und den Namen des Servers. Die Seite richtet die Kanäle
+      ein, zeigt die Befehle, die der ntfy-Server für Benutzer, Thema und Token dieses Servers
+      braucht, und prüft, dass das Thema ohne Anmeldung geschlossen ist. Der Notifier läuft als
+      eigener Benutzer, nie als root.
+    </p>
+  </description>
+  <extends>org.cockpit_project.cockpit</extends>
+  <launchable type="cockpit-manifest">host-settings</launchable>
+  <url type="homepage">https://github.com/Azentrius/cockpit-host-settings</url>
+  <url type="bugtracker">https://github.com/Azentrius/cockpit-host-settings/issues</url>
+  <developer id="de.azentrius">
+    <name>Azentrius</name>
+  </developer>
+</component>

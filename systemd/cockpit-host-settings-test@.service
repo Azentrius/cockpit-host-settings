@@ -1,0 +1,41 @@
+[Unit]
+Description=Host Settings: check the channel %i (from the page)
+Documentation=https://github.com/Azentrius/cockpit-host-settings
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The instance is the channel; host-settings-notify.py accepts only ntfy and mail.
+ExecStart=/usr/bin/python3 -IB /usr/lib/cockpit-host-settings/host-settings-notify.py test %i
+# As cockpit-host-settings-notify.service: the add-on's own user, the token as a credential.
+User=cockpit-host-settings
+Group=cockpit-host-settings
+LoadCredential=ntfy.token:/etc/cockpit-host-settings/ntfy.token
+StateDirectory=cockpit-host-settings
+StateDirectoryMode=0755
+TimeoutStartSec=2min
+
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077

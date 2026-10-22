@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "addon": "update-gaps",
+  "label": "Update Gaps",
+  "version": "0.1.0",
+  "checked_at": "2026-10-19T17:02:41Z",
+  "state": "warning",
+  "summary": "2 gehaltene Pakete mit Fixes, Neustart ausstehend",
+  "items": [
+    {"id": "held", "state": "warning", "title": "Gehaltene Pakete mit Fixes", "value": "2", "detail": "docker-ce, containerd.io", "link": "#/held", "checked_at": "2026-10-19T17:02:41Z", "stale_after": 86400},
+    {"id": "reboot", "state": "warning", "title": "Neustart ausstehend", "value": "3 Tage"},
+    {"id": "pro", "state": "info", "title": "Fixes nur mit Ubuntu Pro", "value": 5},
+    {"id": "cves", "state": "ok", "title": "Ungepatchte CVEs", "value": "0"}
+  ]
+}

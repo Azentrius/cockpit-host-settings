@@ -1,0 +1,4 @@
+{
+    "menu": { "index": { "label": "Dot Dot" } },
+    "azentrius": { "status": ["/usr/lib/cockpit-x/../../../bin/sh", "status"] }
+}

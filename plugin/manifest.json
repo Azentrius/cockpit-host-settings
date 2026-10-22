@@ -1,0 +1,21 @@
+{
+    "version": 0,
+    "requires": {
+        "cockpit": "264"
+    },
+    "menu": {
+        "index": {
+            "label": "Host Settings",
+            "order": 38,
+            "keywords": [
+                {
+                    "matches": ["notifications", "messages", "alerts", "ntfy", "mail", "e-mail", "settings", "status", "benachrichtigungen", "nachrichten"]
+                }
+            ]
+        }
+    },
+    "preload": ["index"],
+    "azentrius": {
+        "status": ["/usr/lib/cockpit-host-settings/host-settings.py", "status"]
+    }
+}

@@ -1,0 +1,9 @@
+{
+    "version": 0,
+    "menu": {
+        "index": { "label": "Update Gaps", "order": 36 }
+    },
+    "azentrius": {
+        "status": ["/usr/lib/cockpit-update-gaps/gaps-status.py", "status"]
+    }
+}

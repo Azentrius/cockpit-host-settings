@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Host Settings</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Shared Azentrius design files (identical in every add-on, see
+         tools/design-files.sha256): the theme script comes first so the page
+         never flashes in the wrong brightness, then the shared stylesheet,
+         then what only this page needs. Everything is local, so Cockpit's
+         default (strict) CSP applies unchanged. -->
+    <script src="azentrius-theme.js?v=0.1.0"></script>
+    <link rel="stylesheet" href="azentrius.css?v=0.1.0">
+    <link rel="stylesheet" href="settings.css?v=0.1.0">
+    <!-- Cockpit base API + Cockpit's own translation file for the session
+         language (sets cockpit.language, e.g. "de"; absent for English). -->
+    <script src="../base1/cockpit.js"></script>
+    <script src="../base1/po.js"></script>
+    <script src="icons.js?v=0.1.0"></script>
+</head>
+<body>
+    <!-- Static texts are English (the fallback) and get translated by
+         settings.js before anything is interactive; see data-i18n. -->
+    <div class="az-page">
+        <header class="az-page-header">
+            <h1 class="az-page-title az-page-title--dot">Host Settings</h1>
+            <div class="az-page-actions">
+                <span id="hs-meta" class="az-meta"></span>
+                <!-- Starts busy: the first load begins as soon as the page is shown. -->
+                <button id="hs-refresh" class="az-btn az-btn--primary is-busy" type="button" disabled aria-busy="true">
+                    <span class="hs-btn-spinner" aria-hidden="true"></span><span data-icon="sync-alt"></span><span class="hs-btn-label" data-i18n="btn.loading">Loading …</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- One tab so far; the bar shows once there is a second one (the Cockpit settings). -->
+        <nav id="hs-tabs" class="az-tabs" role="tablist" aria-label="Areas" data-i18n-aria="tabs.label" hidden>
+            <button id="hs-tab-btn-notifications" class="az-tab" role="tab" type="button" aria-selected="true"
+                    aria-controls="hs-tab-notifications" data-tab="notifications" data-i18n="tab.notifications">Notifications</button>
+        </nav>
+
+        <!-- Messages for the whole page (role="alert" for errors). -->
+        <div id="hs-status" class="hs-status-list"></div>
+
+        <section id="hs-loading" class="az-card hs-loading" aria-live="polite">
+            <span class="hs-spinner" aria-hidden="true"></span>
+            <span><span class="hs-loading-title" data-i18n="loading.title">Reading the settings …</span>
+                <span class="hs-loading-sub" data-i18n="loading.sub">The channels, the regular check and what the add-ons of this server said last. Nothing is changed.</span></span>
+        </section>
+
+        <!-- Without administrative access: the summary of status.json only. -->
+        <div id="hs-summary" class="hs-panel" hidden></div>
+
+        <section id="hs-tab-notifications" class="hs-panel" role="tabpanel" aria-labelledby="hs-tab-btn-notifications"></section>
+
+        <footer class="az-signature">
+            <a class="az-signature__mark" href="https://azentrius.com" target="_blank" rel="noopener noreferrer">Azentrius</a>
+            <span class="az-signature__meta"><span id="hs-sig-version">Host Settings</span><span id="hs-sig-host" hidden></span>
+                <a href="https://github.com/Azentrius/cockpit-host-settings" target="_blank" rel="noopener noreferrer" data-i18n="sig.source">Source code</a></span>
+        </footer>
+    </div>
+
+    <!-- The one dialog for every change: a description, the fields of the change, then the
+         live output and the result. -->
+    <dialog id="hs-dialog" class="az-modal hs-dialog" aria-labelledby="hs-dialog-title">
+        <div class="az-modal__header">
+            <h2 id="hs-dialog-title" class="az-modal__title"></h2>
+        </div>
+        <div class="az-modal__body">
+            <p id="hs-dialog-desc" class="hs-dialog-desc"></p>
+            <div id="hs-dialog-fields" class="hs-dialog-fields"></div>
+            <p id="hs-dialog-error" class="az-field__error" role="alert" hidden></p>
+            <p class="hs-dialog-note" data-i18n="dlg.note">Runs with administrator privileges via Cockpit.</p>
+            <pre id="hs-dialog-log" class="hs-dialog-log" hidden></pre>
+            <div id="hs-dialog-outcome" class="hs-dialog-outcome" hidden></div>
+            <p id="hs-dialog-result" class="hs-dialog-result" role="status" aria-live="polite"></p>
+        </div>
+        <div class="az-modal__footer">
+            <button id="hs-dialog-confirm" class="az-btn az-btn--secondary" type="button">
+                <span class="hs-btn-spinner" aria-hidden="true"></span><span class="hs-btn-label"></span>
+            </button>
+            <button id="hs-dialog-cancel" class="az-btn az-btn--link" type="button" data-i18n="dlg.cancel">Cancel</button>
+        </div>
+    </dialog>
+
+    <script src="i18n.js?v=0.1.0"></script>
+    <!-- menu-status.js: the status icon in Cockpit's menu (Cockpit loads the page hidden after
+         the login for it); settings.js starts once the page is shown. -->
+    <script src="menu-status.js?v=0.1.0"></script>
+    <script src="settings.js?v=0.1.0"></script>
+</body>
+</html>

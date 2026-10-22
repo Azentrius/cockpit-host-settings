@@ -1,0 +1,11 @@
+{
+    "version": 0,
+    "requires": { "cockpit": "264" },
+    "menu": {
+        "index": { "label": "Security Monitor", "order": 37 }
+    },
+    "preload": ["index"],
+    "azentrius": {
+        "status": ["/usr/lib/cockpit-security-monitor/security.py", "status"]
+    }
+}

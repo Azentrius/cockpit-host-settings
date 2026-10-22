@@ -1,0 +1,13 @@
+{
+    "version": 0,
+    "menu": {
+        "index": {
+            "label": "Cron Jobs",
+            "path": "index.html",
+            "order": 112
+        }
+    },
+    "azentrius": {
+        "status": ["/usr/lib/cockpit-cronjobs/cronjobs-status", "status"]
+    }
+}

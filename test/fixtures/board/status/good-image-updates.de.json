@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "addon": "image-updates",
+  "label": "Image Update Monitor",
+  "version": "0.20.0",
+  "checked_at": "2026-10-19T18:36:00Z",
+  "state": "info",
+  "summary": "3 Updates verfügbar",
+  "items": [
+    {
+      "id": "updates",
+      "state": "info",
+      "title": "Updates verfügbar",
+      "value": "3",
+      "detail": "postgres, glitchtip-web, caddy",
+      "link": "#/updates",
+      "checked_at": "2026-10-19T18:36:00Z",
+      "stale_after": 43200
+    },
+    {
+      "id": "last-update",
+      "state": "ok",
+      "title": "Letztes Update",
+      "value": "erfolgreich",
+      "checked_at": "2026-10-19T18:36:00Z"
+    },
+    {
+      "id": "radar",
+      "state": "ok",
+      "title": "Versions-Radar",
+      "checked_at": "2026-10-19T16:40:12.482913+00:00",
+      "stale_after": 43200
+    },
+    {
+      "id": "rollout",
+      "state": "none",
+      "title": "Roll-out ausstehend",
+      "value": "0"
+    }
+  ]
+}

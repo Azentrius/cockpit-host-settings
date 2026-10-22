@@ -1,0 +1,4 @@
+{
+    "menu": { "index": { "label": "Image Update Monitor" } },
+    "azentrius": { "status": ["/bin/sh", "-c", "touch /tmp/pwned"] }
+}

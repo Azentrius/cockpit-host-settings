@@ -1,0 +1,12 @@
+[Unit]
+Description=Host Settings: look at the Azentrius add-ons of this host every 5 minutes
+
+[Timer]
+# Off until set up from the page (host-settings.py install timer).
+OnCalendar=*:0/5
+RandomizedDelaySec=30s
+AccuracySec=10s
+OnBootSec=2min
+
+[Install]
+WantedBy=timers.target

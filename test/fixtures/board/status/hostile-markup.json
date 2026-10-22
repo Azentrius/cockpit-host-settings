@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "addon": "cronjobs",
+  "label": "<img src=x onerror=\"window.__pwned='label'\">",
+  "version": "<script>window.__pwned='version'</script>",
+  "checked_at": "2026-10-19T18:00:00Z",
+  "state": "warning",
+  "summary": "<b onmouseover=\"window.__pwned='summary'\">hover</b> &lt;no entity&gt; `no code`",
+  "items": [
+    {
+      "id": "xss",
+      "state": "warning",
+      "title": "<svg onload=\"window.__pwned='title'\"></svg>",
+      "value": "<i>7</i>",
+      "detail": "<a href=\"javascript:window.__pwned='detail'\">x</a>",
+      "link": "javascript:window.__pwned='link'"
+    },
+    {"id": "escape", "state": "info", "title": "A path out of the page", "link": "#/../../../shell/index.html"},
+    {"id": "away", "state": "info", "title": "Another site", "link": "https://evil.example/#/x"},
+    {"id": "query", "state": "info", "title": "A query", "link": "#/ok?x=<y>"}
+  ]
+}

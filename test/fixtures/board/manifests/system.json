@@ -1,0 +1,9 @@
+{
+    "menu": {
+        "index": { "label": "Overview", "order": 10 },
+        "services": { "label": "Services", "order": 100 }
+    },
+    "tools": {
+        "terminal": { "label": "Terminal" }
+    }
+}

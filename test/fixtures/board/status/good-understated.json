@@ -1,0 +1,1 @@
+{"schema": 1, "addon": "update-gaps", "label": "Update Gaps", "state": "ok", "summary": "All good", "items": [{"id": "cves", "state": "danger", "title": "Unpatched CVEs", "value": "1"}, {"id": "bad id!", "state": "ok", "title": "Left out"}, {"id": "cves", "state": "ok", "title": "Twice"}]}

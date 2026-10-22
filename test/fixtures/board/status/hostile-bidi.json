@@ -1,0 +1,1 @@
+{"schema": 1, "addon": "update-gaps", "label": "Update\u202Espag\u202C Gaps", "state": "ok", "summary": "line one\nline two\ttabbed\u0007bell\u200Bzero\uFEFFwidth\u2066isolate\u2069 end\u00AD", "items": [{"id": "x", "state": "ok", "title": "\u0000\u0001\u001f", "value": "1"}, {"id": "y", "state": "ok", "title": "ok\u2028title", "value": "\u202E5"}]}

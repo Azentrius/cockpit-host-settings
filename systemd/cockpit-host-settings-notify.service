@@ -1,0 +1,47 @@
+[Unit]
+Description=Host Settings: tell about changes of the Azentrius add-ons on this host (ntfy, e-mail)
+Documentation=https://github.com/Azentrius/cockpit-host-settings
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -IB /usr/lib/cockpit-host-settings/host-settings-notify.py run
+# No root: the add-on's own system user (sysusers.d), which gets the ntfy token (and only it) as a
+# credential from /etc/cockpit-host-settings/ntfy.token (root, 0600; empty: no token). The status
+# verbs of the add-ons work without root, as the status contract asks. A fixed user, not
+# DynamicUser=: status.json must be readable for the menu icon and the Status Board, and the state
+# of a dynamic user lives below /var/lib/private (0700).
+User=cockpit-host-settings
+Group=cockpit-host-settings
+LoadCredential=ntfy.token:/etc/cockpit-host-settings/ntfy.token
+StateDirectory=cockpit-host-settings
+StateDirectoryMode=0755
+TimeoutStartSec=5min
+Nice=10
+
+# Hardening. Network for ntfy and for SMTP to the local MTA on localhost:25; nothing to write but
+# the state directory.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077

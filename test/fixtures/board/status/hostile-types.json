@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "addon": "cronjobs",
+  "label": {"text": "an object"},
+  "version": 2,
+  "checked_at": "yesterday",
+  "state": "info",
+  "summary": ["a", "list"],
+  "items": [
+    {"id": 123, "state": "info", "title": "a numeric id"},
+    {"id": "s", "state": ["danger"], "title": "a list as state"},
+    {"id": "t", "state": "info", "title": {"a": 1}},
+    {"id": "u", "state": "info", "title": "kept, without its odd fields", "value": {"x": 1}, "detail": 42, "link": 7, "checked_at": 1760900000, "stale_after": "60"},
+    {"id": "v", "state": "info", "title": "a fraction of a second", "checked_at": "2026-10-19T18:00:00Z", "stale_after": 1.5},
+    {"id": "w", "state": "info", "title": "longer than ten years", "checked_at": "2026-10-19T18:00:00Z", "stale_after": 1000000000000},
+    "a string",
+    null,
+    5,
+    {"id": "time", "state": "info", "title": "a time without a zone", "checked_at": "2026-10-19T18:00:00", "stale_after": 60}
+  ]
+}
