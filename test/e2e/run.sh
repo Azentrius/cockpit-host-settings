@@ -10,7 +10,7 @@
 #   - the commands the page shows for the ntfy server run there exactly as shown, and give a
 #     token (concept: what ntfy answers is only read from its documentation so far);
 #   - "Check connection" against a topic closed without a login and against an open one: the
-#     HTTP answers ntfy really gives (401 or 403), /v1/account and its grants;
+#     HTTP answers ntfy really gives (401 or 403), and that the write-only token cannot read;
 #   - the first run sends the summary through ntfy and e-mail, a change sends one message, a run
 #     without a change none; the status verb answers as nobody; switching off says so;
 #   - the token is in no file but its own and in no log.
@@ -37,16 +37,21 @@ ntfy() { docker exec "$@"; }
 messages() { curl -fsS -H "Authorization: Bearer $reader" "$base/$1/json?poll=1"; }
 
 next "ntfy: deny-all, a user with write access to its topic only, a reader"
-mkdir -p /tmp/ntfy-e2e
+# The server's databases live in /var/lib/ntfy, which the image does not have: a folder of the host.
+mkdir -p /tmp/ntfy-e2e/lib
 cat > /tmp/ntfy-e2e/server.yml <<'EOF'
 base-url: "http://127.0.0.1:8090"
 auth-file: "/var/lib/ntfy/user.db"
 auth-default-access: "deny-all"
 cache-file: "/var/lib/ntfy/cache.db"
 EOF
-docker run -d --name ntfy -p 127.0.0.1:8090:80 -v /tmp/ntfy-e2e/server.yml:/etc/ntfy/server.yml:ro "$ntfy_image" serve > /dev/null
+docker run -d --name ntfy -p 127.0.0.1:8090:80 -v /tmp/ntfy-e2e/server.yml:/etc/ntfy/server.yml:ro \
+    -v /tmp/ntfy-e2e/lib:/var/lib/ntfy "$ntfy_image" serve > /dev/null
 for _ in $(seq 1 30); do curl -fsS "$base/v1/health" > /dev/null 2>&1 && break; sleep 1; done
-curl -fsS "$base/v1/health" > "$out/health.json" || fail "ntfy did not start"
+if ! curl -fsS "$base/v1/health" > "$out/health.json"; then
+    docker logs ntfy 2>&1 | tail -n 20
+    fail "ntfy did not start"
+fi
 ok "ntfy $(docker exec ntfy ntfy --help 2>/dev/null | head -n 1 || true) answers: $(cat "$out/health.json")"
 
 # Exactly the commands the page shows (plugin/settings.js, commandsText), for the topic cockpit-e2e.
@@ -104,7 +109,7 @@ for s in reach publish anon-read anon-write token; do
 done
 [ "$(field "d['access']['state']" < "$out/check-closed.json")" = ok ] || fail "the closed topic is not judged closed"
 [ "$(field "[x['result'] for x in d['steps'] if x['id'] == 'publish'][0]" < "$out/check-closed.json")" = ok ] || fail "the test message with the token"
-[ "$(field "[x['result'] for x in d['steps'] if x['id'] == 'token'][0]" < "$out/check-closed.json")" = ok ] || fail "/v1/account does not show write-only"
+[ "$(field "[x['result'] for x in d['steps'] if x['id'] == 'token'][0]" < "$out/check-closed.json")" = ok ] || fail "the write-only token is not judged write-only"
 [ "$(messages "$topic" | grep -c 'test message')" -ge 1 ] || fail "the test message did not arrive"
 ok "closed: reading and sending without a login refused, the token may only write"
 

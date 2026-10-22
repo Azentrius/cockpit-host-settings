@@ -33,7 +33,7 @@ run "python: whole runs of the notifier, its own status"          python3 -B run
 run "python: the verbs of the page and of the board"              python3 -B helper_test.py
 run "python: syntax lib/*.py"                                      python3 -B -c 'import ast, glob; [ast.parse(open(f).read(), f) for f in glob.glob("../lib/*.py")]'
 run "shell:  syntax of the shell scripts"                          bash -c 'for f in ../tools/*.sh ../packaging/scripts/* *.sh e2e/*.sh; do [ -e "$f" ] || continue; sh -n "$f" || exit 1; done'
-run "page:   overview, ntfy, e-mail, dialogs, escaping, menu"       node page.test.js
+run "page:   overview, ntfy, e-mail, dialogs, escaping, menu"       timeout 300 node page.test.js
 run "page:   texts in English and German"                          node i18n.test.js
 run "page:   files, calls, manifest"                               node files.test.js
 run "design: contrast (light + dark)"                              python3 -B contrast_test.py

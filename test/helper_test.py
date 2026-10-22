@@ -27,7 +27,7 @@ import hsstatus  # noqa: E402
 spec = importlib.util.spec_from_file_location("host_settings", os.path.join(LIB, "host-settings.py"))
 hs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hs)
-TOKEN = "tk_fixture0123456789abcdefghijk"
+TOKEN = "tk_testtokentesttokentesttokent"
 
 
 def call(fn, *args, **kw):

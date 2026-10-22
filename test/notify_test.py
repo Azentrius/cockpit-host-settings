@@ -467,7 +467,7 @@ class Http:
 
 
 CFG = {"ntfy_url": "https://ntfy.example.com", "ntfy_topic": "cockpit-h", "mail_to": "ops@example.com", "language": "en"}
-TOKEN = "tk_fixture0123456789abcdefghijk"
+TOKEN = "tk_testtokentesttokentesttokent"
 
 
 class Ntfy(unittest.TestCase):
@@ -543,13 +543,13 @@ class Mail(unittest.TestCase):
 
 
 # Answers of an ntfy server with auth-default-access: deny-all and a user with write-only access
-# to its topic (docs.ntfy.sh, config: access control; publish as JSON; subscribe with poll=1).
+# to its topic, as ntfy 2.11 gave them in the job e2e: 403 for what a login does not allow, for
+# reading and sending without a login as for reading with the write-only token.
 CLOSED = {("GET", "https://ntfy.example.com/v1/health"): (200, '{"healthy":true}'),
           ("POST", "https://ntfy.example.com/", "auth"): (200, '{"id":"x"}'),
           ("POST", "https://ntfy.example.com/", "anon"): (403, '{"code":40301,"http":403,"error":"forbidden"}'),
           ("GET", "https://ntfy.example.com/cockpit-h/json", "anon"): (403, '{"code":40301}'),
-          ("GET", "https://ntfy.example.com/v1/account", "auth"): (
-              200, '{"username":"cockpit-h","role":"user","grants":[{"topic":"cockpit-h","permission":"write-only"}]}')}
+          ("GET", "https://ntfy.example.com/cockpit-h/json", "auth"): (403, '{"code":40301}')}
 
 
 def results(steps):
@@ -567,8 +567,11 @@ class Check(unittest.TestCase):
         self.assertEqual(hsnotify.access_of(steps), {"state": "ok", "anon_read": "ok", "anon_write": "ok"})
         anon = [c for c in http.calls if "Authorization" not in c["headers"]]
         self.assertEqual([(c["method"], c["url"]) for c in anon if c["url"] != "https://ntfy.example.com/v1/health"],
-                         [("GET", "https://ntfy.example.com/cockpit-h/json?poll=1&since=latest"),
+                         [("GET", "https://ntfy.example.com/cockpit-h/json?poll=1&since=1m"),
                           ("POST", "https://ntfy.example.com/")])
+        with_token = [(c["method"], c["url"]) for c in http.calls if "Authorization" in c["headers"]]
+        self.assertEqual(with_token, [("POST", "https://ntfy.example.com/"),
+                                      ("GET", "https://ntfy.example.com/cockpit-h/json?poll=1&since=1m")])
         probe = anon[-1]["body"]
         self.assertEqual(probe["topic"], "cockpit-h")
         self.assertIn("auth-default-access: deny-all", probe["message"])
@@ -577,8 +580,7 @@ class Check(unittest.TestCase):
         answers = dict(CLOSED)
         answers.update({("POST", "https://ntfy.example.com/", "anon"): (200, "{}"),
                         ("GET", "https://ntfy.example.com/cockpit-h/json", "anon"): (200, ""),
-                        ("GET", "https://ntfy.example.com/v1/account", "auth"): (
-                            200, '{"role":"user","grants":[{"topic":"cockpit-*","permission":"read-write"}]}')})
+                        ("GET", "https://ntfy.example.com/cockpit-h/json", "auth"): (200, "")})
         steps = hsnotify.check_ntfy(CFG, TOKEN, "en", "h", Http(answers))
         self.assertEqual(results(steps)["anon-read"], ("warning", "readable"))
         self.assertEqual(results(steps)["anon-write"], ("warning", "writable"))
@@ -612,12 +614,14 @@ class Check(unittest.TestCase):
         self.assertEqual(hsnotify.access_of([{"id": "anon-read", "result": "info"}], {"anon_read": "ok", "anon_write": "ok"}),
                          {"state": "ok", "anon_read": "ok", "anon_write": "ok"})
 
-    def test_token_rights(self):
-        f = hsnotify._token_rights
-        self.assertEqual(f(200, b'{"role":"admin"}', "t"), ("info", "admin", 200))
-        self.assertEqual(f(200, b'{"grants":[{"topic":"other","permission":"write-only"}]}', "t"), ("info", "unknown", 200))
-        self.assertEqual(f(200, b"not json", "t"), ("info", "unknown", 200))
-        self.assertEqual(f(401, b"", "t"), ("info", "unknown", 401))
+    def test_what_the_token_may_read(self):
+        for answer, want in (((403, ""), ("ok", "write-only")), ((401, ""), ("ok", "write-only")),
+                             ((200, ""), ("info", "can-read")), ((500, ""), ("info", "unknown")),
+                             ("timeout", ("info", "timeout"))):
+            answers = dict(CLOSED)
+            answers[("GET", "https://ntfy.example.com/cockpit-h/json", "auth")] = answer
+            steps = hsnotify.check_ntfy(CFG, TOKEN, "en", "h", Http(answers), ("reach", "token"))
+            self.assertEqual(results(steps)["token"], want, answer)
 
 
 class Settings(unittest.TestCase):

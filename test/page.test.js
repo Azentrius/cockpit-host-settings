@@ -278,15 +278,27 @@ t("a link to the tab follows the location", async () => {
     assert.ok(!page.d.getElementById("hs-tab-notifications").hidden);
 });
 
+// A test that waits forever fails with its name instead of holding up the run.
+function limit(name, promise, ms = 30000) {
+    let timer;
+    const timeout = new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("no end after " + ms / 1000 + " s: " + name)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 (async () => {
     for (const [name, fn] of tests) {
         try {
-            await fn();
+            await limit(name, fn());
             passed++;
         } catch (e) {
             console.error("FAIL", name, "\n ", e.stack || e.message);
             process.exitCode = 1;
+        } finally {
+            P.closeAll();
         }
     }
     console.log(process.exitCode ? "THERE ARE FAILURES" : `all ${passed} passed`);
+    process.exit(process.exitCode || 0);
 })();
