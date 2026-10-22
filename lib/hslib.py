@@ -14,7 +14,6 @@ no side effects on import; nothing here runs a command or uses the network.
 - The settings file /etc/cockpit-host-settings/notify.conf.
 """
 
-import fnmatch
 import json
 import math
 import re
@@ -348,8 +347,3 @@ def channels(cfg):
     if cfg.get("mail_to"):
         out.append("mail")
     return out
-
-
-def topic_matches(pattern, topic):
-    """Whether an ntfy access pattern (with * as wildcard) covers the topic."""
-    return isinstance(pattern, str) and fnmatch.fnmatchcase(topic, pattern)

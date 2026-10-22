@@ -603,36 +603,22 @@ def check_ntfy(cfg, token, lang, host, request=http, steps=STEPS):
                 else:
                     step(sid, "info", "unknown", code)
             elif sid == "token":
+                # Whether the token may read the topic as well. /v1/account does not list what
+                # `ntfy access` grants (the job e2e showed that), so the token tries to read.
                 if not token:
                     step(sid, "skipped", "no-token")
                     continue
-                code, data = request("GET", base + "/v1/account", None, {"Authorization": "Bearer " + token})
-                step(sid, *_token_rights(code, data, topic))
+                code, _ = request("GET", f"{base}/{topic}/json?poll=1&since=latest", None,
+                                  {"Authorization": "Bearer " + token})
+                if 200 <= code < 300:
+                    step(sid, "info", "can-read", code)
+                elif code in (401, 403):
+                    step(sid, "ok", "write-only", code)
+                else:
+                    step(sid, "info", "unknown", code)
         except NetError as e:
             step(sid, "failed" if sid == "publish" else "info", e.reason)
     return out
-
-
-def _token_rights(code, data, topic):
-    """(result, reason, code) from /v1/account: whether the token may do more than publish."""
-    if not 200 <= code < 300:
-        return "info", "unknown", code
-    try:
-        doc = json.loads(data.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return "info", "unknown", code
-    grants = doc.get("grants") if isinstance(doc, dict) else None
-    if isinstance(doc, dict) and doc.get("role") == "admin":
-        return "info", "admin", code
-    for g in grants if isinstance(grants, list) else []:
-        if isinstance(g, dict) and hslib.topic_matches(g.get("topic"), topic):
-            perm = str(g.get("permission") or "")
-            if perm in ("write-only", "wo", "write"):
-                return "ok", "write-only", code
-            if perm in ("read-write", "rw", "read-only", "ro", "read"):
-                return "info", "can-read", code
-            return "info", "unknown", code
-    return "info", "unknown", code
 
 
 def access_of(steps, before=None):

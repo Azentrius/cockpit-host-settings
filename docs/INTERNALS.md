@@ -174,7 +174,7 @@ therefore not used yet; the page says so.
 | `publish` | the test message with the token | ok, or failed (`no-token` when refused without one) |
 | `anon-read` | `GET URL/TOPIC/json?poll=1&since=latest` without a login | warning on 2xx (readable), ok on 401/403, info otherwise |
 | `anon-write` | a message without a login, which is itself the warning | warning on 2xx (writable), ok on 401/403, info otherwise |
-| `token` | `GET URL/v1/account` with the token | ok when the grant for the topic is write-only; info when it may read too, for an admin, or when unknown |
+| `token` | `GET URL/TOPIC/json?poll=1&since=latest` with the token | ok on 401/403 (write-only), info on 2xx (it may read too) or otherwise |
 
 `access` from the steps: warning when the topic is readable or writable without a login, ok
 when both are closed, none when not known. The daily check of the run keeps the write result of
@@ -186,9 +186,10 @@ the last full check. `test-ntfy.json`:
  "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok"}}
 ```
 
-The page shows it only while `target` is the server and topic set now. What ntfy answers in
-which case (401 or 403, the shape of `/v1/account`) is taken from its documentation; the job
-`e2e` checks it against a real server.
+The page shows it only while `target` is the server and topic set now. The answers are those of
+ntfy 2.11 in the job `e2e`: 403 for what a login does not allow, with or without a token.
+`/v1/account` answers 200 but does not list what `ntfy access` grants, so the token's rights are
+found out by reading with it.
 
 ## `last.json`
 

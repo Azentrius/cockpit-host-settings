@@ -10,7 +10,7 @@
 #   - the commands the page shows for the ntfy server run there exactly as shown, and give a
 #     token (concept: what ntfy answers is only read from its documentation so far);
 #   - "Check connection" against a topic closed without a login and against an open one: the
-#     HTTP answers ntfy really gives (401 or 403), /v1/account and its grants;
+#     HTTP answers ntfy really gives (401 or 403), and that the write-only token cannot read;
 #   - the first run sends the summary through ntfy and e-mail, a change sends one message, a run
 #     without a change none; the status verb answers as nobody; switching off says so;
 #   - the token is in no file but its own and in no log.
@@ -109,7 +109,7 @@ for s in reach publish anon-read anon-write token; do
 done
 [ "$(field "d['access']['state']" < "$out/check-closed.json")" = ok ] || fail "the closed topic is not judged closed"
 [ "$(field "[x['result'] for x in d['steps'] if x['id'] == 'publish'][0]" < "$out/check-closed.json")" = ok ] || fail "the test message with the token"
-[ "$(field "[x['result'] for x in d['steps'] if x['id'] == 'token'][0]" < "$out/check-closed.json")" = ok ] || fail "/v1/account does not show write-only"
+[ "$(field "[x['result'] for x in d['steps'] if x['id'] == 'token'][0]" < "$out/check-closed.json")" = ok ] || fail "the write-only token is not judged write-only"
 [ "$(messages "$topic" | grep -c 'test message')" -ge 1 ] || fail "the test message did not arrive"
 ok "closed: reading and sending without a login refused, the token may only write"
 
