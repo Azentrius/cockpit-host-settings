@@ -15,7 +15,7 @@ root. The page sets up the channels, shows what the ntfy server needs for this s
 that the topic is closed to anyone without a login. It has one tab so far, Notifications; a
 second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
 
-![Overview, ntfy with the last check and the commands for the server, e-mail](docs/img/overview.png)
+![Overview with the regular check and the last message, ntfy with the last check of the connection](docs/img/overview.png)
 
 | ![The same page in the dark theme](docs/img/overview-dark.png) | ![The page on a phone](docs/img/mobile.png) |
 |---|---|

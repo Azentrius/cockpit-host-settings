@@ -35,4 +35,27 @@
   <developer id="de.azentrius">
     <name>Azentrius</name>
   </developer>
+  <!-- The pictures come from tools/preview/shoot.py (CI artifact "screenshots"), kept in docs/img/. -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>Overview and ntfy: the regular check, the last message, the last connection check</caption>
+      <caption xml:lang="de">Überblick und ntfy: Prüfung, letzte Nachricht, letzte Verbindungsprüfung</caption>
+      <image type="source" width="1440" height="1000">https://raw.githubusercontent.com/Azentrius/cockpit-host-settings/main/docs/img/overview.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>ntfy with the commands for user, topic and token on the ntfy server</caption>
+      <caption xml:lang="de">ntfy mit den Befehlen für Benutzer, Thema und Token auf dem ntfy-Server</caption>
+      <image type="source" width="1392" height="807">https://raw.githubusercontent.com/Azentrius/cockpit-host-settings/main/docs/img/ntfy.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Check connection: reachable, encrypted, closed without a login</caption>
+      <caption xml:lang="de">Verbindung prüfen: erreichbar, verschlüsselt, ohne Anmeldung geschlossen</caption>
+      <image type="source" width="1440" height="1000">https://raw.githubusercontent.com/Azentrius/cockpit-host-settings/main/docs/img/check-dialog.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The same page in the dark theme</caption>
+      <caption xml:lang="de">Dieselbe Seite im dunklen Design</caption>
+      <image type="source" width="1440" height="1000">https://raw.githubusercontent.com/Azentrius/cockpit-host-settings/main/docs/img/overview-dark.png</image>
+    </screenshot>
+  </screenshots>
 </component>
