@@ -467,7 +467,7 @@ class Http:
 
 
 CFG = {"ntfy_url": "https://ntfy.example.com", "ntfy_topic": "cockpit-h", "mail_to": "ops@example.com", "language": "en"}
-TOKEN = "tk_fixture0123456789abcdefghijk"
+TOKEN = "tk_testtokentesttokentesttokent"
 
 
 class Ntfy(unittest.TestCase):

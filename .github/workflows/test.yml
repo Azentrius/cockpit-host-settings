@@ -121,11 +121,12 @@ jobs:
       - name: Report and logs
         if: always()
         run: |
-          mkdir -p e2e-session
+          # The script ran as root: the folder is root's until it is handed back.
+          sudo mkdir -p e2e-session
+          sudo chown -R "$(id -u)" e2e-session
           [ ! -f e2e-session/report.md ] || cat e2e-session/report.md >> "$GITHUB_STEP_SUMMARY"
           sudo journalctl --no-pager -n 2000 -u 'cockpit-host-settings*' > e2e-session/journal.txt || true
           sudo docker logs ntfy > e2e-session/ntfy.log 2>&1 || true
-          sudo chown -R "$(id -u)" e2e-session || true
       - name: Keep the report and the logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

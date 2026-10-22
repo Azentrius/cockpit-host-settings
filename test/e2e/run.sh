@@ -37,16 +37,21 @@ ntfy() { docker exec "$@"; }
 messages() { curl -fsS -H "Authorization: Bearer $reader" "$base/$1/json?poll=1"; }
 
 next "ntfy: deny-all, a user with write access to its topic only, a reader"
-mkdir -p /tmp/ntfy-e2e
+# The server's databases live in /var/lib/ntfy, which the image does not have: a folder of the host.
+mkdir -p /tmp/ntfy-e2e/lib
 cat > /tmp/ntfy-e2e/server.yml <<'EOF'
 base-url: "http://127.0.0.1:8090"
 auth-file: "/var/lib/ntfy/user.db"
 auth-default-access: "deny-all"
 cache-file: "/var/lib/ntfy/cache.db"
 EOF
-docker run -d --name ntfy -p 127.0.0.1:8090:80 -v /tmp/ntfy-e2e/server.yml:/etc/ntfy/server.yml:ro "$ntfy_image" serve > /dev/null
+docker run -d --name ntfy -p 127.0.0.1:8090:80 -v /tmp/ntfy-e2e/server.yml:/etc/ntfy/server.yml:ro \
+    -v /tmp/ntfy-e2e/lib:/var/lib/ntfy "$ntfy_image" serve > /dev/null
 for _ in $(seq 1 30); do curl -fsS "$base/v1/health" > /dev/null 2>&1 && break; sleep 1; done
-curl -fsS "$base/v1/health" > "$out/health.json" || fail "ntfy did not start"
+if ! curl -fsS "$base/v1/health" > "$out/health.json"; then
+    docker logs ntfy 2>&1 | tail -n 20
+    fail "ntfy did not start"
+fi
 ok "ntfy $(docker exec ntfy ntfy --help 2>/dev/null | head -n 1 || true) answers: $(cat "$out/health.json")"
 
 # Exactly the commands the page shows (plugin/settings.js, commandsText), for the topic cockpit-e2e.

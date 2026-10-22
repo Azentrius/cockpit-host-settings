@@ -1,0 +1,6 @@
+# Findings of gitleaks that are not secrets (job secrets in .github/workflows/test.yml).
+# The first commit had made-up ntfy tokens in three test files that look random enough for the
+# rule generic-api-key; the tests use a plain made-up token since. History is not rewritten.
+847ee8d2f6b1c8a023693f3baff2758bc8a21696:test/helper_test.py:generic-api-key:30
+847ee8d2f6b1c8a023693f3baff2758bc8a21696:test/page.js:generic-api-key:16
+847ee8d2f6b1c8a023693f3baff2758bc8a21696:test/notify_test.py:generic-api-key:470

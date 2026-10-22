@@ -13,7 +13,7 @@ const js = ["icons.js", "i18n.js", "menu-status.js", "settings.js"].map((f) => f
 const NOW = "2026-10-19T19:05:00Z";
 const HELPER = "/usr/lib/cockpit-host-settings/host-settings.py";
 const STATUS_FILE = "/var/lib/cockpit-host-settings/status.json";
-const TOKEN = "tk_fixture0123456789abcdefghijk";
+const TOKEN = "tk_testtokentesttokentesttokent";
 const EVIL = "<img src=x onerror=\"window.__pwned=1\">";
 
 // What `host-settings.py show` says on a server that was never set up.
@@ -64,6 +64,13 @@ function statusDoc(lang) {
     };
 }
 
+// Every window boot() made: closeAll() ends their timers (the menu icon checks again when an item
+// turns out of date, which can be many minutes ahead and would keep node running).
+const windows = [];
+function closeAll() {
+    windows.splice(0).forEach((w) => w.close());
+}
+
 const pending = new Set();
 function track(p) {
     const done = p.then(() => {}, () => {});
@@ -97,6 +104,7 @@ function boot({ language = "en", view = ready(), admin = true, now = NOW, onSpaw
                 statusFile = null } = {}) {
     const dom = new JSDOM(html, { runScripts: "outside-only", url: "https://localhost:9090/host-settings/" });
     const w = dom.window;
+    windows.push(w);
     w.document.querySelectorAll("script").forEach((s) => s.remove());
     w.HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
     w.HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
@@ -146,4 +154,4 @@ function text(el) {
     return c.textContent.replace(/\s+/g, " ").trim();
 }
 
-module.exports = { boot, settle, proc, text, fresh, ready, statusDoc, NOW, HELPER, PLUGIN, STATUS_FILE, TOKEN, EVIL };
+module.exports = { boot, settle, proc, text, fresh, ready, statusDoc, closeAll, NOW, HELPER, PLUGIN, STATUS_FILE, TOKEN, EVIL };
