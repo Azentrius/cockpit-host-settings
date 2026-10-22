@@ -28,3 +28,6 @@ attention.
   standard input and never shows it.
 - **Status contract:** Host Settings reports its own state (channels, last message, protection of
   the topic, last run) to Status Board and as the icon in Cockpit's menu.
+- **Tested** in CI with the package and its real units against ntfy 2.11 and postfix, on Python
+  3.8 and 3.12, installed on Debian 13 and Fedora 43, and the page in a browser in both themes,
+  both languages and at phone width.

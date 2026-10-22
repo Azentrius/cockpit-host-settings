@@ -10,7 +10,7 @@ change, open an issue first so we can agree on the approach.
 git clone https://github.com/Azentrius/cockpit-host-settings.git
 cd cockpit-host-settings
 (cd test && npm ci)                    # jsdom for the page tests
-pip install -r test/requirements.txt   # pinned check tools: shellcheck, ruff
+pip install -r test/requirements.txt   # pinned check tools: shellcheck, ruff, playwright
 ```
 
 - The helpers need **Python ≥ 3.8, standard library only**. `ruff` checks Python 3.8 syntax.
@@ -23,6 +23,8 @@ pip install -r test/requirements.txt   # pinned check tools: shellcheck, ruff
 make check      # every offline test: the notifier and the helper with stand-ins, the page under jsdom, design, version
 make lint       # shellcheck, ruff, systemd-analyze for the units, as in CI
 make packages   # .deb and .rpm in dist/ (needs dpkg-deb and rpmbuild)
+python3 tools/preview/build.py   # the page with made-up data: tools/preview/out/host-settings/index.html?scenario=ready&lang=en
+python3 tools/preview/shoot.py   # screenshots to docs/img (needs Playwright with Chromium)
 ```
 
 The offline tests need no root and no network: the notifier reads Status Board's own test answers
@@ -30,6 +32,14 @@ in `test/fixtures/board` (pinned in `tools/board-fixtures.sha256`), recorded ans
 server and a stand-in for SMTP. The `test` workflow runs the lint, the tests and the package build
 on every push and pull request; the job `e2e` runs the package with its real units against a real
 ntfy server and postfix (`test/e2e/run.sh`, only on a throw-away machine).
+
+The preview (`tools/preview/`) shows the page with a stand-in for Cockpit and made-up data, in the
+scenarios `fresh` (nothing set up), `ready` (ntfy and e-mail, checked), `open` (a topic open
+without a login) and `nomta` (no mail server); add `lang=de` for German and `admin=0` for the page
+without administrative access. In CI, `shoot.py` opens every scenario in both themes and both
+languages, fails on a JavaScript error or on sideways scrolling at phone width, and keeps the
+screenshots as the artifact `screenshots`. The pictures in `docs/img` are taken from there; a
+change to the page that shows in them takes new ones.
 
 ## How the add-on is built
 

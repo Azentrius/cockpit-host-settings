@@ -11,6 +11,7 @@ Security problems: do not open a pull request, see SECURITY.md.
 
 - [ ] `make check`
 - [ ] `make lint`
+- [ ] The page in the preview (`python3 tools/preview/build.py`) or in Cockpit (when `plugin/` changed); new screenshots in `docs/img` when the page looks different
 - [ ] On a throw-away machine or in the job `e2e` (when the notifier, the units or the packaging changed)
 
 <!-- Anything else you tried, and on which system. -->

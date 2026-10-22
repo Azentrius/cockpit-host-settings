@@ -250,6 +250,12 @@ answer against Status Board's rules (`hslib.validate_status`).
   its texts.
 - `tools/check-board-fixtures.sh`: `test/fixtures/board` is unchanged from Status Board
   (`tools/board-fixtures.sha256`).
+- `tools/preview/build.py` and `shoot.py` (job `test`): the page with `tools/preview/cockpit-stub.js`
+  in place of Cockpit and the made-up scenarios `fresh`, `ready`, `open`, `nomta`, the status texts
+  from `lib/hsstatus.py` itself. `shoot.py` opens every scenario in Chromium in both themes, both
+  languages, with and without administrative access, fails on a JavaScript error or on sideways
+  scrolling at a width of 390 pixels (the dialog as well), and writes the screenshots (artifact
+  `screenshots`, the pictures in `docs/img`).
 - Job `e2e` (`test/e2e/run.sh`): the package with its real units on the runner, ntfy in Docker with
   `auth-default-access: deny-all`, postfix for local mail, a stand-in add-on. It runs the three
   commands of the page on the ntfy server, "Check connection" against a closed and an open topic,

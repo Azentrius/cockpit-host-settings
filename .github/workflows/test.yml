@@ -10,7 +10,8 @@ permissions:
 jobs:
   # Everything that runs without a server: lint, the offline tests, the packages (built twice to
   # the same bytes), installed on Debian and Fedora with a run of the notifier as its own user and
-  # the status verb as nobody.
+  # the status verb as nobody, and the preview in a browser (no JavaScript errors, no sideways
+  # scrolling on a phone) with the screenshots for the README (artifact "screenshots").
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -82,6 +83,18 @@ jobs:
               test ! -e /var/lib/cockpit-host-settings
               test -e /etc/cockpit-host-settings/ntfy.token'
           done
+      - name: Browser for the preview
+        run: python -m playwright install --with-deps chromium
+      - name: Preview in a browser (no JavaScript errors, no sideways scrolling on a phone) and screenshots
+        run: |
+          python tools/preview/build.py
+          python tools/preview/shoot.py test/shots
+      - name: Keep screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: screenshots
+          path: test/shots/
 
   # The oldest Python the helpers support (README, Requirements): the helper tests on 3.8.
   python-min:

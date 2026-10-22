@@ -4,6 +4,7 @@ __pycache__/
 .ruff_cache/
 tools/preview/out/
 e2e-session/
+test/shots/
 build/
 dist/
 first.sha256
