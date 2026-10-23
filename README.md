@@ -47,7 +47,10 @@ second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
   read is a warning of its own.
 - **Tells changes, finding by finding:** a finding that turns to a warning or a danger, a danger
   that becomes a warning, a finding that is OK again or no longer reported. A second finding in an
-  add-on that is already a warning is told as well. The same change of the same finding comes at
+  add-on that is already a warning is told as well. What cannot be checked is never taken as OK:
+  a finding the add-on cannot judge for now, or one missing from an answer that left items out,
+  keeps what was told, and an add-on that is no longer installed is told as "no longer checked".
+  The same change of the same finding comes at
   most once an hour, so a flapping finding does not flood the phone. The first run after setting
   up sends a summary of what the add-ons report then.
 - **ntfy:** any ntfy server, with a token (recommended) or without. Danger comes with a high

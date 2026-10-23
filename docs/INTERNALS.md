@@ -107,13 +107,18 @@ ntfy is set up when both `ntfy_url` and `ntfy_topic` are there, e-mail when `mai
    itself a warning.
 4. **Compare** with what was told last (`sent` in `last.json`), per key: `PKG#` for the add-on
    (warning while it cannot be read), `PKG#ID` for each item. Only warning and danger count as
-   levels; everything else is OK. A key whose level differs from the one told is a change:
+   levels; ok and info are OK. A key whose level differs from the one told is a change:
    `worse` (to warning or danger, or warning to danger), `better` (danger to warning),
-   `resolved` (to OK, or the item or the whole add-on is gone). The items of an add-on that cannot
-   be read keep their level: unreadable is no reason for OK. The same change (`FROM>TO`) of the
-   same key waits when it was told less than an hour ago; the key keeps its old level, so the
-   change is told after the hour if it still holds. OK keys whose last change is older than an
-   hour are forgotten.
+   `resolved` (to OK, or the item is gone from a complete answer). What cannot be checked is no
+   reason for OK, so these keys keep the level told before and give no message: the items of an
+   add-on that cannot be read or that answers exit 77 (and the add-on itself on exit 77), an item
+   in state `none` (the add-on cannot judge it, for example Security Monitor's `exposure` when the
+   packet filter cannot be read), and an item missing from an answer that left items out (more
+   than 50, or broken ones). An add-on that is no longer installed while it had told problems
+   gives one change `unchecked` (a warning) and its keys are forgotten. The same change
+   (`FROM>TO`) of the same key waits when it was told less than an hour ago; the key keeps its old
+   level, so the change is told after the hour if it still holds. OK keys whose last change is
+   older than an hour are forgotten.
 5. **The first run with a channel** (no `baseline_at` yet) sends a summary of every problem instead
    of changes and takes them as told.
 6. **Send** one message for all changes of the run, to every channel set up. Only when at least
@@ -131,12 +136,15 @@ Exit codes of `host-settings-notify.py`: 0 done (a message that could not be sen
 
 `{title, body, priority, tags}`, from `lib/hsnotify.py` (`message()`), in English or German:
 
-- Title: `HOST: LABEL, TITLE` for one change, `HOST: N changes` for several,
-  `HOST: messages set up` for the summary, `HOST: test message`.
+- Title: `HOST: LABEL, TITLE` for one change, `HOST: LABEL, no longer checked` for an add-on
+  that is no longer installed, `HOST: N changes` for several, `HOST: messages set up` for the
+  summary, `HOST: test message`.
 - Body: one block per change, the most severe first:
   `STATE · LABEL · TITLE (VALUE)` and, on the next line, the detail, "out of date since …"
-  for an item past its `stale_after`, or why it is OK again ("no longer reported", "the add-on is
-  no longer installed"). For the add-on itself: "Status not readable" and the reason. At most 20
+  for an item past its `stale_after`, or why it is OK again ("no longer reported"). For the
+  add-on itself: "Status not readable" and the reason. An add-on that is no longer installed:
+  `No longer checked · LABEL · the add-on is no longer installed` and how many of the findings
+  it reported can no longer be checked. At most 20
   blocks and 3800 bytes (ntfy turns longer messages into attachments), then "and N more"; the
   footer `Host Settings on HOST`.
 - Priority (ntfy): 4 when the worst change is a danger, 3 for a warning, 2 when everything is OK

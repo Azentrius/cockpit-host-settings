@@ -6,7 +6,8 @@
   tools/board-fixtures.sha256) is judged as the board judges it (cockpit-status-board,
   test/status.test.js, EXPECT), and so are its manifests;
 - a status command must belong to root; exit codes and broken answers become warnings;
-- changes per item, an hour against flapping, unreadable is no reason for OK;
+- changes per item, an hour against flapping; what cannot be checked (unreadable, exit 77, state
+  none, items left out, an add-on removed) is no reason for OK;
 - the texts of the messages, in English and German, cut to what ntfy takes;
 - ntfy as JSON to the server's root URL, the token only as a header; SMTP to localhost:25;
 - "Check connection": every step against recorded answers of an ntfy server.
@@ -264,6 +265,13 @@ class ReadAddon(unittest.TestCase):
         a, _ = self.read(ok(board("status/good-update-gaps.json")))
         self.assertEqual(a["reason"], "addon-mismatch")
 
+    def test_left_out_items_are_counted(self):
+        items = [{"id": f"i{n}", "state": "ok", "title": f"I{n}"} for n in range(52)]
+        a, _ = self.read(ok(status_doc("cronjobs", items)))
+        self.assertEqual((len(a["items"]), a["dropped"]), (50, 2))
+        a, _ = self.read(ok(status_doc("cronjobs", items[:3])))
+        self.assertEqual(a["dropped"], 0)
+
     def test_out_of_date_items_count_as_warnings(self):
         a, _ = self.read(ok(status_doc("cronjobs", [{"id": "a", "state": "ok", "title": "A"}], at="2026-10-19T17:00:00Z")))
         self.assertEqual(a["items"][0]["state"], "warning")
@@ -288,10 +296,10 @@ class ReadAddon(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # What changed
 
-def addon(label, items, kind="ok", reason=None):
+def addon(label, items, kind="ok", reason=None, dropped=0):
     return {"label": label, "kind": kind, "reason": reason, "code": None, "state": "none", "version": None,
             "summary": None, "items": [dict({"value": None, "detail": None, "link": None, "stale_at": None, "title": i["id"].upper()}, **i)
-                                       for i in items]}
+                                       for i in items], "dropped": dropped}
 
 
 class Changes(unittest.TestCase):
@@ -357,9 +365,75 @@ class Changes(unittest.TestCase):
         _, sent = hsnotify.changes({}, snap, NOW)
         events, sent = hsnotify.changes(sent, {"img": addon("Image Update Monitor", [], kind="noaccess")}, NOW + 60)
         self.assertEqual(events, [], "exit 77 says nothing either way")
+        self.assertEqual(sent["img#updates"]["level"], "warning")
         events, sent = hsnotify.changes(sent, {}, NOW + 120)
-        self.assertEqual([(e["key"], e["kind"], e["why"], e["label"]) for e in events],
-                         [("img#updates", "resolved", "removed", "Image Update Monitor")])
+        self.assertEqual([(e["key"], e["kind"], e["label"], e["open"]) for e in events],
+                         [("img#", "unchecked", "Image Update Monitor", 1)])
+        self.assertEqual(sent, {}, "its keys are forgotten")
+        events, _ = hsnotify.changes(sent, {}, NOW + 180)
+        self.assertEqual(events, [], "told once")
+
+    def test_an_item_that_cannot_be_judged_keeps_its_level(self):
+        # Security Monitor sets `exposure` to none when it cannot read the packet filter.
+        snap = {"sec": addon("Security Monitor", [{"id": "exposure", "state": "danger"}])}
+        _, sent = hsnotify.changes({}, snap, NOW)
+        snap["sec"]["items"][0]["state"] = "none"
+        events, sent = hsnotify.changes(sent, snap, NOW + 300)
+        self.assertEqual(events, [], "not judged is no reason for OK")
+        self.assertEqual(sent["sec#exposure"]["level"], "danger")
+        snap["sec"]["items"][0]["state"] = "danger"
+        events, sent = hsnotify.changes(sent, snap, NOW + 600)
+        self.assertEqual(events, [], "it never was OK, so nothing is new")
+        snap["sec"]["items"][0]["state"] = "none"
+        _, sent = hsnotify.changes(sent, snap, NOW + 900)
+        snap["sec"]["items"][0]["state"] = "ok"
+        events, sent = hsnotify.changes(sent, snap, NOW + 1200)
+        self.assertEqual([(e["key"], e["kind"], e["from"]) for e in events], [("sec#exposure", "resolved", "danger")])
+        # never told, then not judged: nothing at all
+        events, sent = hsnotify.changes({}, {"sec": addon("Security Monitor", [{"id": "logins", "state": "none"}])}, NOW)
+        self.assertEqual((events, sent), ([], {}))
+
+    def test_exit_77_does_not_make_an_unreadable_addon_readable(self):
+        _, sent = hsnotify.changes({}, {"img": addon("Image Update Monitor", [], kind="failed")}, NOW)
+        self.assertEqual(sent["img#"]["level"], "warning")
+        events, sent = hsnotify.changes(sent, {"img": addon("Image Update Monitor", [], kind="noaccess")}, NOW + 300)
+        self.assertEqual(events, [])
+        self.assertEqual(sent["img#"]["level"], "warning")
+
+    def test_items_left_out_of_an_answer_are_not_resolved(self):
+        items = [{"id": "held", "state": "warning"}, {"id": "restart", "state": "warning"}]
+        _, sent = hsnotify.changes({}, {"gaps": addon("Update Gaps", items)}, NOW)
+        events, sent = hsnotify.changes(sent, {"gaps": addon("Update Gaps", items[:1], dropped=1)}, NOW + 300)
+        self.assertEqual(events, [], "the answer left items out: the missing one may be among them")
+        self.assertEqual(sent["gaps#restart"]["level"], "warning")
+        events, _ = hsnotify.changes(sent, {"gaps": addon("Update Gaps", items[:1])}, NOW + 600)
+        self.assertEqual([(e["key"], e["kind"], e["why"]) for e in events], [("gaps#restart", "resolved", "gone")])
+
+    def test_an_uninstalled_addon_is_no_longer_checked(self):
+        snap = {"sec": addon("Security Monitor", [{"id": "exposure", "state": "danger"}, {"id": "ssh", "state": "warning"},
+                                                   {"id": "logins", "state": "ok"}]),
+                "img": addon("Image Update Monitor", [], kind="timeout")}
+        _, sent = hsnotify.changes({}, snap, NOW)
+        events, sent = hsnotify.changes(sent, {}, NOW + 300)
+        self.assertEqual([(e["key"], e["kind"], e["from"], e["to"], e["open"]) for e in events],
+                         [("img#", "unchecked", "warning", "warning", 0), ("sec#", "unchecked", "danger", "warning", 2)])
+        self.assertEqual(sent, {})
+        one = hsnotify.message("en", "web1", events=events[1:])
+        self.assertEqual(one["title"], "web1: Security Monitor, no longer checked")
+        self.assertEqual(one["body"], "No longer checked · Security Monitor · the add-on is no longer installed\n"
+                                      "the 2 findings it reported can no longer be checked\n\nHost Settings on web1")
+        self.assertEqual((one["priority"], one["tags"]), (3, ["warning"]))
+        de = hsnotify.message("de", "web1", events=events)
+        self.assertEqual(de["body"].split("\n\n")[:2], [
+            "Nicht mehr geprüft · Image Update Monitor · das Add-on ist nicht mehr installiert",
+            "Nicht mehr geprüft · Security Monitor · das Add-on ist nicht mehr installiert\n"
+            "die 2 gemeldeten Befunde lassen sich nicht mehr prüfen"])
+        single = hsnotify._unchecked("x", [("a", {"level": "warning", "label": "X"})])
+        self.assertEqual(hsnotify._line("en", single).splitlines()[1], "the finding it reported can no longer be checked")
+        # an add-on that told nothing goes without a word, as before
+        _, sent = hsnotify.changes({}, {"c": addon("C", [{"id": "x", "state": "ok"}])}, NOW)
+        events, _ = hsnotify.changes(sent, {}, NOW + 300)
+        self.assertEqual(events, [])
 
     def test_baseline(self):
         snap = {"a": addon("A", [{"id": "x", "state": "warning"}, {"id": "y", "state": "ok"}]),
@@ -371,8 +445,10 @@ class Changes(unittest.TestCase):
 
     def test_events_are_ordered(self):
         snap = {"b": addon("B", [{"id": "w", "state": "warning"}]), "a": addon("A", [{"id": "d", "state": "danger"}])}
-        events, _ = hsnotify.changes({"z#gone": {"level": "warning", "at": NOW - 9999, "last": {}, "label": "Z"}}, snap, NOW)
-        self.assertEqual([e["key"] for e in events], ["a#d", "b#w", "z#gone"])
+        events, _ = hsnotify.changes({"z#gone": {"level": "warning", "at": NOW - 9999, "last": {}, "label": "Z"},
+                                      "b#old": {"level": "warning", "at": NOW - 9999, "last": {}, "label": "B"}}, snap, NOW)
+        self.assertEqual([(e["key"], e["kind"]) for e in events],
+                         [("a#d", "worse"), ("b#w", "worse"), ("z#", "unchecked"), ("b#old", "resolved")])
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +473,7 @@ class Messages(unittest.TestCase):
              hsnotify._event("b#y", addon("B", []), {"title": "Y", "state": "warning", "value": "1", "detail": None,
                                                      "stale_at": None}, "danger", "warning"),
              hsnotify._event("c#", addon("C", [], kind="failed"), None, "ok", "warning"),
-             hsnotify._event("d#z", {}, None, "warning", "ok", "removed", {"label": "D", "title": "Z"})]
+             hsnotify._event("d#z", addon("D", []), None, "warning", "ok", "gone", {"label": "D", "title": "Z"})]
         e[2]["code"] = 2
         msg = hsnotify.message("en", "h", events=e)
         self.assertEqual(msg["title"], "h: 4 changes")
@@ -405,7 +481,7 @@ class Messages(unittest.TestCase):
             "Warning · A · X\nout of date since 19 Oct 18:00 UTC; d",
             "Warning instead of Danger · B · Y (1)",
             "Warning · C · Status not readable\nthe command failed (exit 2)",
-            "OK again · D · Z\nthe add-on is no longer installed",
+            "OK again · D · Z\nno longer reported",
             "Host Settings on h"])
         self.assertEqual(msg["priority"], 3)
         de = hsnotify.message("de", "h", events=e)
