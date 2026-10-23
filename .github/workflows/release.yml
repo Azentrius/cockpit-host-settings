@@ -134,9 +134,9 @@ jobs:
             echo
             echo "### Install"
             echo
-            echo "From the Azentrius package repository: set up https://packages.azentrius.com once, then install Host Settings in Cockpit under Applications, or with \`sudo apt install cockpit-host-settings\` (\`sudo dnf install cockpit-host-settings\`). The repository takes this release within an hour."
-            echo
-            echo "From the files of this release: download the package and \`SHA256SUMS\`, check that the download is complete and that this repository's release workflow built it, then install it:"
+            # Until Azentrius/packages lists Host Settings; then the sentence on the package
+            # repository comes first again, as in the other add-ons.
+            echo "The Azentrius package repository (https://packages.azentrius.com) does not carry Host Settings yet. Install it from the files of this release: download the package and \`SHA256SUMS\`, check that the download is complete and that this repository's release workflow built it, then install it:"
             echo
             echo '```sh'
             echo "sha256sum --ignore-missing -c SHA256SUMS"

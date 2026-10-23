@@ -83,13 +83,16 @@ jobs:
               test ! -e /var/lib/cockpit-host-settings
               test -e /etc/cockpit-host-settings/ntfy.token'
           done
-      # Usually a few seconds. Once (PR #4) it hung for ten minutes while the job only stops after
-      # 20; so each try gets four minutes and a hung or failed first try a second one.
+      # Only the browser, from Playwright's CDN (seconds). Its system packages (--with-deps: fonts,
+      # xvfb) come by apt from the Ubuntu mirror, which was slow enough to hang the job for ten
+      # minutes (PR #4) and, cut off by the time limit, left apt-get holding the dpkg lock (PR #7).
+      # The runner image brings what Chromium needs (it has Google Chrome); the preview step after
+      # this one shows if anything is missing. Each try gets four minutes, a hung one a second try.
       - name: Browser for the preview
         timeout-minutes: 10
         run: |
           for try in 1 2; do
-            timeout --kill-after=10s 4m python -m playwright install --with-deps chromium && exit 0
+            timeout --kill-after=10s 4m python -m playwright install chromium && exit 0
             echo "::warning::playwright install failed or hung (try $try)"
           done
           exit 1
