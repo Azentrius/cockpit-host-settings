@@ -212,6 +212,36 @@ class Runs(unittest.TestCase):
         finally:
             os.close(held)
 
+    def test_the_memory_of_0_1_0_keeps_working_when_an_addon_lists_findings(self):
+        host = Host()
+        with open(os.path.join(host.state, "last.json"), "w", encoding="utf-8") as f:
+            json.dump({"format": 1, "baseline_at": "2026-10-18T09:00:00Z",
+                       "sent": {"update-gaps#held": {"level": "warning", "at": NOW - 86400,
+                                                     "last": {"ok>warning": NOW - 86400}, "label": "Update-Gaps",
+                                                     "title": "Held packages"}}}, f)
+        held = [{"fid": "held.postgresql-16", "state": "warning", "title": "postgresql-16 is held"}]
+
+        def gaps(argv):
+            doc = json.loads(status_doc("update-gaps", [{"id": "held", "state": "warning", "title": "Held packages",
+                                                         "findings": {"complete": True, "list": held}}],
+                                        at=hslib.iso(host.now - 60)))
+            doc.update(features=["checks", "findings"],
+                       checks=[{"id": "held", "state": "checked", "title": "Held packages", "item": "held"}])
+            return ok(json.dumps(doc))
+        runner = Runner({CRON: host.answer("cronjobs"), GAPS: gaps})
+        code, out = host.run(runner=runner)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(host.posts(), [], "no new summary, and the held package was told already")
+        last = host.file("last.json")
+        self.assertEqual((last["format"], last["baseline_at"]), (1, "2026-10-18T09:00:00Z"))
+        self.assertEqual(last["sent"]["update-gaps#held/held.postgresql-16"]["status"], "open")
+        held.append({"fid": "held.mariadb-server", "state": "warning", "title": "mariadb-server is held"})
+        host.now += 300
+        host.run(runner=runner)
+        self.assertEqual([(p["title"], p["message"]) for p in host.posts()],
+                         [("h: Update-Gaps, mariadb-server is held",
+                           "Warning · Update-Gaps · mariadb-server is held\nHeld packages\n\nHost Settings on h")])
+
     def test_an_addon_that_fails_is_a_warning_of_its_own(self):
         host = Host()
         host.run()

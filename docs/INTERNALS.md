@@ -104,9 +104,17 @@ ntfy is set up when both `ntfy_url` and `ntfy_topic` are there, e-mail when `mai
    `checked_at + stale_after` at least a warning. Exit 77 is "no access" (no level of its own
    here, see step 4; Status Board shows it as a warning, "No access"); every other failure (`rejected`, `untrusted`, `manifest`, `invalid` with its reason,
    `missing`, `failed` with the exit code, `timeout`, `unsupported` for exit 64) makes the add-on
-   itself a warning.
+   itself a warning. The optional parts of the contract are read as the board's
+   `validateExtension()` reads them, and only those the add-on names in `features`: `checks` (at
+   most 50), each item's `findings` (at most 100 over the answer, each `fid` once; a list is
+   complete only when the add-on says so, nothing was left out of it and a check of state
+   `checked` names the item), an acceptance (`accepted_until`) only up to 90 days after the
+   check, and `profile` only from `host-settings`. What breaks their rules is left out and
+   counted, never makes the answer unreadable. An item is never better than its open findings:
+   those not accepted, or whose acceptance has ended (the board's `itemState()`).
 4. **Compare** with what was told last (`sent` in `last.json`), per key: `PKG#` for the add-on
-   (warning while it cannot be read), `PKG#ID` for each item. Only warning and danger count as
+   (warning while it cannot be read), `PKG#ID` for each item, and `PKG#ID/FID` for each finding
+   of an item that lists them (below). Only warning and danger count as
    levels; ok and info are OK. A key whose level differs from the one told is a change:
    `worse` (to warning or danger, or warning to danger), `better` (danger to warning),
    `resolved` (to OK, or the item is gone from a complete answer). What cannot be checked is no
@@ -115,12 +123,13 @@ ntfy is set up when both `ntfy_url` and `ntfy_topic` are there, e-mail when `mai
    in state `none` (the add-on cannot judge it, for example Security Monitor's `exposure` when the
    packet filter cannot be read), and an item missing from an answer that left items out (more
    than 50, or broken ones). An add-on that is no longer installed while it had told problems
-   gives one change `unchecked` (a warning) and its keys are forgotten. The same change
+   gives one change `unchecked` (a warning) and its keys are forgotten, its findings with it. The same change
    (`FROM>TO`) of the same key waits when it was told less than an hour ago; the key keeps its old
    level, so the change is told after the hour if it still holds. OK keys whose last change is
    older than an hour are forgotten.
 5. **The first run with a channel** (no `baseline_at` yet) sends a summary of every problem instead
-   of changes and takes them as told.
+   of changes and takes them as told. Where an item lists findings, the summary names its open
+   findings instead of the item; accepted findings are taken as accepted and not named.
 6. **Send** one message for all changes of the run, to every channel set up. Only when at least
    one channel took it, the new `sent` is kept (and `baseline_at` set); otherwise the same
    changes are sent again on the next run.
@@ -132,6 +141,48 @@ Exit codes of `host-settings-notify.py`: 0 done (a message that could not be sen
 1 failed (the previous files stay), 64 wrong call, 75 another run or test holds the lock
 (`/var/lib/cockpit-host-settings/.lock`).
 
+### Findings
+
+An item that lists findings (its add-on names `findings` in `features` and the item has a valid
+`findings` object) is compared finding by finding, with the key `PKG#ID/FID`, so a new finding
+is told even when the item's state stays the same: a second port reachable from the internet in
+Security Monitor's `exposure`, which is a danger already, gives a message of its own. The `fid`
+comes from the add-on's rule and the resource, so the same answer in the other language or in
+another order changes nothing. Each finding's entry has a status:
+
+| In the new answer | Entry | Message |
+|---|---|---|
+| new, warning or danger | open | `worse` (the state) |
+| known, higher state | open | `worse` |
+| known, danger to warning | open | `better` |
+| known, the same state | open | none |
+| rated ok or info by the add-on | resolved | `resolved`; none for an accepted one |
+| state `none` (cannot be judged now) | as it was | none |
+| `accepted_until` in the future | accepted | none |
+| acceptance ended, the finding still there | open | `expired` ("acceptance ended") |
+| missing, the list is complete, the check that names the item and the item are in time, the answer left no items out | resolved | `resolved` ("no longer found by a complete check"); none for an accepted one |
+| missing, anything else (a check `partial` or `failed`, a list the add-on calls incomplete, a finding left out of it, out of date, items left out, status unreadable, exit 77) | as it was (unconfirmed) | none |
+| resolved before, here again | open | `again` |
+
+Resolved findings are kept for 30 days, so that one coming back is told as `again`; after that it
+is new. The hour against flapping holds for findings as for items (`ok>danger`, `danger>ok`,
+`accepted>danger`). The memory holds at most 2000 keys; beyond that it keeps what was told as a
+problem first, then accepted findings, then the rest, the newest first.
+
+The item of such findings keeps its own key, but only for what its findings do not explain: its
+level counts when no finding it lists, or remembers as open or accepted, is as severe (a danger
+with an empty list that is not complete, for example); usually it is OK and not stored. Its
+entry has `"findings": true`. When an item that was compared per item (by 0.1.0, or while its
+add-on sent no findings) lists findings for the first time, findings no more severe than what
+was told for the item are taken as told without a message, so an update of the add-on or of Host
+Settings does not repeat what was told; a more severe one is told. An item that stops listing
+findings (an older add-on, a broken `findings` object) is compared per item again, starting from
+the most severe of the findings it told; when it is OK, they are resolved with it.
+
+`checks` serve only the rule for complete lists so far. Messages about coverage ("a check is no
+longer possible", "possible again") need the host's profile (which checks a host is expected to
+have) and come with it.
+
 ### Messages
 
 `{title, body, priority, tags}`, from `lib/hsnotify.py` (`message()`), in English or German:
@@ -142,7 +193,10 @@ Exit codes of `host-settings-notify.py`: 0 done (a message that could not be sen
 - Body: one block per change, the most severe first:
   `STATE · LABEL · TITLE (VALUE)` and, on the next line, the detail, "out of date since …"
   for an item past its `stale_after`, or why it is OK again ("no longer reported"). For the
-  add-on itself: "Status not readable" and the reason. An add-on that is no longer installed:
+  add-on itself: "Status not readable" and the reason. A finding:
+  `STATE · LABEL · FINDING TITLE` (`STATE, again`, `STATE, acceptance ended`, `STATE instead of
+  BEFORE`, `OK again`) and, on the next line, the title of its item (with "out of date since …",
+  or ": no longer found by a complete check" when it is resolved that way). An add-on that is no longer installed:
   `No longer checked · LABEL · the add-on is no longer installed` and how many of the findings
   it reported can no longer be checked. At most 20
   blocks and 3800 bytes (ntfy turns longer messages into attachments), then "and N more"; the
@@ -205,7 +259,9 @@ found out by reading with it.
 {
   "format": 1,
   "baseline_at": "2026-10-19T18:00:00Z",
-  "sent": {"cronjobs#failed": {"level": "danger", "at": 1760900000, "last": {"ok>danger": 1760900000}, "label": "Cron Jobs", "title": "Failed runs"}},
+  "sent": {"cronjobs#failed": {"level": "danger", "at": 1760900000, "last": {"ok>danger": 1760900000}, "label": "Cron Jobs", "title": "Failed runs"},
+           "security#exposure/port.6379-tcp": {"level": "danger", "status": "open", "at": 1760900000, "last": {"ok>danger": 1760900000},
+                                               "label": "Security Monitor", "title": "6379/tcp redis", "item": "Reachable from the internet"}},
   "seen": {"cronjobs": {"label": "Cron Jobs", "kind": "ok", "reason": null, "code": null, "state": "danger", "version": "2.8.1", "summary": "…",
                         "items": [{"id": "failed", "title": "Failed runs", "state": "danger", "value": "2", "detail": null, "link": null, "stale": false}]}},
   "run": {"at": "…", "took_ms": 812, "addons": 4, "bad_lines": []},
@@ -214,7 +270,9 @@ found out by reading with it.
 }
 ```
 
-A file of another `format` is started anew.
+A file of another `format` is started anew (and the next run sends a summary again). The keys
+of findings came without a new `format`: a file of 0.1.0 holds only keys of add-ons and items,
+which are read as before (see "Findings" above).
 
 ## `status.json` and `host-settings.py status` (status contract)
 
@@ -247,12 +305,16 @@ answer against Status Board's rules (`hslib.validate_status`).
 ## Tests
 
 - `test/notify_test.py`: every answer in `test/fixtures/board/status` with the expectations of the
-  board's own `test/status.test.js`, its manifests; reading an add-on (trust, exit codes); changes,
-  flapping, unreadable add-ons, removed ones; the texts of messages; ntfy and SMTP with
-  stand-ins; every step of "Check connection" against recorded answers of a closed and an open
-  server.
+  board's own `test/status.test.js` and the board's tests of the optional parts, its manifests;
+  reading an add-on (trust, exit codes); changes, flapping, unreadable add-ons, removed ones;
+  findings as sequences of answers (a second finding while the item is a danger, the same answer
+  in the other language or order, lists that cannot say a finding is gone, resolved, again,
+  accepted and ended, thirty at once, the memory of 0.1.0); the texts of messages; ntfy and SMTP
+  with stand-ins; every step of "Check connection" against recorded answers of a closed and an
+  open server.
 - `test/run_test.py`: whole runs of `host-settings-notify.py` with stand-ins for the add-ons, the
-  network, SMTP and the clock; the own status against the board's rules.
+  network, SMTP and the clock (also with a `last.json` of 0.1.0); the own status against the
+  board's rules.
 - `test/helper_test.py`: the verbs of `host-settings.py`.
 - `test/page.test.js`, `test/files.test.js`, `test/i18n.test.js`: the page under jsdom, its files,
   its texts.
@@ -271,5 +333,6 @@ answer against Status Board's rules (`hslib.validate_status`).
 - Job `e2e` (`test/e2e/run.sh`): the package with its real units on the runner, ntfy in Docker with
   `auth-default-access: deny-all`, postfix for local mail, a stand-in add-on. It runs the three
   commands of the page on the ntfy server, "Check connection" against a closed and an open topic,
-  the first run with the summary through both channels, a change, a run without one, the status
-  verb as nobody, switching off, and looks for the token in every file and the journal.
+  the first run with the summary through both channels, a change, a run without one, a second
+  finding of an item that is a danger already (one message), the status verb as nobody,
+  switching off, and looks for the token in every file and the journal.

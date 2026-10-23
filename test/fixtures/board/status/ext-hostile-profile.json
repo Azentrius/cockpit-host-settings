@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "addon": "host-settings",
+  "label": "Host Settings",
+  "checked_at": "2026-10-19T18:50:00Z",
+  "state": "ok",
+  "features": [
+    "profile"
+  ],
+  "profile": {"roles": ["web", "Web", "web", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3, "db", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"], "expect": ["security", "security/exposure", "Security", "../etc", "constructor", "a/b/c"], "skip": [{"check": "update-gaps/cve", "reason": "off", "until": "2026-11-01T00:00:00Z"}, {"check": "update-gaps/cve"}, {"check": "x y"}, "string", {"check": "security/fail2ban", "reason": "<b>CrowdSec</b> instead"}], "set_at": "not a time"},
+  "items": [
+    {"id": "run", "state": "ok", "title": "Notifier"}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema": 2,
+  "addon": "security",
+  "label": "Security Monitor",
+  "checked_at": "2026-10-19T18:50:00Z",
+  "state": "ok",
+  "features": [
+    "checks",
+    "findings"
+  ],
+  "checks": [],
+  "items": []
+}

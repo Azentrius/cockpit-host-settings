@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "addon": "host-settings",
+  "label": "Host Settings",
+  "version": "0.2.0",
+  "checked_at": "2026-10-19T18:55:00Z",
+  "state": "ok",
+  "summary": "Messages go to ntfy.",
+  "features": [
+    "checks",
+    "profile"
+  ],
+  "checks": [
+    {
+      "id": "notify",
+      "state": "checked",
+      "title": "Notifications",
+      "item": "run",
+      "checked_at": "2026-10-19T18:55:00Z",
+      "stale_after": 900
+    }
+  ],
+  "profile": {
+    "roles": [
+      "web"
+    ],
+    "expect": [
+      "host-settings",
+      "update-gaps",
+      "security",
+      "cronjobs",
+      "image-updates"
+    ],
+    "skip": [
+      {
+        "check": "update-gaps/cve",
+        "reason": "network data off on purpose"
+      }
+    ],
+    "set_at": "2026-10-19T09:00:00Z"
+  },
+  "items": [
+    {
+      "id": "setup",
+      "state": "ok",
+      "title": "Channels",
+      "value": "1",
+      "detail": "ntfy",
+      "link": "#/notifications"
+    },
+    {
+      "id": "delivery",
+      "state": "ok",
+      "title": "Last message",
+      "detail": "delivered at 18:40",
+      "link": "#/notifications"
+    },
+    {
+      "id": "run",
+      "state": "ok",
+      "title": "Notifier",
+      "detail": "runs every 5 minutes",
+      "checked_at": "2026-10-19T18:55:00Z",
+      "stale_after": 900
+    }
+  ]
+}

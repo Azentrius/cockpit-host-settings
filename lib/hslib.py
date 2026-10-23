@@ -9,8 +9,11 @@ no side effects on import; nothing here runs a command or uses the network.
   Status Board reads it (cockpit-status-board, src/lib/status.js): every
   answer is checked, control, zero-width and bidirectional characters go,
   every text is cut to the board's limits, and an item past its stale_after
-  counts as a warning. test/notify_test.py holds these rules against the
-  board's own fixtures (test/fixtures/board, tools/board-fixtures.sha256).
+  counts as a warning. The optional parts (features, checks, findings, a
+  host's profile) are read as validateExtension() reads them, and an item is
+  never better than its open findings (itemState()). test/notify_test.py
+  holds these rules against the board's own fixtures (test/fixtures/board,
+  tools/board-fixtures.sha256).
 - The settings file /etc/cockpit-host-settings/notify.conf.
 """
 
@@ -142,16 +145,191 @@ def validate_item(raw):
         "title": title,
         "value": clean_text(value, LIMITS["value"]),
         "detail": clean_text(raw.get("detail"), LIMITS["detail"]),
-        "link": link if isinstance(link, str) and LINK_RE.fullmatch(link) else None,
+        "link": _link_of(link),
         "checked_at": parse_time(raw.get("checked_at")),
-        "stale_after": int(stale) if _is_int(stale) and 0 < stale <= MAX_STALE_AFTER else None,
+        "stale_after": _stale_after_of(stale),
+        "findings": None,
     }
+
+
+def _link_of(v):
+    return v if isinstance(v, str) and LINK_RE.fullmatch(v) else None
+
+
+def _stale_after_of(v):
+    return int(v) if _is_int(v) and 0 < v <= MAX_STALE_AFTER else None
+
+
+# ---------------------------------------------------------------------------
+# The optional parts of version 1: checks, findings, a host's profile (as validateExtension of
+# the board). Only what an add-on declares in `features` is read; what breaks the rules is left
+# out and counted, it never makes the answer unreadable.
+
+FEATURES = ("checks", "findings", "profile")
+CHECK_STATES = ("checked", "partial", "failed", "unconfigured", "noaccess", "unsupported", "notapplicable")
+# A finding's id: the add-on's rule and the resource ("port.5432-tcp"), never a text, a count or
+# a time, so it stays the same in every language and order.
+FID_RE = re.compile(r"[a-z0-9][a-z0-9._:-]{0,63}")
+EXPECT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}(?:/[a-z0-9-]{1,40})?")
+ROLE_RE = re.compile(r"[a-z0-9-]{1,40}")
+EXPOSURES = ("internet", "restricted", "internal", "local")
+FIXES = ("available", "none", "unknown")
+MAX_CHECKS = 50
+MAX_FINDINGS = 100                 # per answer, over all its items
+MAX_ROLES = 10
+MAX_EXPECT = 100
+MAX_SKIP = 50
+MAX_ACCEPT = 90 * 86400            # an acceptance counts for at most 90 days after the check
+MAX_TOTAL = 1000000
+
+
+def validate_check(raw, item_ids):
+    """One check of `checks`, or None. item: the id of the item that shows its result, kept only
+    when the answer has that item."""
+    if not isinstance(raw, dict):
+        return None
+    cid = raw.get("id")
+    if not isinstance(cid, str) or not ITEM_ID_RE.fullmatch(cid):
+        return None
+    state = raw.get("state")
+    if not isinstance(state, str) or state not in CHECK_STATES:
+        return None
+    title = clean_text(raw.get("title"), LIMITS["title"])
+    if not title:
+        return None
+    item = raw.get("item")
+    return {
+        "id": cid,
+        "state": state,
+        "title": title,
+        "item": item if isinstance(item, str) and item in item_ids else None,
+        "checked_at": parse_time(raw.get("checked_at")),
+        "stale_after": _stale_after_of(raw.get("stale_after")),
+        "reason": clean_text(raw.get("reason"), LIMITS["detail"]),
+        "link": _link_of(raw.get("link")),
+    }
+
+
+def validate_finding(raw, ref):
+    """One finding of an item, or None. ref: the time of its check (seconds), which an
+    acceptance may not run more than MAX_ACCEPT beyond; without it no acceptance counts."""
+    if not isinstance(raw, dict):
+        return None
+    fid = raw.get("fid")
+    if not isinstance(fid, str) or not FID_RE.fullmatch(fid):
+        return None
+    if not is_state(raw.get("state")):
+        return None
+    title = clean_text(raw.get("title"), LIMITS["title"])
+    if not title:
+        return None
+    until = parse_time(raw.get("accepted_until"))
+    exposure, fix = raw.get("exposure"), raw.get("fix")
+    return {
+        "fid": fid,
+        "state": raw["state"],
+        "title": title,
+        "since": parse_time(raw.get("since")),
+        "exposure": exposure if isinstance(exposure, str) and exposure in EXPOSURES else None,
+        "fix": fix if isinstance(fix, str) and fix in FIXES else None,
+        "exploited": "known" if raw.get("exploited") == "known" else None,
+        "accepted_until": until if until is not None and ref is not None and until <= ref + MAX_ACCEPT else None,
+        "link": _link_of(raw.get("link")),
+    }
+
+
+def validate_profile(raw, drop):
+    """The profile of a host (only Host Settings sends one): {roles, expect, skip, set_at}, or
+    None. Entries that break the rules, come twice or go past the limits are left out and
+    counted in drop["n"]."""
+    if not isinstance(raw, dict):
+        return None
+
+    def strings(v, pattern, limit):
+        every = v if isinstance(v, list) else []
+        kept = list(dict.fromkeys(x for x in every if isinstance(x, str) and pattern.fullmatch(x)))[:limit]
+        drop["n"] += len(every) - len(kept)
+        return kept
+
+    skip, seen = [], set()
+    raw_skip = raw.get("skip") if isinstance(raw.get("skip"), list) else []
+    for s in raw_skip:
+        check = s.get("check") if isinstance(s, dict) else None
+        if len(skip) >= MAX_SKIP or not isinstance(check, str) or not EXPECT_RE.fullmatch(check) or check in seen:
+            continue
+        seen.add(check)
+        skip.append({"check": check, "reason": clean_text(s.get("reason"), LIMITS["detail"]),
+                     "until": parse_time(s.get("until"))})
+    drop["n"] += len(raw_skip) - len(skip)
+    return {"roles": strings(raw.get("roles"), ROLE_RE, MAX_ROLES),
+            "expect": strings(raw.get("expect"), EXPECT_RE, MAX_EXPECT), "skip": skip,
+            "set_at": parse_time(raw.get("set_at"))}
+
+
+def validate_extension(data, status, raws):
+    """The optional parts of a valid answer, set on status: features, checks, profile,
+    ext_dropped, and each item's findings ({complete, total, list} or None). raws are the
+    answer's items in the order of status["items"]."""
+    declared = data.get("features")
+    features = [f for f in FEATURES if f in declared] if isinstance(declared, list) else []
+    drop = {"n": 0}
+    checks = None
+    if "checks" in features:
+        if isinstance(data.get("checks"), list):
+            checks, ids = [], set()
+            item_ids = {i["id"] for i in status["items"]}
+            for raw in data["checks"]:
+                c = validate_check(raw, item_ids) if len(checks) < MAX_CHECKS else None
+                if not c or c["id"] in ids:
+                    drop["n"] += 1
+                    continue
+                ids.add(c["id"])
+                checks.append(c)
+        else:
+            drop["n"] += 1
+    if "findings" in features:
+        # complete only where a check of state "checked" shows the item's result
+        owner = {c["item"]: c for c in (checks or []) if c["item"] is not None}
+        fids, listed = set(), 0
+        for item, raw_item in zip(status["items"], raws):
+            if "findings" not in raw_item:
+                continue
+            raw = raw_item["findings"]
+            if not isinstance(raw, dict) or not isinstance(raw.get("complete"), bool) or \
+                    not isinstance(raw.get("list"), list):
+                drop["n"] += 1
+                continue
+            ref = item["checked_at"] if item["checked_at"] is not None else status["checked_at"]
+            found, complete = [], raw["complete"]
+            for r in raw["list"]:
+                f = validate_finding(r, ref) if listed < MAX_FINDINGS else None
+                if not f or f["fid"] in fids:
+                    drop["n"] += 1
+                    complete = False
+                    continue
+                fids.add(f["fid"])
+                found.append(f)
+                listed += 1
+            check = owner.get(item["id"])
+            if not check or check["state"] != "checked":
+                complete = False
+            total = raw.get("total")
+            total = int(total) if _is_int(total) and len(found) <= total <= MAX_TOTAL else len(found)
+            item["findings"] = {"complete": complete, "total": total, "list": found}
+    profile = None
+    if "profile" in features and data.get("addon") == "host-settings":
+        profile = validate_profile(data.get("profile"), drop)
+        if profile is None:
+            drop["n"] += 1
+    status.update(features=features, checks=checks, profile=profile, ext_dropped=drop["n"])
+    return status
 
 
 def validate_status(output, pkg=None):
     """The output of `status --lang xx` of the package pkg (text): (True, status) with every
     field checked and cut, or (False, (reason, detail)). Unknown fields are ignored; an item
-    that breaks the rules is left out (status["dropped"] counts them)."""
+    that breaks the rules is left out (status["dropped"] counts them), and so is what breaks
+    the rules of the optional parts (status["ext_dropped"])."""
     if not isinstance(output, str):
         return False, ("not-text", None)
     if len(output) > MAX_OUTPUT:
@@ -179,7 +357,7 @@ def validate_status(output, pkg=None):
         return False, ("state", None)
     if not isinstance(data.get("items"), list):
         return False, ("items", None)
-    items, seen, dropped = [], set(), 0
+    items, raws, seen, dropped = [], [], set(), 0
     for raw in data["items"]:
         item = validate_item(raw) if len(items) < MAX_ITEMS else None
         if not item or item["id"] in seen:
@@ -187,7 +365,8 @@ def validate_status(output, pkg=None):
             continue
         seen.add(item["id"])
         items.append(item)
-    return True, {
+        raws.append(raw)
+    return True, validate_extension(data, {
         "addon": addon,
         "label": clean_text(data.get("label"), LIMITS["label"]),
         "version": clean_text(data.get("version"), LIMITS["version"]),
@@ -196,18 +375,37 @@ def validate_status(output, pkg=None):
         "summary": clean_text(data.get("summary"), LIMITS["summary"]),
         "items": items,
         "dropped": dropped,
-    }
+    }, raws)
+
+
+def accepted(finding, now):
+    """Whether a finding is accepted at the time now: its acceptance counts (validate_finding)
+    and has not ended. It ends on its day."""
+    return finding["accepted_until"] is not None and finding["accepted_until"] > now
+
+
+def item_state(item, now):
+    """An item's state at the time now, never better than its open findings: those not
+    accepted, and those whose acceptance has ended (the board's itemState())."""
+    state = item["state"]
+    for f in (item.get("findings") or {}).get("list", ()):
+        if not accepted(f, now):
+            state = worse(state, f["state"])
+    return state
 
 
 def evaluate(status, now):
     """What a valid status means at the time now (seconds), as the board's evaluate():
     state (never better than the items, at least warning when an item is out of date),
     stale_since, by_age, key (the most important item) and items (each with the state it
-    has at that time and stale_at)."""
+    has at that time and stale_at). An item with findings is never better than its open
+    ones (item_state)."""
     stale_since = None
     ranked = []
+    reported = status["state"]
     for index, item in enumerate(status["items"]):
-        state, stale_at = item["state"], None
+        state, stale_at = item_state(item, now), None
+        reported = worse(reported, state)
         if item["checked_at"] is not None and item["stale_after"] is not None:
             at = item["checked_at"] + item["stale_after"]
             if now > at:
@@ -215,9 +413,6 @@ def evaluate(status, now):
                 stale_since = at if stale_since is None else min(stale_since, at)
                 state = worse(state, "warning")
         ranked.append((item, index, state, stale_at))
-    reported = status["state"]
-    for item in status["items"]:
-        reported = worse(reported, item["state"])
     state = reported if stale_since is None else worse(reported, "warning")
     top = sorted(ranked, key=lambda r: (-rank(r[2]), 0 if r[0]["value"] else 1, r[1]))
     key = dict(top[0][0], state=top[0][2], stale_at=top[0][3]) if top else None

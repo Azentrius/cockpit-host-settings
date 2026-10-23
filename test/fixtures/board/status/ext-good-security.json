@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "addon": "security",
+  "label": "Security Monitor",
+  "version": "0.4.0",
+  "checked_at": "2026-10-19T18:50:00Z",
+  "state": "danger",
+  "summary": "Findings in 1 area: Reachable from the internet.",
+  "features": [
+    "checks",
+    "findings"
+  ],
+  "checks": [
+    {
+      "id": "exposure",
+      "state": "checked",
+      "title": "Reachable from the internet",
+      "item": "exposure",
+      "checked_at": "2026-10-19T18:50:00Z",
+      "stale_after": 3600
+    },
+    {
+      "id": "containers",
+      "state": "partial",
+      "title": "Container hardening",
+      "item": "containers",
+      "reason": "Docker could not be asked",
+      "checked_at": "2026-10-19T18:50:00Z",
+      "stale_after": 3600
+    },
+    {
+      "id": "fail2ban",
+      "state": "notapplicable",
+      "title": "fail2ban",
+      "reason": "fail2ban is not installed"
+    }
+  ],
+  "items": [
+    {
+      "id": "exposure",
+      "state": "danger",
+      "title": "Reachable from the internet",
+      "value": "2",
+      "detail": "5432/tcp postgres, 6379/tcp redis",
+      "link": "#/exposure",
+      "findings": {
+        "complete": true,
+        "total": 2,
+        "list": [
+          {
+            "fid": "port.5432-tcp",
+            "state": "danger",
+            "title": "5432/tcp postgres",
+            "since": "2026-10-19T18:30:00Z",
+            "exposure": "internet",
+            "fix": "available",
+            "link": "#/exposure/5432-tcp"
+          },
+          {
+            "fid": "port.6379-tcp",
+            "state": "danger",
+            "title": "6379/tcp redis",
+            "since": "2026-10-17T07:30:00Z",
+            "exposure": "internet",
+            "fix": "available",
+            "link": "#/exposure/6379-tcp"
+          }
+        ]
+      },
+      "checked_at": "2026-10-19T18:50:00Z",
+      "stale_after": 3600
+    },
+    {
+      "id": "containers",
+      "state": "none",
+      "title": "Container hardening",
+      "detail": "not assessable: Docker could not be asked",
+      "link": "#/containers",
+      "findings": {
+        "complete": true,
+        "list": []
+      },
+      "checked_at": "2026-10-19T18:50:00Z",
+      "stale_after": 3600
+    },
+    {
+      "id": "scan",
+      "state": "ok",
+      "title": "Check",
+      "detail": "checked every 15 minutes when set up",
+      "checked_at": "2026-10-19T18:50:00Z",
+      "stale_after": 3600
+    }
+  ]
+}

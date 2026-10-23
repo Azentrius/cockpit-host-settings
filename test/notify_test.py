@@ -89,6 +89,18 @@ EXPECT = {
     "hostile-schema-string.json": dict(pkg="cronjobs", reason="schema", detail="1"),
     "hostile-types.json": dict(state="info", reported="info", items=4, dropped=6, key="u"),
     "hostile-long.json": dict(state="info", reported="info", items=hslib.MAX_ITEMS, dropped=31, key="item-0"),
+
+    # the optional parts of version 1: checks, findings, a host's profile (the tests OptionalParts)
+    "ext-good-security.json": dict(state="danger", reported="danger", items=3, key="exposure", value="2",
+                                   link="#/exposure"),
+    # says ok: one acceptance has ended, so that finding counts again
+    "ext-good-update-gaps.json": dict(state="warning", reported="ok", items=2, key="restart", value=None,
+                                      link="#/restart"),
+    "ext-good-host-settings.json": dict(state="ok", reported="ok", items=3, key="setup", value="1"),
+    "ext-broken-shapes.json": dict(state="warning", reported="warning", items=3, key="y", value="1"),
+    "ext-hostile.json": dict(state="danger", reported="warning", items=2, key="exposure", value="120"),
+    "ext-hostile-profile.json": dict(state="ok", reported="ok", items=1, key="run"),
+    "ext-incompatible-schema-2.json": dict(pkg="security", reason="schema", detail="2"),
 }
 INVISIBLE = [chr(c) for c in list(range(0, 0x20)) + [0x7F] + list(range(0x200B, 0x2010)) + list(range(0x202A, 0x202F)) +
              list(range(0x2066, 0x206A)) + [0xFEFF]]
@@ -181,6 +193,130 @@ class BoardFixtures(unittest.TestCase):
         with open(os.path.join(HERE, "..", "plugin", "manifest.json"), encoding="utf-8") as f:
             own = json.load(f)
         self.assertEqual(hslib.status_entry(own), ("command", "/usr/lib/cockpit-host-settings/host-settings.py"))
+
+
+def ext(name):
+    text = board("status/" + name)
+    return hslib.validate_status(text, json.loads(text)["addon"])[1]
+
+
+ts = hslib.parse_time
+
+
+class OptionalParts(unittest.TestCase):
+    """The board's tests "optional parts" (test/status.test.js): checks, findings, a host's profile."""
+
+    def test_an_answer_without_them_has_none(self):
+        st = ext("real-security.json")
+        self.assertEqual([st["features"], st["checks"], st["profile"], st["ext_dropped"]], [[], None, None, 0])
+        self.assertTrue(all(i["findings"] is None for i in st["items"]))
+        self.assertEqual([hslib.item_state(i, NOW) for i in st["items"]], [i["state"] for i in st["items"]])
+
+    def test_checks_and_findings_of_the_security_monitor(self):
+        st = ext("ext-good-security.json")
+        self.assertEqual(st["features"], ["checks", "findings"])
+        self.assertEqual([[c["id"], c["state"], c["item"]] for c in st["checks"]],
+                         [["exposure", "checked", "exposure"], ["containers", "partial", "containers"],
+                          ["fail2ban", "notapplicable", None]])
+        self.assertEqual([st["checks"][0]["checked_at"], st["checks"][0]["stale_after"], st["checks"][2]["reason"]],
+                         [ts("2026-10-19T18:50:00Z"), 3600, "fail2ban is not installed"])
+        exp = st["items"][0]["findings"]
+        self.assertEqual([exp["complete"], exp["total"]], [True, 2])
+        self.assertEqual([[f["fid"], f["state"], f["exposure"], f["fix"], f["exploited"], f["accepted_until"], f["link"]]
+                          for f in exp["list"]],
+                         [["port.5432-tcp", "danger", "internet", "available", None, None, "#/exposure/5432-tcp"],
+                          ["port.6379-tcp", "danger", "internet", "available", None, None, "#/exposure/6379-tcp"]])
+        self.assertEqual(exp["list"][1]["since"], ts("2026-10-17T07:30:00Z"))
+        self.assertEqual(st["items"][1]["findings"], {"complete": False, "total": 0, "list": []},
+                         "a list is complete only where its check is checked")
+        self.assertIsNone(st["items"][2]["findings"])
+        self.assertEqual(st["ext_dropped"], 0)
+
+    def test_an_acceptance_that_runs_and_one_that_has_ended(self):
+        st = ext("ext-good-update-gaps.json")
+        self.assertEqual(st["items"][0]["findings"]["list"][0]["accepted_until"], ts("2026-10-30T00:00:00Z"))
+        self.assertEqual([hslib.item_state(i, NOW) for i in st["items"]], ["ok", "warning"])
+        self.assertEqual(hslib.item_state(st["items"][0], ts("2026-10-30T00:00:00Z")), "warning",
+                         "on the day it ends the finding counts again")
+        ev = hslib.evaluate(st, NOW)
+        self.assertEqual([[i["id"], i["state"]] for i in ev["items"]], [["held", "ok"], ["restart", "warning"]])
+        self.assertFalse(ev["by_age"])
+        self.assertEqual([c["state"] for c in st["checks"]], ["checked", "checked", "unconfigured"])
+
+    def test_a_hosts_profile_only_from_host_settings_and_only_when_declared(self):
+        st = ext("ext-good-host-settings.json")
+        self.assertEqual(st["profile"], {
+            "roles": ["web"], "expect": ["host-settings", "update-gaps", "security", "cronjobs", "image-updates"],
+            "skip": [{"check": "update-gaps/cve", "reason": "network data off on purpose", "until": None}],
+            "set_at": ts("2026-10-19T09:00:00Z")})
+        self.assertEqual(st["checks"][0]["item"], "run")
+        doc = json.loads(board("status/ext-good-host-settings.json"))
+        self.assertIsNone(hslib.validate_status(json.dumps(dict(doc, addon="security")), "security")[1]["profile"],
+                          "from another add-on")
+        self.assertIsNone(hslib.validate_status(json.dumps(dict(doc, features=["checks"])), "host-settings")[1]["profile"],
+                          "without the feature")
+
+    def test_only_what_features_declares_is_read(self):
+        doc = json.loads(board("status/ext-good-security.json"))
+        without = {k: v for k, v in doc.items() if k != "features"}
+        for d in [without] + [dict(doc, features=f) for f in (None, "checks", {"checks": True}, [], ["Checks"])]:
+            st = hslib.validate_status(json.dumps(d), "security")[1]
+            self.assertEqual([st["features"], st["checks"], st["items"][0]["findings"], st["ext_dropped"]],
+                             [[], None, None, 0], d.get("features"))
+        checks = hslib.validate_status(json.dumps(dict(doc, features=["checks"])), "security")[1]
+        self.assertEqual([len(checks["checks"]), checks["items"][0]["findings"]], [3, None])
+        findings = hslib.validate_status(json.dumps(dict(doc, features=["findings"])), "security")[1]
+        self.assertEqual([findings["checks"], len(findings["items"][0]["findings"]["list"]),
+                          findings["items"][0]["findings"]["complete"]], [None, 2, False],
+                         "without checks no list is complete")
+
+    def test_shapes_the_board_cannot_use_are_left_out_and_counted(self):
+        st = ext("ext-broken-shapes.json")
+        self.assertEqual([st["checks"], st["profile"], st["ext_dropped"]], [None, None, 4])
+        self.assertTrue(all(i["findings"] is None for i in st["items"]))
+
+    def test_hostile_checks_and_findings(self):
+        st = ext("ext-hostile.json")
+        self.assertEqual(st["features"], ["checks", "findings", "profile"])
+        self.assertEqual(len(st["checks"]), hslib.MAX_CHECKS)
+        self.assertEqual([[c["id"], c["state"], c["item"], c["link"]] for c in st["checks"][:3]],
+                         [["constructor", "checked", "constructor", None], ["exposure", "partial", "exposure", None],
+                          ["w", "checked", None, None]])
+        c, e = [i["findings"] for i in st["items"]]
+        self.assertEqual([f["fid"] for f in c["list"]], ["constructor", "accept-far", "odd"])
+        self.assertEqual([c["complete"], c["total"]], [False, 3], "a list with entries left out is not complete")
+        self.assertIsNone(c["list"][1]["accepted_until"], "an acceptance more than 90 days after the check does not count")
+        odd = c["list"][2]
+        self.assertEqual([odd["title"], odd["exposure"], odd["fix"], odd["exploited"], odd["since"], odd["link"]],
+                         ["Oddddo", None, None, None, None, None])
+        self.assertEqual(len(c["list"]) + len(e["list"]), hslib.MAX_FINDINGS)
+        self.assertEqual([e["complete"], e["total"]], [False, 120])
+        self.assertIsNone(st["profile"], "a profile from another add-on than Host Settings is not read")
+        # checks: 5 broken or twice, 3 past 50; findings: 4 broken or twice, 23 past 100
+        self.assertEqual(st["ext_dropped"], 35)
+        self.assertEqual(hslib.item_state(st["items"][0], NOW), "danger", "the acceptance ten years ahead hides nothing")
+
+    def test_a_hostile_profile(self):
+        st = ext("ext-hostile-profile.json")
+        self.assertEqual(st["profile"]["roles"], ["web", "db", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8"])
+        self.assertEqual(st["profile"]["expect"], ["security", "security/exposure", "constructor"])
+        self.assertEqual([[s["check"], s["reason"], s["until"]] for s in st["profile"]["skip"]],
+                         [["update-gaps/cve", "off", ts("2026-11-01T00:00:00Z")],
+                          ["security/fail2ban", "<b>CrowdSec</b> instead", None]])
+        self.assertIsNone(st["profile"]["set_at"])
+        self.assertEqual(st["ext_dropped"], 12)
+
+    def test_every_text_is_cleaned_and_cut(self):
+        for name in ("ext-good-security.json", "ext-good-update-gaps.json", "ext-good-host-settings.json",
+                     "ext-hostile.json", "ext-hostile-profile.json"):
+            st = ext(name)
+            texts = [x for c in (st["checks"] or []) for x in (c["title"], c["reason"])] + \
+                [f["title"] for i in st["items"] if i["findings"] for f in i["findings"]["list"]] + \
+                [s["reason"] for s in (st["profile"] or {}).get("skip", [])]
+            for x in texts:
+                if x is not None:
+                    self.assertTrue(isinstance(x, str) and hslib.clean_text(x, 1000) == x and
+                                    len(x) <= hslib.LIMITS["detail"], (name, x))
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +588,336 @@ class Changes(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Findings: sequences of answers of a Security Monitor that lists the ports of its item
+# `exposure`, read through read_addon() as the notifier reads them
+
+SEC = "/usr/lib/cockpit-security/security-status"
+SERVICES = {5432: "postgres", 6379: "redis", 9200: "elasticsearch", 3306: "mysql"}
+
+
+def port(n, state="danger", lang="en", **kw):
+    name = SERVICES.get(n, "service")
+    return dict({"fid": f"port.{n}-tcp", "state": state, "exposure": "internet",
+                 "title": f"{n}/tcp {name}" if lang == "en" else f"{n}/tcp {name}, offen"}, **kw)
+
+
+def fkey(n):
+    return f"security#exposure/port.{n}-tcp"
+
+
+def sec_doc(findings, at, lang="en", check="checked", check_at=None, complete=True, state=None, items=()):
+    """An answer with the item `exposure` and its findings, a check of it, and more items."""
+    worst = state or hslib.STATES[max([hslib.rank(f["state"]) for f in findings if isinstance(f, dict) and
+                                       hslib.is_state(f.get("state"))] + [1])]
+    exposure = {"id": "exposure", "state": worst, "value": str(len(findings)), "checked_at": at, "stale_after": 3600,
+                "title": "Reachable from the internet" if lang == "en" else "Aus dem Internet erreichbar",
+                "findings": {"complete": complete, "total": len(findings), "list": findings}}
+    every = [exposure] + [dict({"checked_at": at, "stale_after": 3600}, **i) for i in items]
+    return json.dumps({"schema": 1, "addon": "security", "label": "Security Monitor", "version": "0.4.0",
+                       "checked_at": at, "summary": "s", "features": ["checks", "findings"],
+                       "state": hslib.STATES[max(hslib.rank(i["state"]) if hslib.is_state(i.get("state")) else 0
+                                                 for i in every)],
+                       "checks": [{"id": "exposure", "state": check, "title": "Exposure", "item": "exposure",
+                                   "checked_at": check_at or at, "stale_after": 3600}],
+                       "items": every})
+
+
+def read_sec(result, now):
+    return hsnotify.read_addon("security", "Security Monitor", ("command", SEC), "en", now, Runner({SEC: result}),
+                               lstat_of({SEC: (0o755, 0)}))
+
+
+class Timeline:
+    """changes() run after run, the memory carried from one to the next: each step is an answer
+    of the Security Monitor (or another result of its status verb) some seconds later."""
+
+    def __init__(self, sent=None, now=NOW):
+        self.sent, self.now = dict(sent or {}), now
+
+    def copy(self):
+        return Timeline(self.sent, self.now)
+
+    def snapshot(self, findings=None, result=None, age=60, also=None, **kw):
+        result = result or ok(sec_doc(findings, hslib.iso(self.now - age), **kw))
+        return dict({"security": read_sec(result, self.now)}, **(also or {}))
+
+    def step(self, findings=None, after=300, **kw):
+        self.now += after
+        events, self.sent = hsnotify.changes(self.sent, self.snapshot(findings, **kw), self.now)
+        return events
+
+
+def told(events):
+    return [(e["key"], e["kind"], e["from"], e["to"]) for e in events]
+
+
+class Findings(unittest.TestCase):
+    def test_a_second_dangerous_port_is_told_while_the_item_is_already_danger(self):
+        tl = Timeline()
+        self.assertEqual(told(tl.step([port(5432)])), [(fkey(5432), "worse", "ok", "danger")])
+        events = tl.step([port(5432), port(6379)])
+        self.assertEqual(told(events), [(fkey(6379), "worse", "ok", "danger")])
+        msg = hsnotify.message("en", "web1", events=events)
+        self.assertEqual(msg["title"], "web1: Security Monitor, 6379/tcp redis")
+        self.assertEqual(msg["body"], "Danger · Security Monitor · 6379/tcp redis\nReachable from the internet\n\n"
+                                      "Host Settings on web1")
+        self.assertEqual((msg["priority"], msg["tags"]), (4, ["rotating_light"]))
+        self.assertEqual(hsnotify.message("de", "web1", events=events)["body"].splitlines()[0],
+                         "Gefahr · Security Monitor · 6379/tcp redis")
+        self.assertEqual((tl.sent[fkey(6379)]["status"], tl.sent[fkey(6379)]["level"]), ("open", "danger"))
+        self.assertNotIn("security#exposure", tl.sent, "the item told nothing of its own: its findings explain it")
+        # the same answer again, in German, in another order: nothing new
+        self.assertEqual(tl.step([port(5432), port(6379)]), [])
+        self.assertEqual(tl.step([port(5432, lang="de"), port(6379, lang="de")], lang="de"), [])
+        self.assertEqual(tl.step([port(6379), port(5432)]), [])
+
+    def test_a_list_that_cannot_say_a_finding_is_gone_resolves_nothing(self):
+        base = Timeline()
+        base.step([port(5432), port(6379)])
+        cases = {
+            "the check ran in part": dict(findings=[port(5432)], check="partial"),
+            "the check failed": dict(findings=[port(5432)], check="failed"),
+            "the add-on says the list is not complete": dict(findings=[port(5432)], complete=False),
+            "a finding was left out (broken)": dict(findings=[port(5432), {"fid": "port.6379-tcp", "state": "danger"}]),
+            "the answer left items out": dict(findings=[port(5432)], items=[{"id": "Not An Id", "state": "ok", "title": "X"}]),
+            "the item is out of date": dict(findings=[port(5432)], age=7200),
+            "the check is out of date": dict(findings=[port(5432)], check_at=hslib.iso(NOW - 7200)),
+            "the status is unreadable": dict(result=ok("{")),
+            "exit 77": dict(result=hsproc.Result(77)),
+            "the item cannot be judged": dict(findings=[], state="none", complete=False),
+        }
+        for name, kw in cases.items():
+            with self.subTest(name):
+                tl = base.copy()
+                events = tl.step(**kw)
+                self.assertEqual([e for e in events if e["kind"] == "resolved"], [])
+                self.assertEqual((tl.sent[fkey(6379)]["status"], tl.sent[fkey(6379)]["level"]), ("open", "danger"))
+        # exit 77 says nothing at all; an unreadable status only that it is unreadable
+        self.assertEqual(base.copy().step(result=hsproc.Result(77)), [])
+        self.assertEqual(told(base.copy().step(result=ok("{"))), [("security#", "worse", "ok", "warning")])
+
+    def test_a_complete_list_without_the_finding_resolves_it_and_its_return_is_told_again(self):
+        tl = Timeline()
+        tl.step([port(5432), port(6379)])
+        events = tl.step([port(5432)], after=hsnotify.FLAP)
+        self.assertEqual([(e["key"], e["kind"], e["from"], e["to"], e["why"]) for e in events],
+                         [(fkey(6379), "resolved", "danger", "ok", "fixed")])
+        msg = hsnotify.message("en", "h", events=events)
+        self.assertEqual(msg["body"].split("\n\n")[0], "OK again · Security Monitor · 6379/tcp redis\n"
+                                                        "Reachable from the internet: no longer found by a complete check")
+        self.assertEqual((msg["priority"], msg["tags"]), (2, ["white_check_mark"]))
+        self.assertEqual(hsnotify.message("de", "h", events=events)["body"].split("\n\n")[0],
+                         "Wieder in Ordnung · Security Monitor · 6379/tcp redis\n"
+                         "Reachable from the internet: bei einer vollständigen Prüfung nicht mehr gefunden")
+        self.assertEqual(tl.sent[fkey(6379)]["status"], "resolved")
+        self.assertEqual(tl.step([port(5432)]), [])
+        # it comes back
+        events = tl.step([port(5432), port(6379)], after=hsnotify.FLAP)
+        self.assertEqual(told(events), [(fkey(6379), "again", "ok", "danger")])
+        self.assertEqual(hsnotify.message("en", "h", events=events)["body"].split("\n\n")[0],
+                         "Danger, again · Security Monitor · 6379/tcp redis\nReachable from the internet")
+        self.assertEqual(hsnotify.message("de", "h", events=events)["body"].splitlines()[0],
+                         "Gefahr, wieder aufgetreten · Security Monitor · 6379/tcp redis")
+        self.assertEqual(tl.step([port(5432), port(6379)]), [])
+        # a resolved finding is remembered for 30 days; after that its return is a new finding
+        tl.step([port(5432)], after=hsnotify.FLAP)
+        self.assertEqual(tl.step([port(5432)], after=hsnotify.KEEP - 60), [])
+        self.assertIn(fkey(6379), tl.sent)
+        self.assertEqual(tl.step([port(5432)], after=60), [])
+        self.assertNotIn(fkey(6379), tl.sent)
+        self.assertEqual(told(tl.step([port(5432), port(6379)])), [(fkey(6379), "worse", "ok", "danger")])
+
+    def test_a_flapping_finding_is_told_once_an_hour(self):
+        tl = Timeline()
+        tl.step([port(5432)])
+        self.assertEqual([e["kind"] for e in tl.step([])], ["resolved"])
+        self.assertEqual(tl.step([port(5432)]), [], "the same change within the hour waits")
+        self.assertEqual(tl.sent[fkey(5432)]["status"], "resolved")
+        self.assertEqual([e["kind"] for e in tl.step([port(5432)], after=hsnotify.FLAP)], ["again"],
+                         "told after the hour, as it still holds")
+
+    def test_danger_to_warning_and_back(self):
+        tl = Timeline()
+        tl.step([port(5432)])
+        events = tl.step([port(5432, "warning")])
+        self.assertEqual(told(events), [(fkey(5432), "better", "danger", "warning")])
+        self.assertEqual(hsnotify.message("en", "h", events=events)["body"].splitlines()[0],
+                         "Warning instead of Danger · Security Monitor · 5432/tcp postgres")
+        self.assertEqual(told(tl.step([port(5432)])), [(fkey(5432), "worse", "warning", "danger")])
+        # a finding rated OK by the add-on (a port marked as expected) is OK again
+        self.assertEqual(told(tl.step([port(5432, "ok")])), [(fkey(5432), "resolved", "danger", "ok")])
+        # one it cannot judge keeps what was told
+        tl.step([port(5432)], after=hsnotify.FLAP)
+        self.assertEqual(tl.step([port(5432, "none")]), [])
+        self.assertEqual(tl.sent[fkey(5432)]["level"], "danger")
+
+    def test_accepted_findings_are_silent_until_the_acceptance_ends(self):
+        tl = Timeline()
+        tl.step([port(5432), port(6379)])
+        until = hslib.iso(tl.now + 7 * 86400)
+        self.assertEqual(tl.step([port(5432), port(6379, accepted_until=until)]), [])
+        self.assertEqual(tl.sent[fkey(6379)]["status"], "accepted")
+        self.assertEqual(tl.step([port(5432), port(6379, accepted_until=until)], after=86400), [])
+        # the acceptance ends while the finding is still there: told once
+        events = tl.step([port(5432), port(6379, accepted_until=until)], after=6 * 86400)
+        self.assertEqual(told(events), [(fkey(6379), "expired", "danger", "danger")])
+        self.assertEqual(hsnotify.message("en", "h", events=events)["body"].split("\n\n")[0],
+                         "Danger, acceptance ended · Security Monitor · 6379/tcp redis\nReachable from the internet")
+        self.assertEqual(hsnotify.message("de", "h", events=events)["body"].splitlines()[0],
+                         "Gefahr, Akzeptanz abgelaufen · Security Monitor · 6379/tcp redis")
+        self.assertEqual(tl.step([port(5432), port(6379, accepted_until=until)]), [])
+        self.assertEqual(tl.sent[fkey(6379)]["status"], "open")
+
+    def test_an_acceptance_the_item_leaves_out_of_its_state(self):
+        # As Update Gaps does: the item says ok while its only finding is accepted.
+        tl = Timeline()
+        until = hslib.iso(NOW + 86400)
+        self.assertEqual(tl.step([port(3306, "warning", accepted_until=until)], state="ok"), [],
+                         "seen accepted the first time: nothing")
+        self.assertEqual(tl.sent, {fkey(3306): tl.sent[fkey(3306)]})
+        self.assertEqual(tl.sent[fkey(3306)]["status"], "accepted")
+        # complete without it: gone, without a word (it was accepted)
+        self.assertEqual(tl.step([], after=3600), [])
+        self.assertEqual(tl.sent[fkey(3306)]["status"], "resolved")
+        # ended while still there (the item still says ok): one message, for the finding only
+        tl = Timeline()
+        tl.step([port(3306, "warning", accepted_until=until)], state="ok")
+        events = tl.step([port(3306, "warning", accepted_until=until)], after=86400, state="ok")
+        self.assertEqual(told(events), [(fkey(3306), "expired", "warning", "warning")])
+
+    def test_thirty_new_findings_come_as_one_message(self):
+        tl = Timeline()
+        tl.step([port(5432)])
+        events = tl.step([port(5432)] + [port(n) for n in range(10000, 10030)])
+        self.assertEqual(len(events), 30)
+        self.assertEqual({e["kind"] for e in events}, {"worse"})
+        msg = hsnotify.message("en", "h", events=events)
+        self.assertEqual(msg["title"], "h: 30 changes")
+        self.assertLessEqual(len(msg["body"].encode("utf-8")), hsnotify.BODY_MAX)
+        self.assertEqual(msg["body"].count("Danger · Security Monitor · "), hsnotify.MAX_LINES)
+        self.assertTrue(msg["body"].endswith("and 10 more\n\nHost Settings on h"), msg["body"][-80:])
+        self.assertEqual(tl.step([port(5432)] + [port(n) for n in range(10000, 10030)]), [])
+
+    def test_an_item_without_findings_next_to_one_with_findings(self):
+        def ssh(state):
+            return [{"id": "ssh", "state": state, "title": "SSH logins"}]
+        tl = Timeline()
+        self.assertEqual(told(tl.step([port(5432)], items=ssh("ok"))), [(fkey(5432), "worse", "ok", "danger")])
+        events = tl.step([port(5432), port(6379)], items=ssh("warning"))
+        self.assertEqual(told(events), [(fkey(6379), "worse", "ok", "danger"), ("security#ssh", "worse", "ok", "warning")])
+        self.assertEqual(hsnotify.message("en", "h", events=events)["body"].split("\n\n")[:2],
+                         ["Danger · Security Monitor · 6379/tcp redis\nReachable from the internet",
+                          "Warning · Security Monitor · SSH logins"])
+        self.assertEqual(tl.step([port(5432), port(6379)], items=ssh("none")), [], "state none keeps the level")
+        self.assertEqual(tl.sent["security#ssh"]["level"], "warning")
+        self.assertEqual(told(tl.step([port(5432), port(6379)], items=ssh("ok"))), [("security#ssh", "resolved", "warning", "ok")])
+
+    def test_an_item_level_its_findings_do_not_explain(self):
+        # danger with no finding listed (the list says it is not complete): the item itself is told
+        tl = Timeline()
+        events = tl.step([], state="danger", complete=False)
+        self.assertEqual(told(events), [("security#exposure", "worse", "ok", "danger")])
+        self.assertEqual(hsnotify._line("en", events[0]), "Danger · Security Monitor · Reachable from the internet (0)")
+        self.assertTrue(tl.sent["security#exposure"]["findings"])
+        # the list names it later: a new finding, told; the item's level is explained by it now
+        self.assertEqual(told(tl.step([port(5432)])), [(fkey(5432), "worse", "ok", "danger")])
+        self.assertNotEqual(tl.sent.get("security#exposure", {}).get("level"), "danger")
+        # resolved: the finding, not the item
+        self.assertEqual(told(tl.step([], after=hsnotify.FLAP)), [(fkey(5432), "resolved", "danger", "ok")])
+
+    def test_old_last_json_keys_keep_working(self):
+        # What 0.1.0 wrote: per add-on and item. The Security Monitor lists its ports from now on.
+        old = {"security#exposure": {"level": "danger", "at": NOW - 86400, "last": {"ok>danger": NOW - 86400},
+                                     "label": "Security Monitor", "title": "Reachable from the internet"},
+               "security#ssh": {"level": "warning", "at": NOW - 86400, "last": {}, "label": "Security Monitor",
+                                "title": "SSH logins"},
+               "cronjobs#failed": {"level": "warning", "at": NOW - 86400, "last": {"ok>warning": NOW - 86400},
+                                   "label": "Cron Jobs", "title": "Failed runs"}}
+        cron = {"cronjobs": addon("Cron Jobs", [{"id": "failed", "state": "warning", "title": "Failed runs"}])}
+        ssh = [{"id": "ssh", "state": "warning", "title": "SSH logins"}]
+        tl = Timeline(old)
+        self.assertEqual(tl.step([port(5432), port(6379)], items=ssh, also=cron), [],
+                         "the ports the item already told as danger are taken as told")
+        self.assertEqual({k: (e.get("status"), e["level"]) for k, e in tl.sent.items()},
+                         {fkey(5432): ("open", "danger"), fkey(6379): ("open", "danger"),
+                          "security#ssh": (None, "warning"), "cronjobs#failed": (None, "warning")})
+        # from now on finding by finding, and per item where there are no findings
+        self.assertEqual(told(tl.step([port(5432), port(6379), port(9200)], items=ssh, also=cron)),
+                         [(fkey(9200), "worse", "ok", "danger")])
+        cron["cronjobs"]["items"][0]["state"] = "ok"
+        self.assertEqual(told(tl.step([port(5432), port(6379), port(9200)], items=ssh, also=cron)),
+                         [("cronjobs#failed", "resolved", "warning", "ok")])
+        # an item told as a warning: a finding more severe than that is told
+        tl = Timeline({"security#exposure": dict(old["security#exposure"], level="warning")})
+        self.assertEqual(told(tl.step([port(3306, "warning"), port(5432)])), [(fkey(5432), "worse", "ok", "danger")])
+
+    def test_an_item_that_stops_listing_findings_is_compared_per_item_again(self):
+        def without_features(state, after):
+            doc = json.loads(sec_doc([port(5432), port(6379)], hslib.iso(tl.now + after - 60), state=state))
+            del doc["features"]
+            doc["state"] = state
+            return ok(json.dumps(doc))
+        tl = Timeline()
+        tl.step([port(5432), port(6379)])
+        self.assertEqual(tl.step(result=without_features("danger", 300)), [], "danger as its findings were")
+        self.assertEqual(tl.sent["security#exposure"]["level"], "danger")
+        self.assertEqual(tl.sent[fkey(6379)]["status"], "open")
+        events = tl.step(result=without_features("ok", hsnotify.FLAP), after=hsnotify.FLAP)
+        self.assertEqual(told(events), [("security#exposure", "resolved", "danger", "ok")])
+        self.assertEqual({tl.sent[fkey(n)]["status"] for n in (5432, 6379)}, {"resolved"}, "resolved with their item")
+        self.assertEqual(told(tl.step([port(6379)], after=hsnotify.FLAP)), [(fkey(6379), "again", "ok", "danger")])
+
+    def test_the_first_summary_lists_open_findings_instead_of_their_item(self):
+        until = hslib.iso(NOW + 86400)
+        snap = Timeline().snapshot([port(5432), port(6379, accepted_until=until)])
+        msg = hsnotify.message("en", "h", snapshot=snap, summary=True)
+        self.assertEqual(msg["body"].split("\n\n"), [
+            "Messages about the Azentrius add-ons of this host now come this way.", "Right now:",
+            "Danger · Security Monitor · 5432/tcp postgres\nReachable from the internet", "Host Settings on h"])
+        self.assertEqual(len(hsnotify.problems_of(snap)), 1)
+        base = hsnotify.baseline(snap, NOW)
+        self.assertEqual({k: (e.get("status"), e["level"]) for k, e in base.items()},
+                         {fkey(5432): ("open", "danger"), fkey(6379): ("accepted", "danger")})
+        events, _ = hsnotify.changes(base, snap, NOW + 300)
+        self.assertEqual(events, [])
+
+    def test_a_removed_addon_takes_its_findings_along(self):
+        tl = Timeline()
+        until = hslib.iso(NOW + 86400)
+        tl.step([port(5432), port(6379), port(3306, "warning", accepted_until=until)])
+        events, sent = hsnotify.changes(tl.sent, {}, tl.now + 300)
+        self.assertEqual([(e["key"], e["kind"], e["from"], e["open"]) for e in events], [("security#", "unchecked", "danger", 2)])
+        self.assertEqual(sent, {})
+
+    def test_the_boards_fixtures_through_the_notifier(self):
+        gaps = hsnotify.read_addon("update-gaps", None, ("command", SEC), "en", NOW,
+                                   Runner({SEC: ok(board("status/ext-good-update-gaps.json"))}), lstat_of({SEC: (0o755, 0)}))
+        events, sent = hsnotify.changes({}, {"update-gaps": gaps}, NOW)
+        self.assertEqual(told(events), [("update-gaps#restart/restart.kernel", "worse", "ok", "warning")],
+                         "the held package is accepted, the restart's acceptance has ended")
+        self.assertEqual(sent["update-gaps#held/held.postgresql-16"]["status"], "accepted")
+        sec = hsnotify.read_addon("security", None, ("command", SEC), "en", NOW,
+                                  Runner({SEC: ok(board("status/ext-good-security.json"))}), lstat_of({SEC: (0o755, 0)}))
+        self.assertEqual([i["findings"]["complete"] if i["findings"] else None for i in sec["items"]], [True, False, None])
+        events, _ = hsnotify.changes({}, {"security": sec}, NOW)
+        self.assertEqual([e["key"] for e in events], [fkey(5432), fkey(6379)])
+
+    def test_the_memory_is_bounded(self):
+        sent = {f"security#exposure/port.{n}-tcp": {"level": "ok", "status": "resolved", "at": NOW - n, "last": {},
+                                                    "label": "Security Monitor", "title": str(n)} for n in range(1, 2101)}
+        sent["cronjobs#failed"] = {"level": "warning", "at": NOW - 99999, "last": {}, "label": "Cron Jobs"}
+        snap = {"cronjobs": addon("Cron Jobs", [{"id": "failed", "state": "warning"}]),
+                "security": addon("Security Monitor", [{"id": "exposure", "state": "ok",
+                                                        "findings": {"complete": True, "total": 0, "list": []}}])}
+        events, out = hsnotify.changes(sent, snap, NOW)
+        self.assertEqual(events, [])
+        self.assertEqual(len(out), hsnotify.MAX_KEYS)
+        self.assertIn("cronjobs#failed", out, "what was told as a problem stays")
+        self.assertIn("security#exposure/port.1-tcp", out, "the newest resolved ones stay")
+        self.assertNotIn("security#exposure/port.2100-tcp", out)
+
+
+# ---------------------------------------------------------------------------
 # Messages
 
 class Messages(unittest.TestCase):
@@ -518,6 +984,13 @@ class Messages(unittest.TestCase):
         msg = hsnotify.message("en", "h", events=events)
         self.assertLessEqual(len(msg["body"].encode("utf-8")), hsnotify.BODY_MAX)
         self.assertRegex(msg["body"], r"and \d+ more\n\nHost Settings on h$")
+
+    def test_both_languages_have_the_same_texts(self):
+        import string
+        self.assertEqual(sorted(hsnotify.T["en"]), sorted(hsnotify.T["de"]))
+        for key, en in hsnotify.T["en"].items():
+            fields = sorted(f for _, f, _, _ in string.Formatter().parse(en) if f)
+            self.assertEqual(fields, sorted(f for _, f, _, _ in string.Formatter().parse(hsnotify.T["de"][key]) if f), key)
 
 
 # ---------------------------------------------------------------------------

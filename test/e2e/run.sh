@@ -12,7 +12,8 @@
 #   - "Check connection" against a topic closed without a login and against an open one: the
 #     HTTP answers ntfy really gives (401 or 403), and that the write-only token cannot read;
 #   - the first run sends the summary through ntfy and e-mail, a change sends one message, a run
-#     without a change none; the status verb answers as nobody; switching off says so;
+#     without a change none; once the stand-in lists findings, a second finding sends one message
+#     although its item stays a danger; the status verb answers as nobody; switching off says so;
 #   - the token is in no file but its own and in no log.
 # Writes OUT/report.md and the raw answers. Exit 1 at the first step that fails.
 set -eu
@@ -82,11 +83,19 @@ cat > /usr/share/cockpit/e2e-addon/manifest.json <<'EOF'
 {"menu": {"index": {"label": "E2E Add-on"}}, "azentrius": {"status": ["/usr/lib/cockpit-e2e-addon/status", "status"]}}
 EOF
 # The status verb of the stand-in: its one item takes the state written to /var/lib/e2e-addon/state.
+# With /var/lib/e2e-addon/findings (a JSON list), the item lists those findings, and a check of
+# state "checked" says the list is complete.
 cat > /usr/lib/cockpit-e2e-addon/status <<'EOF'
 #!/bin/sh
 state=$(cat /var/lib/e2e-addon/state 2>/dev/null || echo ok)
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-printf '{"schema":1,"addon":"e2e-addon","label":"E2E Add-on","version":"1.0.0","checked_at":"%s","state":"%s","summary":"s","items":[{"id":"thing","state":"%s","title":"The thing","value":"1","checked_at":"%s","stale_after":3600}]}\n' "$now" "$state" "$state" "$now"
+ext=''
+list=''
+if [ -s /var/lib/e2e-addon/findings ]; then
+    ext=',"features":["checks","findings"],"checks":[{"id":"thing","state":"checked","title":"The thing","item":"thing"}]'
+    list=$(printf ',"findings":{"complete":true,"list":%s}' "$(cat /var/lib/e2e-addon/findings)")
+fi
+printf '{"schema":1,"addon":"e2e-addon","label":"E2E Add-on","version":"1.0.0","checked_at":"%s","state":"%s","summary":"s"%s,"items":[{"id":"thing","state":"%s","title":"The thing","value":"1","checked_at":"%s","stale_after":3600%s}]}\n' "$now" "$state" "$ext" "$state" "$now" "$list"
 EOF
 chmod 755 /usr/lib/cockpit-e2e-addon/status
 echo warning > /var/lib/e2e-addon/state
@@ -133,6 +142,25 @@ messages "$topic" > "$out/messages-2.json"
 "$helper" run > /dev/null 2>&1
 [ "$(messages "$topic" | wc -l)" = "$(wc -l < "$out/messages-2.json")" ] || fail "a run without a change sent a message"
 ok "warning to danger told once, the next run told nothing"
+
+next "findings: a second finding gives a second message"
+# The item was told as a danger already: the finding it lists first is taken as told. The second
+# one is told on its own, although the item stays a danger.
+before=$(messages "$topic" | wc -l)
+echo '[{"fid":"port.5432-tcp","state":"danger","title":"5432/tcp postgres"}]' > /var/lib/e2e-addon/findings
+chmod 644 /var/lib/e2e-addon/findings
+"$helper" run > "$out/run-3.txt" 2>&1 || { cat "$out/run-3.txt"; fail "run"; }
+[ "$(messages "$topic" | wc -l)" = "$before" ] || fail "the finding behind the danger already told was told again"
+echo '[{"fid":"port.5432-tcp","state":"danger","title":"5432/tcp postgres"},{"fid":"port.6379-tcp","state":"danger","title":"6379/tcp redis"}]' \
+    > /var/lib/e2e-addon/findings
+"$helper" run > "$out/run-4.txt" 2>&1 || { cat "$out/run-4.txt"; fail "run"; }
+messages "$topic" > "$out/messages-4.json"
+[ "$(wc -l < "$out/messages-4.json")" = $((before + 1)) ] || fail "the second finding did not give exactly one message"
+[ "$(grep -c 'Danger · E2E Add-on · 6379/tcp redis' "$out/messages-4.json")" = 1 ] || fail "the second finding was not told"
+if grep -q '5432/tcp postgres' "$out/messages-4.json"; then fail "the first finding was told"; fi
+"$helper" run > /dev/null 2>&1
+[ "$(messages "$topic" | wc -l)" = $((before + 1)) ] || fail "a run without a change sent a message"
+ok "the first finding taken as told, the second told once while the item stayed a danger, the next run told nothing"
 
 next "the status verb as nobody, and for the board"
 runuser -u nobody -- "$helper" status --lang de > "$out/status-de.json"
