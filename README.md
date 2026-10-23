@@ -142,30 +142,17 @@ system by itself.
 
 ## Install, update, uninstall
 
-From the Azentrius package repository (set up once, see
-[packages.azentrius.com](https://packages.azentrius.com)): install **Host Settings** in Cockpit
-under **Applications**, or
+There is no release yet, so neither a release nor the Azentrius package repository offers Host
+Settings. Build the packages yourself with `make packages` (needs dpkg-deb and rpmbuild), then
+install the one for your system from `dist/`:
 
 ```bash
-# Debian and Ubuntu
-sudo apt install cockpit-host-settings
-# Fedora and RHEL
-sudo dnf install cockpit-host-settings
+make packages
+sudo apt install ./dist/cockpit-host-settings_X.Y.Z-1_all.deb    # or: sudo dnf install ./dist/cockpit-host-settings-X.Y.Z-1.noarch.rpm
 ```
 
-Or from the files of a release: download the package and `SHA256SUMS`, check that the download
-is complete and that this repository's release workflow built it, then install it:
-
-```bash
-sha256sum --ignore-missing -c SHA256SUMS
-gh attestation verify cockpit-host-settings_X.Y.Z-1_all.deb --repo Azentrius/cockpit-host-settings
-sudo apt install ./cockpit-host-settings_X.Y.Z-1_all.deb    # or: sudo dnf install ./cockpit-host-settings-X.Y.Z-1.noarch.rpm
-```
-
-Or build the packages yourself: `make packages` (needs dpkg-deb and rpmbuild), then install the
-one for your system from `dist/`.
-
-Install it on every server that should send messages. Updates come with the system's updates. The package creates the user `cockpit-host-settings`, an
+Install it on every server that should send messages. To update, build and install the newer
+package the same way. The package creates the user `cockpit-host-settings`, an
 empty token file and the state folder; the regular check stays off until it is set up on the
 page. Removing the package removes its state and keeps the settings, the token and the user.
 
