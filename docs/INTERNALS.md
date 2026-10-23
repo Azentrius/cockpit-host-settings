@@ -101,8 +101,8 @@ ntfy is set up when both `ntfy_url` and `ntfy_topic` are there, e-mail when `mai
 3. **Judge the answers** as the board does (`lib/hslib.py`, after `src/lib/status.js` of
    Status Board): schema 1, the add-on is the package, states, items (at most 50, each id once),
    every text cleaned and cut; the state never better than the items; an item past
-   `checked_at + stale_after` at least a warning. Exit 77 is "no access" (Unknown, as on the
-   board); every other failure (`rejected`, `untrusted`, `manifest`, `invalid` with its reason,
+   `checked_at + stale_after` at least a warning. Exit 77 is "no access" (no level of its own
+   here, see step 4; Status Board shows it as a warning, "No access"); every other failure (`rejected`, `untrusted`, `manifest`, `invalid` with its reason,
    `missing`, `failed` with the exit code, `timeout`, `unsupported` for exit 64) makes the add-on
    itself a warning.
 4. **Compare** with what was told last (`sent` in `last.json`), per key: `PKG#` for the add-on

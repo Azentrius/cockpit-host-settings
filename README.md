@@ -236,8 +236,9 @@ The screenshots in `docs/img` come from the CI artifact `screenshots` of the tes
 - Only add-ons on the same server, and only those that report through the status contract.
 - E-mail goes only to a mail server on `localhost:25`; a `sendmail` command alone is not used,
   because the notifier's sandbox ignores the setgid bit postfix' `postdrop` needs.
-- An add-on that answers its status verb with exit 77 (nothing readable without root) counts as
-  Unknown, as on Status Board, and gives no message.
+- An add-on that answers its status verb with exit 77 (nothing readable without root) gives no
+  message, and what was told about it before stays as it was, since nothing of it can be checked.
+  Status Board shows it as a warning, "No access".
 - "Check connection" is tested against ntfy 2.32 and was against 2.11 before; it reads a topic
   with `poll=1&since=1m`, which older and newer servers know as well.
 - The tab for Cockpit's own settings is not there yet.

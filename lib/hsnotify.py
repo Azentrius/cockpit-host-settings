@@ -210,7 +210,8 @@ def trusted(path, lstat=os.lstat):
 def read_addon(pkg, label, entry, lang, now, run=hsproc.run, lstat=os.lstat):
     """What one add-on says, as the notifier keeps it: {label, kind, reason, code, state,
     version, summary, items, dropped}. kind is "ok" for a valid answer, "noaccess" for exit 77
-    (shown as Unknown, as on the board), else one of ERROR_KINDS (a warning). dropped counts
+    (nothing can be judged, so it keeps what was told; Status Board shows it as a warning),
+    else one of ERROR_KINDS (a warning). dropped counts
     the items a valid answer had beyond the 50 that count, or that broke the rules."""
     out = {"label": label or pkg, "kind": "ok", "reason": None, "code": None, "state": "none",
            "version": None, "summary": None, "items": [], "dropped": 0}
