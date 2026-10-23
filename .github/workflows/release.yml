@@ -125,18 +125,25 @@ jobs:
       - name: Release notes
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
         run: |
           sh tools/release-notes.sh "$VERSION" > notes.md
           upstream=$(printf '%s' "$VERSION" | tr '-' '~')
           deb=cockpit-host-settings_${upstream}-1_all.deb
           rpm=cockpit-host-settings-${upstream}-1.noarch.rpm
+          files="download the package and \`SHA256SUMS\`, check that the download is complete and that this repository's release workflow built it, then install it:"
           {
             echo
             echo "### Install"
             echo
-            # Until Azentrius/packages lists Host Settings; then the sentence on the package
-            # repository comes first again, as in the other add-ons.
-            echo "The Azentrius package repository (https://packages.azentrius.com) does not carry Host Settings yet. Install it from the files of this release: download the package and \`SHA256SUMS\`, check that the download is complete and that this repository's release workflow built it, then install it:"
+            # The package repository leaves pre-releases out.
+            if [ "$PRERELEASE" = "true" ]; then
+              echo "This is a pre-release, which the Azentrius package repository (https://packages.azentrius.com) leaves out. Install it from the files of this release: $files"
+            else
+              echo "From the Azentrius package repository (Debian, Ubuntu, Fedora, RHEL): set up https://packages.azentrius.com once, then install Host Settings in Cockpit under Applications, or with \`sudo apt install cockpit-host-settings\` or \`sudo dnf install cockpit-host-settings\`. The repository takes this release within an hour. Install it on every server that should send messages."
+              echo
+              echo "From the files of this release: $files"
+            fi
             echo
             echo '```sh'
             echo "sha256sum --ignore-missing -c SHA256SUMS"
