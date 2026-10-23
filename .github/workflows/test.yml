@@ -83,9 +83,18 @@ jobs:
               test ! -e /var/lib/cockpit-host-settings
               test -e /etc/cockpit-host-settings/ntfy.token'
           done
+      # Usually a few seconds. Once (PR #4) it hung for ten minutes while the job only stops after
+      # 20; so each try gets four minutes and a hung or failed first try a second one.
       - name: Browser for the preview
-        run: python -m playwright install --with-deps chromium
+        timeout-minutes: 10
+        run: |
+          for try in 1 2; do
+            timeout --kill-after=10s 4m python -m playwright install --with-deps chromium && exit 0
+            echo "::warning::playwright install failed or hung (try $try)"
+          done
+          exit 1
       - name: Preview in a browser (no JavaScript errors, no sideways scrolling on a phone) and screenshots
+        timeout-minutes: 5
         run: |
           python tools/preview/build.py
           python tools/preview/shoot.py test/shots
