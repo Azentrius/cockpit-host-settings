@@ -6,10 +6,16 @@
     "menu": {
         "index": {
             "label": "Host Settings",
-            "order": 38,
+            "order": 106,
             "keywords": [
                 {
-                    "matches": ["notifications", "messages", "alerts", "ntfy", "mail", "e-mail", "settings", "status", "benachrichtigungen", "nachrichten"]
+                    "matches": ["notifications", "messages", "alerts", "ntfy", "mail", "e-mail", "settings", "status", "benachrichtigungen", "nachrichten", "azentrius"]
+                }
+            ],
+            "docs": [
+                {
+                    "label": "Host Settings",
+                    "url": "https://github.com/Azentrius/cockpit-host-settings#readme"
                 }
             ]
         }
