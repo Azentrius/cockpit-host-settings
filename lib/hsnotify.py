@@ -43,6 +43,7 @@ HTTP_TIMEOUT = 20
 BODY_MAX = 3800                    # bytes; ntfy turns longer messages into attachments (4096)
 MAX_LINES = 20
 PROBLEM = ("warning", "danger")
+UNKNOWN = "unknown"                # a key that cannot be judged now keeps what was told before
 ERROR_KINDS = ("rejected", "untrusted", "manifest", "invalid", "missing", "failed", "timeout", "unsupported")
 PRIORITY = {"danger": 4, "warning": 3, "ok": 2}
 TAGS = {"danger": "rotating_light", "warning": "warning", "ok": "white_check_mark"}
@@ -57,7 +58,12 @@ T = {
         "title.test": "{host}: test message",
         "title.probe": "{host}: this topic is open",
         "head.worse": "{state}", "head.better": "{state} instead of {before}", "head.resolved": "OK again",
-        "why.gone": "no longer reported", "why.removed": "the add-on is no longer installed",
+        "head.unchecked": "No longer checked",
+        "why.gone": "no longer reported",
+        "title.unchecked": "{host}: {label}, no longer checked",
+        "unchecked.why": "the add-on is no longer installed",
+        "unchecked.one": "the finding it reported can no longer be checked",
+        "unchecked.other": "the {n} findings it reported can no longer be checked",
         "stale": "out of date since {when}",
         "unreadable": "Status not readable", "readable": "status readable",
         "reason.not-json": "the answer is not JSON", "reason.not-object": "the answer is not an object",
@@ -90,7 +96,12 @@ T = {
         "title.test": "{host}: Testnachricht",
         "title.probe": "{host}: dieses Thema ist offen",
         "head.worse": "{state}", "head.better": "{state} statt {before}", "head.resolved": "Wieder in Ordnung",
-        "why.gone": "wird nicht mehr gemeldet", "why.removed": "das Add-on ist nicht mehr installiert",
+        "head.unchecked": "Nicht mehr geprüft",
+        "why.gone": "wird nicht mehr gemeldet",
+        "title.unchecked": "{host}: {label}, nicht mehr geprüft",
+        "unchecked.why": "das Add-on ist nicht mehr installiert",
+        "unchecked.one": "der gemeldete Befund lässt sich nicht mehr prüfen",
+        "unchecked.other": "die {n} gemeldeten Befunde lassen sich nicht mehr prüfen",
         "stale": "veraltet seit {when}",
         "unreadable": "Status nicht lesbar", "readable": "Status lesbar",
         "reason.not-json": "die Antwort ist kein JSON", "reason.not-object": "die Antwort ist kein Objekt",
@@ -198,10 +209,11 @@ def trusted(path, lstat=os.lstat):
 
 def read_addon(pkg, label, entry, lang, now, run=hsproc.run, lstat=os.lstat):
     """What one add-on says, as the notifier keeps it: {label, kind, reason, code, state,
-    version, summary, items}. kind is "ok" for a valid answer, "noaccess" for exit 77
-    (shown as Unknown, as on the board), else one of ERROR_KINDS (a warning)."""
+    version, summary, items, dropped}. kind is "ok" for a valid answer, "noaccess" for exit 77
+    (shown as Unknown, as on the board), else one of ERROR_KINDS (a warning). dropped counts
+    the items a valid answer had beyond the 50 that count, or that broke the rules."""
     out = {"label": label or pkg, "kind": "ok", "reason": None, "code": None, "state": "none",
-           "version": None, "summary": None, "items": []}
+           "version": None, "summary": None, "items": [], "dropped": 0}
 
     def fail(kind, reason=None, code=None):
         out.update(kind=kind, reason=reason, code=code, state="none" if kind == "noaccess" else "warning")
@@ -233,7 +245,7 @@ def read_addon(pkg, label, entry, lang, now, run=hsproc.run, lstat=os.lstat):
         return fail("invalid", status[0])
     ev = hslib.evaluate(status, now)
     out.update(label=status["label"] or out["label"], state=ev["state"], version=status["version"],
-               summary=status["summary"],
+               summary=status["summary"], dropped=status["dropped"],
                items=[{"id": i["id"], "title": i["title"], "state": i["state"], "value": i["value"],
                        "detail": i["detail"], "link": i["link"], "stale_at": i["stale_at"]} for i in ev["items"]])
     return out
@@ -249,13 +261,15 @@ def collect(lang, now, run=hsproc.run, root="/usr/share/cockpit", lstat=os.lstat
 
 def keys_of(snapshot):
     """{key: (level, what)} of a snapshot. An add-on is "PKG#" (a warning while its status
-    cannot be read), each of its items "PKG#ID"."""
+    cannot be read, UNKNOWN while nothing is readable without root), each of its items "PKG#ID"
+    (UNKNOWN while the add-on cannot judge it: state none)."""
     cur = {}
     for pkg, a in snapshot.items():
-        cur[pkg + "#"] = ("warning" if a["kind"] in ERROR_KINDS else "ok", None)
+        lvl = "warning" if a["kind"] in ERROR_KINDS else UNKNOWN if a["kind"] == "noaccess" else "ok"
+        cur[pkg + "#"] = (lvl, None)
         if a["kind"] == "ok":
             for it in a["items"]:
-                cur[pkg + "#" + it["id"]] = (level(it["state"]), it)
+                cur[pkg + "#" + it["id"]] = (UNKNOWN if it["state"] == "none" else level(it["state"]), it)
     return cur
 
 
@@ -263,10 +277,15 @@ def changes(sent, snapshot, now):
     """(events, sent): what to tell, and the new memory of what was told. `sent` is
     {key: {level, at, last: {"FROM>TO": time}}}; a key that is not there was OK. A change
     that was told for the same key less than FLAP seconds ago waits (its key keeps the old
-    level), so a flapping item gives one message an hour at most. The items of an add-on
-    whose status cannot be read are left as they were: unreadable is no reason for OK."""
+    level), so a flapping item gives one message an hour at most.
+
+    What cannot be checked is no reason for OK, so these keys keep what was told before: the
+    items of an add-on whose status cannot be read or that answers exit 77, an item the add-on
+    cannot judge (state none), and an item missing from an answer that left items out (more
+    than 50, or broken ones). An add-on that is no longer installed while it had told problems
+    gives one event "unchecked", and its keys are forgotten."""
     cur = keys_of(snapshot)
-    events, out = [], {}
+    events, out, uninstalled = [], {}, {}
     for key in sorted(set(cur) | set(sent)):
         pkg = key.partition("#")[0]
         old_entry = sent.get(key) if isinstance(sent.get(key), dict) else {}
@@ -274,12 +293,20 @@ def changes(sent, snapshot, now):
         why = None
         if key in cur:
             new, item = cur[key]
-        elif pkg in snapshot and snapshot[pkg]["kind"] != "ok":
+            if new == UNKNOWN:
+                if old_entry:
+                    out[key] = old_entry
+                continue
+        elif pkg in snapshot and (snapshot[pkg]["kind"] != "ok" or snapshot[pkg].get("dropped")):
             if old_entry:
                 out[key] = old_entry
             continue
+        elif pkg in snapshot:
+            new, item, why = "ok", None, "gone"
         else:
-            new, item, why = "ok", None, "gone" if pkg in snapshot else "removed"
+            if old in PROBLEM:
+                uninstalled.setdefault(pkg, []).append((key.partition("#")[2], old_entry))
+            continue
         if old == new:
             if old != "ok" or _recent(old_entry, now):
                 out[key] = old_entry
@@ -295,9 +322,24 @@ def changes(sent, snapshot, now):
         out[key]["label"] = events[-1]["label"]
         if events[-1]["title"]:
             out[key]["title"] = events[-1]["title"]
-    order = {"worse": 0, "better": 1, "resolved": 2}
+    events.extend(_unchecked(pkg, entries) for pkg, entries in uninstalled.items())
+    order = {"worse": 0, "unchecked": 1, "better": 2, "resolved": 3}
     events.sort(key=lambda e: (order[e["kind"]], -hslib.rank(e["to"]), e["label"].lower(), e["key"]))
     return events, out
+
+
+def _unchecked(pkg, told):
+    """An add-on that is no longer installed, from what was told about it ([(item id or "",
+    entry in `sent`)], each with a problem level): one event for the add-on, a warning, since
+    nothing checks those findings any more. `open` counts the findings among them."""
+    label = next((e["label"] for _, e in told if isinstance(e.get("label"), str) and e["label"]), pkg)
+    return {
+        "key": pkg + "#", "pkg": pkg, "id": "", "label": label, "title": None, "kind": "unchecked",
+        "from": max((e["level"] for _, e in told), key=hslib.rank), "to": "warning", "state": "warning",
+        "value": None, "detail": None, "stale_at": None, "why": None,
+        "addon_kind": None, "reason": None, "code": None,
+        "open": sum(1 for iid, _ in told if iid),
+    }
 
 
 def _event(key, a, item, old, new, why=None, told=None):
@@ -347,6 +389,10 @@ def _unreadable(lang, e):
 
 def _line(lang, e):
     """One change as two lines: what and where, then the detail."""
+    if e["kind"] == "unchecked":
+        first = f"{t(lang, 'head.unchecked')} · {e['label']} · {t(lang, 'unchecked.why')}"
+        n = e.get("open") or 0
+        return first + ("\n" + t(lang, "unchecked.one" if n == 1 else "unchecked.other", n=n) if n else "")
     resolved = e["kind"] == "resolved"
     if e["id"]:
         title, detail = e["title"] or e["id"], e["detail"]
@@ -410,7 +456,9 @@ def message(lang, host, events=None, snapshot=None, summary=False):
         return {"title": t(lang, "title.summary", host=host), "body": _fit(lang, head, [_line(lang, e) for e in found],
                                                                            footer),
                 "priority": PRIORITY[top] if found else 3, "tags": [TAGS[top]]}
-    if len(events) == 1:
+    if len(events) == 1 and events[0]["kind"] == "unchecked":
+        title = t(lang, "title.unchecked", host=host, label=events[0]["label"])
+    elif len(events) == 1:
         e = events[0]
         what = e["title"] if e["id"] and e["title"] else t(lang, "readable" if e["kind"] == "resolved" and
                                                              not e["why"] and not e["id"] else "unreadable")
