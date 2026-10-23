@@ -47,7 +47,11 @@ second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
   read is a warning of its own.
 - **Tells changes, finding by finding:** a finding that turns to a warning or a danger, a danger
   that becomes a warning, a finding that is OK again or no longer reported. A second finding in an
-  add-on that is already a warning is told as well. What cannot be checked is never taken as OK:
+  add-on that is already a warning is told as well. Where an add-on lists the single findings
+  behind an item (each port reachable from the internet, say), each one is told on its own, also
+  while the item stays a danger, and again if it comes back; an accepted finding stays quiet until
+  its acceptance ends, and one counts as resolved only when a complete check no longer finds it.
+  What cannot be checked is never taken as OK:
   a finding the add-on cannot judge for now, or one missing from an answer that left items out,
   keeps what was told, and an add-on that is no longer installed is told as "no longer checked".
   The same change of the same finding comes at
