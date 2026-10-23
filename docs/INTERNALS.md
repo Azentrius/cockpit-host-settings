@@ -264,6 +264,10 @@ answer against Status Board's rules (`hslib.validate_status`).
   languages, with and without administrative access, fails on a JavaScript error or on sideways
   scrolling at a width of 390 pixels (the dialog as well), and writes the screenshots (artifact
   `screenshots`, the pictures in `docs/img`).
+- `test/package-install.sh` (job `test` on Debian 13 and Fedora 43, job `install` on Rocky Linux
+  and AlmaLinux 9 and 10, each in a throw-away container): the package installed with the
+  distribution's own dependencies, its files and modes, the token file, the notifier's user and
+  state folder, a run of the notifier as that user, the status verb as nobody, the removal.
 - Job `e2e` (`test/e2e/run.sh`): the package with its real units on the runner, ntfy in Docker with
   `auth-default-access: deny-all`, postfix for local mail, a stand-in add-on. It runs the three
   commands of the page on the ntfy server, "Check connection" against a closed and an open topic,
