@@ -10,8 +10,9 @@ permissions:
 jobs:
   # Everything that runs without a server: lint, the offline tests, the packages (built twice to
   # the same bytes), installed on Debian and Fedora with a run of the notifier as its own user and
-  # the status verb as nobody (on Rocky Linux and AlmaLinux: job install), and the preview in a browser (no JavaScript errors, no sideways
-  # scrolling on a phone) with the screenshots for the README (artifact "screenshots").
+  # the status verb as nobody (on Rocky Linux and AlmaLinux: job install), and the preview in a
+  # browser (no JavaScript errors, no sideways scrolling on a phone) with the screenshots for the
+  # README (artifact "screenshots").
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -157,6 +158,73 @@ jobs:
         with:
           name: e2e-session
           path: e2e-session/
+
+  # The same end-to-end test with the .rpm in a Rocky Linux VM with SELinux enforcing (tools/vm.sh:
+  # the pinned cloud image under KVM on this runner), Podman with podman-docker standing in for
+  # Docker for the ntfy server. The job fails on every SELinux denial between the mark after the
+  # set-up and the end of the test. A pilot: not yet part of the required check e2e.
+  e2e-el:
+    name: e2e (${{ matrix.os }}, SELinux enforcing)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [rocky-9, rocky-10]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The package of this build, QEMU and cloud-init's seed tool
+        run: |
+          sudo apt-get -o Acquire::http::Timeout=20 -o Acquire::Retries=3 update -qq
+          sudo apt-get -o Acquire::http::Timeout=20 -o Acquire::Retries=3 install -y -qq --no-install-recommends \
+            rpm qemu-system-x86 qemu-utils cloud-image-utils > /dev/null
+          make packages
+      - name: KVM for the runner's user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: The cloud image (kept between runs; tools/vm.sh checks its pinned SHA-256)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/azentrius-vm
+          key: vm-${{ matrix.os }}-${{ hashFiles('tools/vm.sh') }}
+      - name: Boot ${{ matrix.os }} (tools/vm.sh)
+        env:
+          OS: ${{ matrix.os }}
+        run: sh tools/vm.sh start "$OS"
+      - name: Podman for the ntfy server, the package and the test into the machine
+        run: |
+          sh tools/vm.sh root dnf install -y -q podman podman-docker openssl
+          sh tools/vm.sh root touch /etc/containers/nodocker
+          sh tools/vm.sh copy /root/e2e dist/*.rpm test/e2e/run.sh
+      - name: Mark the audit log
+        run: sh tools/vm.sh avc-mark
+      - name: End-to-end test in the machine (test/e2e/run.sh as root)
+        run: sh tools/vm.sh root sh -c "'cd /root/e2e && OUT=/root/e2e/session sh run.sh /root/e2e/*.rpm'"
+      - name: No SELinux denials during the test
+        run: sh tools/vm.sh avc-check
+      - name: Report and logs
+        if: always()
+        env:
+          OS: ${{ matrix.os }}
+        run: |
+          mkdir -p e2e-el
+          sh tools/vm.sh fetch e2e-el /root/e2e/session || true
+          sh tools/vm.sh logs e2e-el || true
+          if [ -f e2e-el/root/e2e/session/report.md ]; then
+            { echo "### $OS"; cat e2e-el/root/e2e/session/report.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Keep the report and the logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-${{ matrix.os }}
+          path: e2e-el/
 
   # Secrets in the files and in the whole history (gitleaks, pinned with its checksum). The
   # findings are redacted in the log; GitHub's own secret scanning with push protection runs

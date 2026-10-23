@@ -1,10 +1,12 @@
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
 # The end-to-end test of Host Settings, on a throw-away machine with systemd and Docker (CI, job
-# e2e; never on a server): the package with its real units, a real ntfy server, postfix for local
-# mail and a stand-in add-on whose state the test switches.
+# e2e: the runner itself with the .deb; job e2e-el: a Rocky Linux VM with SELinux enforcing and
+# the .rpm, Podman standing in for Docker; never on a server): the package with its real units, a
+# real ntfy server, postfix for local mail and a stand-in add-on whose state the test switches.
 #
 #   sudo env OUT=e2e-session sh test/e2e/run.sh dist/cockpit-host-settings_*.deb
+#   sudo env OUT=e2e-session sh test/e2e/run.sh dist/cockpit-host-settings-*.rpm
 #
 # What it shows (docs/INTERNALS.md, "Tests"):
 #   - the commands the page shows for the ntfy server run there exactly as shown, and give a
@@ -16,13 +18,19 @@
 #   - the token is in no file but its own and in no log.
 # Writes OUT/report.md and the raw answers. Exit 1 at the first step that fails.
 set -eu
-deb=${1:?usage: run.sh PACKAGE.deb}
+pkg=${1:?usage: run.sh PACKAGE.deb|PACKAGE.rpm}
+case $pkg in
+    *.deb) kind=deb ;;
+    *.rpm) kind=rpm ;;
+    *) echo "run.sh: a .deb or an .rpm, not $pkg" >&2; exit 64 ;;
+esac
 out=${OUT:-e2e-session}
 mkdir -p "$out"
 report=$out/report.md
 helper=/usr/lib/cockpit-host-settings/host-settings.py
-# The version the Azentrius servers run (public-host); raise both together.
-ntfy_image=binwiederhier/ntfy:v2.32.0
+# The version the Azentrius servers run (public-host); raise both together. With the registry,
+# as Podman takes no short names without asking.
+ntfy_image=docker.io/binwiederhier/ntfy:v2.32.0
 base=http://127.0.0.1:8090
 step=0
 echo "# Host Settings: end-to-end" > "$report"
@@ -46,8 +54,10 @@ auth-file: "/var/lib/ntfy/user.db"
 auth-default-access: "deny-all"
 cache-file: "/var/lib/ntfy/cache.db"
 EOF
-docker run -d --name ntfy -p 127.0.0.1:8090:80 -v /tmp/ntfy-e2e/server.yml:/etc/ntfy/server.yml:ro \
-    -v /tmp/ntfy-e2e/lib:/var/lib/ntfy "$ntfy_image" serve > /dev/null
+# Z: SELinux labels the folders for the container (Podman on the RHEL rebuilds); Docker without
+# SELinux ignores it.
+docker run -d --name ntfy -p 127.0.0.1:8090:80 -v /tmp/ntfy-e2e/server.yml:/etc/ntfy/server.yml:ro,Z \
+    -v /tmp/ntfy-e2e/lib:/var/lib/ntfy:Z "$ntfy_image" serve > /dev/null
 for _ in $(seq 1 30); do curl -fsS "$base/v1/health" > /dev/null 2>&1 && break; sleep 1; done
 if ! curl -fsS "$base/v1/health" > "$out/health.json"; then
     docker logs ntfy 2>&1 | tail -n 20
@@ -72,9 +82,15 @@ reader=$(ntfy ntfy ntfy token add reader 2>&1 | grep -o 'tk_[A-Za-z0-9]*' | head
 ok "reader with read-only access to cockpit-*"
 
 next "postfix for local mail, a stand-in add-on, the package"
-echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections
-echo "postfix postfix/mailname string e2e.localdomain" | debconf-set-selections
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postfix > /dev/null
+if [ "$kind" = deb ]; then
+    echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections
+    echo "postfix postfix/mailname string e2e.localdomain" | debconf-set-selections
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postfix > /dev/null
+else
+    # The rebuilds' postfix delivers locally and listens on localhost only as it comes.
+    dnf install -y -q postfix > /dev/null
+    systemctl enable -q postfix
+fi
 useradd --create-home hsmail 2> /dev/null || true
 systemctl restart postfix
 mkdir -p /usr/share/cockpit/e2e-addon /usr/lib/cockpit-e2e-addon /var/lib/e2e-addon
@@ -91,9 +107,18 @@ EOF
 chmod 755 /usr/lib/cockpit-e2e-addon/status
 echo warning > /var/lib/e2e-addon/state
 chmod 644 /var/lib/e2e-addon/state
-apt-get install -y -qq "./$deb" > /dev/null || apt-get install -y -qq "$deb" > /dev/null
+if [ "$kind" = deb ]; then
+    apt-get install -y -qq "./$pkg" > /dev/null || apt-get install -y -qq "$pkg" > /dev/null
+    installed=$(dpkg-query -W -f '${Package} ${Version}' cockpit-host-settings)
+else
+    dnf install -y -q "$pkg" > /dev/null
+    installed=$(rpm -q cockpit-host-settings)
+fi
 getent passwd cockpit-host-settings > /dev/null || fail "no user cockpit-host-settings"
-ok "postfix (local only), the stand-in add-on in warning, $(dpkg-query -W -f '${Package} ${Version}' cockpit-host-settings)"
+# The distribution's Cockpit takes the page's manifest.
+cockpit-bridge --packages > "$out/packages.txt" 2>&1 || fail "cockpit-bridge --packages"
+grep -qw host-settings "$out/packages.txt" || fail "Cockpit does not list host-settings: $(cat "$out/packages.txt")"
+ok "postfix (local only), the stand-in add-on in warning, $installed, listed by Cockpit"
 
 next "the settings through the helper, the token on standard input"
 "$helper" set ntfy "$base" "$topic"
@@ -158,7 +183,11 @@ if journalctl --no-pager -u 'cockpit-host-settings*' | grep -q "$token"; then fa
 ok "the token only in /etc/cockpit-host-settings/ntfy.token; the status says the check is off"
 
 next "remove the package"
-apt-get remove -y -qq cockpit-host-settings > /dev/null
+if [ "$kind" = deb ]; then
+    apt-get remove -y -qq cockpit-host-settings > /dev/null
+else
+    dnf remove -y -q cockpit-host-settings > /dev/null
+fi
 [ ! -e /var/lib/cockpit-host-settings ] || fail "the state stayed"
 [ -e /etc/cockpit-host-settings/ntfy.token ] || fail "the settings went with the package"
 ok "state gone, settings kept"
