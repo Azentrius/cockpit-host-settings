@@ -27,7 +27,7 @@ mark=/var/tmp/azentrius-vm.avc-mark
 denials='type=(AVC|USER_AVC|SELINUX_ERR|USER_SELINUX_ERR) '
 
 die() { echo "vm.sh: $*" >&2; exit 1; }
-vm() { ssh -F "$cfg" vm "$@"; }
+guest() { ssh -F "$cfg" vm "$@"; }
 
 image() {
     case $1 in
@@ -90,34 +90,34 @@ EOF
         -display none -serial "file:$dir/console.log" -daemonize -pidfile "$dir/qemu.pid"
     up=0
     for _ in $(seq 1 60); do
-        if vm true 2> /dev/null; then up=1; break; fi
+        if guest true 2> /dev/null; then up=1; break; fi
         sleep 5
     done
     if [ "$up" != 1 ]; then
         tail -n 40 "$dir/console.log" >&2 || true
         die "no SSH to the machine after five minutes"
     fi
-    vm sudo cloud-init status --wait > /dev/null 2>&1 || vm sudo cloud-init status --long || true
-    mode=$(vm getenforce)
+    guest sudo cloud-init status --wait > /dev/null 2>&1 || guest sudo cloud-init status --long || true
+    mode=$(guest getenforce)
     [ "$mode" = Enforcing ] || die "SELinux is $mode, not Enforcing"
-    vm sudo systemctl is-active --quiet auditd || die "auditd does not run: denials would go unseen"
+    guest sudo systemctl is-active --quiet auditd || die "auditd does not run: denials would go unseen"
     # fetch packs folders with tar, which a cloud image may lack.
-    vm 'command -v tar > /dev/null || sudo dnf install -y -q tar'
-    vm '. /etc/os-release; echo "$PRETTY_NAME, kernel $(uname -r), SELinux $(getenforce), $(rpm -q selinux-policy-targeted)"'
+    guest 'command -v tar > /dev/null || sudo dnf install -y -q tar'
+    guest '. /etc/os-release; echo "$PRETTY_NAME, kernel $(uname -r), SELinux $(getenforce), $(rpm -q selinux-policy-targeted)"'
 }
 
 avc_mark() {
     echo "SELinux denials before the mark (not counted):"
-    vm sudo grep -E "'$denials'" /var/log/audit/audit.log || echo "none"
-    vm sudo sh -c "'wc -l < /var/log/audit/audit.log > $mark'"
+    guest sudo grep -E "'$denials'" /var/log/audit/audit.log || echo "none"
+    guest sudo sh -c "'wc -l < /var/log/audit/audit.log > $mark'"
 }
 
 avc_check() {
     # auditd writes asynchronously: give the last records a moment.
     sleep 3
-    vm sudo test -s "$mark" || die "no mark: run avc-mark first"
+    guest sudo test -s "$mark" || die "no mark: run avc-mark first"
     # Into a file first: a failed read must not pass as "no denials".
-    vm sudo sh -c "'tail -n +\$((\$(cat $mark) + 1)) /var/log/audit/audit.log'" > "$dir/audit-after-mark.log" ||
+    guest sudo sh -c "'tail -n +\$((\$(cat $mark) + 1)) /var/log/audit/audit.log'" > "$dir/audit-after-mark.log" ||
         die "could not read the audit log after the mark"
     # Starting services, sudo and logins always write records: none means the log was not read.
     [ -s "$dir/audit-after-mark.log" ] || die "no audit records at all after the mark"
@@ -127,7 +127,7 @@ avc_check() {
         echo "SELinux denials after the mark:"
         printf '%s\n' "$found"
         printf '%s\n' "$found" |
-            vm 'cat > /tmp/denials.log && sudo ausearch -i -m AVC,USER_AVC,SELINUX_ERR,USER_SELINUX_ERR -if /tmp/denials.log' || true
+            guest 'cat > /tmp/denials.log && sudo ausearch -i -m AVC,USER_AVC,SELINUX_ERR,USER_SELINUX_ERR -if /tmp/denials.log' || true
         die "SELinux denied something (see above)"
     fi
     echo "No SELinux denials after the mark."
@@ -135,26 +135,26 @@ avc_check() {
 
 case ${1:-} in
     start) shift; start "$@" ;;
-    root) shift; [ $# -gt 0 ] || die "root: no command"; vm sudo "$@" ;;
+    root) shift; [ $# -gt 0 ] || die "root: no command"; guest sudo "$@" ;;
     copy)
         shift; [ $# -ge 2 ] || die "copy: DIR FILE..."
         to=$1; shift
         for f in "$@"; do
             scp -q -F "$cfg" "$f" "vm:/tmp/$(basename "$f")"
-            vm sudo install -D -m 644 "/tmp/$(basename "$f")" "$to/$(basename "$f")"
+            guest sudo install -D -m 644 "/tmp/$(basename "$f")" "$to/$(basename "$f")"
         done ;;
     fetch)
         shift; [ $# -ge 2 ] || die "fetch: DIR PATH..."
         to=$1; shift
         mkdir -p "$to"
-        for p in "$@"; do vm sudo tar -C / -cf - "${p#/}" | tar -C "$to" -xf -; done ;;
+        for p in "$@"; do guest sudo tar -C / -cf - "${p#/}" | tar -C "$to" -xf -; done ;;
     avc-mark) avc_mark ;;
     avc-check) avc_check ;;
     logs)
         shift; to=${1:?logs: DIR}
         mkdir -p "$to"
         cp "$dir/console.log" "$to/" 2> /dev/null || true
-        vm sudo journalctl -b --no-pager > "$to/journal.txt" 2>&1 || true
-        vm sudo cat /var/log/audit/audit.log > "$to/audit.log" 2>&1 || true ;;
+        guest sudo journalctl -b --no-pager > "$to/journal.txt" 2>&1 || true
+        guest sudo cat /var/log/audit/audit.log > "$to/audit.log" 2>&1 || true ;;
     *) sed -n '7,13p' "$0" >&2; exit 64 ;;
 esac
