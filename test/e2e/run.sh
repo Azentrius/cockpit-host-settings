@@ -21,7 +21,8 @@ out=${OUT:-e2e-session}
 mkdir -p "$out"
 report=$out/report.md
 helper=/usr/lib/cockpit-host-settings/host-settings.py
-ntfy_image=binwiederhier/ntfy:v2.11.0
+# The version the Azentrius servers run (public-host); raise both together.
+ntfy_image=binwiederhier/ntfy:v2.32.0
 base=http://127.0.0.1:8090
 step=0
 echo "# Host Settings: end-to-end" > "$report"

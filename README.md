@@ -134,7 +134,7 @@ system by itself.
 
 | | Systems | What is checked |
 |---|---|---|
-| **Tested** | Ubuntu 24.04 (GitHub runner) with systemd, ntfy 2.11 in Docker and postfix | the package with its real units (job `e2e`): the page's commands on the ntfy server as shown, "Check connection" against a topic closed without a login and an open one, the first run's summary through ntfy and e-mail, a change told once, a run without a change silent, the status as `nobody`, switching off, the token in no file but its own and in no log, removing the package |
+| **Tested** | Ubuntu 24.04 (GitHub runner) with systemd, ntfy 2.32 in Docker and postfix | the package with its real units (job `e2e`): the page's commands on the ntfy server as shown, "Check connection" against a topic closed without a login and an open one, the first run's summary through ntfy and e-mail, a change told once, a run without a change silent, the status as `nobody`, switching off, the token in no file but its own and in no log, removing the package |
 | **Tested** | Python 3.8 and 3.12 | the notifier, the helper and the status against Status Board's own test answers (job `python-min` and `make check`) |
 | **Checked** | four Ubuntu servers (24.04 and 26.04) | the status verbs of Cron Jobs, Image Update Monitor, Update Gaps and Security Monitor answer as an unprivileged user without network |
 | **Package installs** | Debian 13 (`.deb`), Fedora 43 (`.rpm`) | the package installs with the distribution's own dependencies, creates its user, runs the notifier as that user, answers the status as `nobody` and removes cleanly. No Cockpit or systemd runs there. |
@@ -229,8 +229,8 @@ The screenshots in `docs/img` come from the CI artifact `screenshots` of the tes
   because the notifier's sandbox ignores the setgid bit postfix' `postdrop` needs.
 - An add-on that answers its status verb with exit 77 (nothing readable without root) counts as
   Unknown, as on Status Board, and gives no message.
-- "Check connection" was tested against ntfy 2.11; it reads a topic with `poll=1&since=1m`, which
-  older and newer servers know as well.
+- "Check connection" is tested against ntfy 2.32 and was against 2.11 before; it reads a topic
+  with `poll=1&since=1m`, which older and newer servers know as well.
 - The tab for Cockpit's own settings is not there yet.
 
 ## License
