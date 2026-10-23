@@ -248,3 +248,5 @@ license. The page contains no code from Cockpit; it uses Cockpit's API `cockpit.
 which Cockpit itself ships.
 
 Please report security issues privately, see [SECURITY.md](SECURITY.md).
+
+Made by [Azentrius](https://azentrius.com).
