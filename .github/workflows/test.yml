@@ -10,7 +10,7 @@ permissions:
 jobs:
   # Everything that runs without a server: lint, the offline tests, the packages (built twice to
   # the same bytes), installed on Debian and Fedora with a run of the notifier as its own user and
-  # the status verb as nobody, and the preview in a browser (no JavaScript errors, no sideways
+  # the status verb as nobody (on Rocky Linux and AlmaLinux: job install), and the preview in a browser (no JavaScript errors, no sideways
   # scrolling on a phone) with the screenshots for the README (artifact "screenshots").
   test:
     runs-on: ubuntu-24.04
@@ -49,39 +49,11 @@ jobs:
           rpm -qp --requires dist/*.rpm | grep -qx 'cockpit-bridge >= 264'
           rpm -qp --requires dist/*.rpm | grep -qx 'python3 >= 3.8'
           rpm -qp --requires dist/*.rpm | grep -qx 'systemd >= 247'
-      - name: Install and remove the .deb on Debian 13, the .rpm on Fedora 43
+      - name: Install and remove the .deb on Debian 13, the .rpm on Fedora 43 (test/package-install.sh)
         run: |
-          for image in debian:13 fedora:43; do
-            docker run --rm -e IMAGE="$image" -v "$PWD/dist:/dist:ro" "$image" sh -ec '
-              case "$IMAGE" in
-                debian*) apt-get update -qq; apt-get install -y -qq /dist/*.deb > /dev/null ;;
-                fedora*) dnf install -y -q /dist/*.rpm ;;
-              esac
-              test -x /usr/lib/cockpit-host-settings/host-settings.py
-              test -x /usr/lib/cockpit-host-settings/host-settings-notify.py
-              test -f /usr/lib/systemd/system/cockpit-host-settings-notify.timer
-              test -f "/usr/lib/systemd/system/cockpit-host-settings-test@.service"
-              test -f /usr/share/cockpit/host-settings/manifest.json
-              test "$(stat -c %a /usr/lib/cockpit-host-settings/hslib.py)" = 644
-              test "$(stat -c "%a %U" /etc/cockpit-host-settings/ntfy.token)" = "600 root"
-              uid=$(getent passwd cockpit-host-settings | cut -d: -f3)
-              test -n "$uid"
-              test "$(stat -c %U /var/lib/cockpit-host-settings)" = cockpit-host-settings
-              # A run as the notifier user, without a channel: it reads, tells nobody, writes its state.
-              python3 -c "import os, sys; u = int(sys.argv[1]); os.setgroups([]); os.setgid(u); os.setuid(u); os.execv(sys.argv[2], sys.argv[2:])" \
-                "$uid" /usr/lib/cockpit-host-settings/host-settings-notify.py run
-              test "$(stat -c %a /var/lib/cockpit-host-settings/status.json)" = 644
-              test "$(stat -c %a /var/lib/cockpit-host-settings/last.json)" = 600
-              # The status verb as nobody (65534 in both images; the Fedora image has no su).
-              python3 -c "import os, sys; os.setgroups([]); os.setgid(65534); os.setuid(65534); os.execv(sys.argv[1], sys.argv[1:])" \
-                /usr/lib/cockpit-host-settings/host-settings.py status --lang de | python3 -c "import json, sys; d = json.load(sys.stdin); print(d[\"state\"], d[\"summary\"]); assert d[\"schema\"] == 1 and d[\"version\"] != \"unknown\" and d[\"state\"] == \"none\""
-              case "$IMAGE" in
-                debian*) apt-get remove -y -qq cockpit-host-settings > /dev/null ;;
-                fedora*) dnf remove -y -q cockpit-host-settings ;;
-              esac
-              test ! -e /usr/lib/cockpit-host-settings
-              test ! -e /var/lib/cockpit-host-settings
-              test -e /etc/cockpit-host-settings/ntfy.token'
+          for kind_image in deb:debian:13 rpm:fedora:43; do
+            docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/test/package-install.sh:/package-install.sh:ro" \
+              "${kind_image#*:}" sh /package-install.sh "${kind_image%%:*}"
           done
       # Only the browser, from Playwright's CDN (seconds). Its system packages (--with-deps: fonts,
       # xvfb) come by apt from the Ubuntu mirror, which was slow enough to hang the job for ten
@@ -107,6 +79,33 @@ jobs:
         with:
           name: screenshots
           path: test/shots/
+
+  # The .rpm on the RHEL rebuilds Rocky Linux and AlmaLinux, 9 and 10, beyond the test job's
+  # Debian 13 and Fedora 43, with the same checks (test/package-install.sh). No Cockpit or systemd
+  # runs there, so an installed package is not yet a tested system.
+  install:
+    name: install (${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["rockylinux/rockylinux:9", "rockylinux/rockylinux:10", "almalinux:9", "almalinux:10"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends rpm > /dev/null
+          make packages
+      - name: Install, check and remove on ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/test/package-install.sh:/package-install.sh:ro" \
+            "$IMAGE" sh -c '. /etc/os-release; echo "$PRETTY_NAME"; exec sh /package-install.sh rpm'
 
   # The oldest Python the helpers support (README, Requirements): the helper tests on 3.8.
   python-min:
