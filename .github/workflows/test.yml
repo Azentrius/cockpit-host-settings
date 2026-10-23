@@ -188,11 +188,16 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
-      - name: The cloud image (kept between runs; tools/vm.sh checks its pinned SHA-256)
+      - name: Which cloud image
+        id: image
+        env:
+          OS: ${{ matrix.os }}
+        run: echo "name=$(sh tools/vm.sh image "$OS")" >> "$GITHUB_OUTPUT"
+      - name: The cloud image (kept between runs by its pinned name; tools/vm.sh checks its SHA-256)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/azentrius-vm
-          key: vm-${{ matrix.os }}-${{ hashFiles('tools/vm.sh') }}
+          key: vm-${{ steps.image.outputs.name }}
       - name: Boot ${{ matrix.os }} (tools/vm.sh)
         env:
           OS: ${{ matrix.os }}
@@ -202,8 +207,10 @@ jobs:
           sh tools/vm.sh root dnf install -y -q podman podman-docker openssl
           sh tools/vm.sh root touch /etc/containers/nodocker
           sh tools/vm.sh copy /root/e2e dist/*.rpm test/e2e/run.sh
-      - name: Mark the audit log
-        run: sh tools/vm.sh avc-mark
+      - name: The SELinux check catches a denial on purpose; then the mark in the audit log
+        run: |
+          sh tools/vm.sh avc-selftest
+          sh tools/vm.sh avc-mark
       - name: End-to-end test in the machine (test/e2e/run.sh as root)
         run: sh tools/vm.sh root sh -c "'cd /root/e2e && OUT=/root/e2e/session sh run.sh /root/e2e/*.rpm'"
       - name: No SELinux denials during the test

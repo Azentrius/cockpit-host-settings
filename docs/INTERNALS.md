@@ -279,5 +279,7 @@ answer against Status Board's rules (`hslib.validate_status`).
   SELinux enforcing and auditd running (both checked), ntfy in Podman with `podman-docker`, postfix
   from the distribution. `vm.sh avc-mark` marks the audit log after the set-up, `vm.sh avc-check`
   fails on any `AVC`, `USER_AVC`, `SELINUX_ERR` or `USER_SELINUX_ERR` record after the mark (and
-  when it cannot read the log or finds no records at all). Report, journal, audit log and console
+  when it cannot read the log or finds no records at all). Before that, `vm.sh avc-selftest`
+  causes a denial on purpose (root entering `httpd_t` with `/usr/bin/true`) and fails unless the
+  check catches it. Report, journal, audit log and console
   are in the artifacts `e2e-rocky-9` and `e2e-rocky-10`.

@@ -5,11 +5,13 @@
 # Azentrius add-on, like tools/build-packages.sh.
 #
 #   sh tools/vm.sh start rocky-9|rocky-10   boot the pinned cloud image, wait for SSH and cloud-init
+#   sh tools/vm.sh image rocky-9|rocky-10   the pinned image's file name (the key of the CI cache)
 #   sh tools/vm.sh root COMMAND...          run a command as root in the machine (one shell line)
 #   sh tools/vm.sh copy DIR FILE...         copy files from here into a folder of the machine
 #   sh tools/vm.sh fetch DIR PATH...        copy files or folders of the machine to here
 #   sh tools/vm.sh avc-mark                 print the SELinux denials so far, then mark the audit log
 #   sh tools/vm.sh avc-check                fail on every SELinux denial after the mark
+#   sh tools/vm.sh avc-selftest             cause a denial on purpose and fail unless the check sees it
 #   sh tools/vm.sh logs DIR                 the console, the journal and the audit log, to DIR
 #
 # Needs qemu-system-x86_64, qemu-img, cloud-localds (cloud-image-utils), curl, ssh, scp, sha256sum
@@ -133,8 +135,26 @@ avc_check() {
     echo "No SELinux denials after the mark."
 }
 
+# A denial on purpose: root may not enter httpd_t with /usr/bin/true, which is no entry point of
+# that domain. The check has to catch it, or "no denials" would prove nothing.
+avc_selftest() {
+    avc_mark > /dev/null
+    guest sudo runcon system_u:system_r:httpd_t:s0 /usr/bin/true > /dev/null 2>&1 || true
+    if (avc_check) > "$dir/avc-selftest.log" 2>&1; then
+        cat "$dir/avc-selftest.log"
+        die "self-test: no denial seen after one on purpose"
+    fi
+    if ! grep -q httpd_t "$dir/avc-selftest.log"; then
+        cat "$dir/avc-selftest.log"
+        die "self-test: the check failed, but not for the denial on purpose"
+    fi
+    echo "Self-test: the check caught the denial on purpose:"
+    grep -E "$denials" "$dir/avc-selftest.log" | head -n 3
+}
+
 case ${1:-} in
     start) shift; start "$@" ;;
+    image) shift; image "${1:?image: rocky-9 or rocky-10}"; echo "$name" ;;
     root) shift; [ $# -gt 0 ] || die "root: no command"; guest sudo "$@" ;;
     copy)
         shift; [ $# -ge 2 ] || die "copy: DIR FILE..."
@@ -150,11 +170,12 @@ case ${1:-} in
         for p in "$@"; do guest sudo tar -C / -cf - "${p#/}" | tar -C "$to" -xf -; done ;;
     avc-mark) avc_mark ;;
     avc-check) avc_check ;;
+    avc-selftest) avc_selftest ;;
     logs)
         shift; to=${1:?logs: DIR}
         mkdir -p "$to"
         cp "$dir/console.log" "$to/" 2> /dev/null || true
         guest sudo journalctl -b --no-pager > "$to/journal.txt" 2>&1 || true
         guest sudo cat /var/log/audit/audit.log > "$to/audit.log" 2>&1 || true ;;
-    *) sed -n '7,13p' "$0" >&2; exit 64 ;;
+    *) sed -n '7,15p' "$0" >&2; exit 64 ;;
 esac
