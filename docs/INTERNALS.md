@@ -187,7 +187,7 @@ the last full check. `test-ntfy.json`:
 ```
 
 The page shows it only while `target` is the server and topic set now. The answers are those of
-ntfy 2.11 in the job `e2e`: 403 for what a login does not allow, with or without a token.
+ntfy 2.11 and 2.32 in the job `e2e`: 403 for what a login does not allow, with or without a token.
 `/v1/account` answers 200 but does not list what `ntfy access` grants, so the token's rights are
 found out by reading with it.
 
