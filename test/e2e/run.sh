@@ -37,6 +37,15 @@ field() { python3 -c "import json, sys; d = json.load(sys.stdin); print(eval(sys
 ntfy() { docker exec "$@"; }
 # Every message the reader can see on a topic, one JSON per line.
 messages() { curl -fsS -H "Authorization: Bearer $reader" "$base/$1/json?poll=1"; }
+# What a step checks, before it checks it.
+note() { echo "  $*" | tee -a "$report"; }
+# One run of the notifier through the page's helper, its output in OUT/NAME.txt. The steps start
+# the service more often than systemd's start limit allows (5 starts in 10 seconds; on a server
+# the timer starts it every 5 minutes), so the counter is reset first.
+run_notifier() {
+    systemctl reset-failed cockpit-host-settings-notify.service 2> /dev/null || true
+    "$helper" run > "$out/$1.txt" 2>&1 || { cat "$out/$1.txt"; fail "run of the notifier ($1)"; }
+}
 
 next "ntfy: deny-all, a user with write access to its topic only, a reader"
 # The server's databases live in /var/lib/ntfy, which the image does not have: a folder of the host.
@@ -136,10 +145,10 @@ ok "summary on ntfy and in /var/mail/hsmail"
 
 next "a change: one message; no change: none"
 echo danger > /var/lib/e2e-addon/state
-"$helper" run > "$out/run-2.txt" 2>&1 || { cat "$out/run-2.txt"; fail "run"; }
+run_notifier run-2
 messages "$topic" > "$out/messages-2.json"
 [ "$(grep -c 'Danger · E2E Add-on · The thing' "$out/messages-2.json")" = 1 ] || fail "the change was not told once"
-"$helper" run > /dev/null 2>&1
+run_notifier run-2-again
 [ "$(messages "$topic" | wc -l)" = "$(wc -l < "$out/messages-2.json")" ] || fail "a run without a change sent a message"
 ok "warning to danger told once, the next run told nothing"
 
@@ -147,19 +156,28 @@ next "findings: a second finding gives a second message"
 # The item was told as a danger already: the finding it lists first is taken as told. The second
 # one is told on its own, although the item stays a danger.
 before=$(messages "$topic" | wc -l)
+note "messages on the topic before: $before"
 echo '[{"fid":"port.5432-tcp","state":"danger","title":"5432/tcp postgres"}]' > /var/lib/e2e-addon/findings
 chmod 644 /var/lib/e2e-addon/findings
-"$helper" run > "$out/run-3.txt" 2>&1 || { cat "$out/run-3.txt"; fail "run"; }
-[ "$(messages "$topic" | wc -l)" = "$before" ] || fail "the finding behind the danger already told was told again"
+run_notifier run-3
+count=$(messages "$topic" | wc -l)
+note "after the first finding: $count messages (expected $before)"
+[ "$count" = "$before" ] || fail "the finding behind the danger already told was told again"
 echo '[{"fid":"port.5432-tcp","state":"danger","title":"5432/tcp postgres"},{"fid":"port.6379-tcp","state":"danger","title":"6379/tcp redis"}]' \
     > /var/lib/e2e-addon/findings
-"$helper" run > "$out/run-4.txt" 2>&1 || { cat "$out/run-4.txt"; fail "run"; }
+run_notifier run-4
 messages "$topic" > "$out/messages-4.json"
-[ "$(wc -l < "$out/messages-4.json")" = $((before + 1)) ] || fail "the second finding did not give exactly one message"
-[ "$(grep -c 'Danger · E2E Add-on · 6379/tcp redis' "$out/messages-4.json")" = 1 ] || fail "the second finding was not told"
-if grep -q '5432/tcp postgres' "$out/messages-4.json"; then fail "the first finding was told"; fi
-"$helper" run > /dev/null 2>&1
-[ "$(messages "$topic" | wc -l)" = $((before + 1)) ] || fail "a run without a change sent a message"
+count=$(wc -l < "$out/messages-4.json")
+second=$(grep -c 'Danger · E2E Add-on · 6379/tcp redis' "$out/messages-4.json" || true)
+first=$(grep -c '5432/tcp postgres' "$out/messages-4.json" || true)
+note "after the second finding: $count messages (expected $((before + 1))); naming 6379/tcp redis: $second (expected 1); naming 5432/tcp postgres: $first (expected 0)"
+[ "$count" = $((before + 1)) ] || fail "the second finding did not give exactly one message"
+[ "$second" = 1 ] || fail "the second finding was not told"
+[ "$first" = 0 ] || fail "the first finding was told"
+run_notifier run-5
+count=$(messages "$topic" | wc -l)
+note "after a run without a change: $count messages (expected $((before + 1)))"
+[ "$count" = $((before + 1)) ] || fail "a run without a change sent a message"
 ok "the first finding taken as told, the second told once while the item stayed a danger, the next run told nothing"
 
 next "the status verb as nobody, and for the board"
