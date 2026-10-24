@@ -272,4 +272,14 @@ answer against Status Board's rules (`hslib.validate_status`).
   `auth-default-access: deny-all`, postfix for local mail, a stand-in add-on. It runs the three
   commands of the page on the ntfy server, "Check connection" against a closed and an open topic,
   the first run with the summary through both channels, a change, a run without one, the status
-  verb as nobody, switching off, and looks for the token in every file and the journal.
+  verb as nobody, switching off, and looks for the token in every file and the journal. It also
+  checks that Cockpit lists the page (`cockpit-bridge --packages`).
+- Job `e2e-el` (`tools/vm.sh` and `test/e2e/run.sh` with the `.rpm`): the same test in a Rocky
+  Linux 9 or 10 VM under KVM on the runner, from a cloud image pinned by name and SHA-256, with
+  SELinux enforcing and auditd running (both checked), ntfy in Podman with `podman-docker`, postfix
+  from the distribution. `vm.sh avc-mark` marks the audit log after the set-up, `vm.sh avc-check`
+  fails on any `AVC`, `USER_AVC`, `SELINUX_ERR` or `USER_SELINUX_ERR` record after the mark (and
+  when it cannot read the log or finds no records at all). Before that, `vm.sh avc-selftest`
+  causes a denial on purpose (root entering `httpd_t` with `/usr/bin/true`) and fails unless the
+  check catches it. Report, journal, audit log and console
+  are in the artifacts `e2e-rocky-9` and `e2e-rocky-10`.
