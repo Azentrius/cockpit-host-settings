@@ -58,6 +58,7 @@ t("every key the page asks for exists", () => {
         "btn.": ["refresh", "loading"],
         "cov.": JSON.parse(js.match(/const COVERAGES = (\[[^\]]*\])/)[1]),
         "role.": ["web", "database", "build", "bastion"],
+        "beat.reason.": JSON.parse(js.match(/const BEAT_REASONS = (\[[^\]]*\])/)[1]),
     };
     Object.entries(families).forEach(([prefix, keys]) => keys.forEach((k) => assert.ok(prefix + k in en, "missing: " + prefix + k)));
 });

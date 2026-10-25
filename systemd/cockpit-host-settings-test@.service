@@ -6,12 +6,14 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# The instance is the channel; host-settings-notify.py accepts only ntfy and mail.
+# The instance is the channel; host-settings-notify.py accepts only ntfy, mail and heartbeat.
 ExecStart=/usr/bin/python3 -IB /usr/lib/cockpit-host-settings/host-settings-notify.py test %i
-# As cockpit-host-settings-notify.service: the add-on's own user, the token as a credential.
+# As cockpit-host-settings-notify.service: the add-on's own user, the token and the watchdog's URL
+# as credentials.
 User=cockpit-host-settings
 Group=cockpit-host-settings
 LoadCredential=ntfy.token:/etc/cockpit-host-settings/ntfy.token
+LoadCredential=heartbeat.conf:/etc/cockpit-host-settings/heartbeat.conf
 StateDirectory=cockpit-host-settings
 StateDirectoryMode=0755
 TimeoutStartSec=2min

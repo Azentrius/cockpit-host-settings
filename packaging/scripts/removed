@@ -1,10 +1,10 @@
 # shellcheck shell=sh
 # After cockpit-host-settings was removed (as root; also `make uninstall`): forget its units and
-# its state. /etc/cockpit-host-settings (the settings and the ntfy token) stays, as configuration
-# does, and so does the user cockpit-host-settings: removing a system user could hand its id to
+# its state. /etc/cockpit-host-settings (the settings, the ntfy token and the watchdog's URL) stays,
+# as configuration does, and so does the user cockpit-host-settings: removing a system user could hand its id to
 # another one later.
 # SPDX-License-Identifier: Apache-2.0
-for f in last.json status.json test-ntfy.json test-mail.json .lock; do
+for f in last.json status.json heartbeat.json test-ntfy.json test-mail.json test-heartbeat.json .lock; do
     rm -f "/var/lib/cockpit-host-settings/$f"
 done
 rmdir /var/lib/cockpit-host-settings 2> /dev/null || true

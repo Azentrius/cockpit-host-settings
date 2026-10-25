@@ -5,21 +5,23 @@
 | What | Path | Owner, mode |
 |---|---|---|
 | The page | `/usr/share/cockpit/host-settings/` | root, 0644 |
-| The helpers | `/usr/lib/cockpit-host-settings/` (`host-settings.py`, `host-settings-notify.py` 0755; `hslib.py`, `hsnotify.py`, `hsstatus.py`, `hsproc.py` 0644) | root |
+| The helpers | `/usr/lib/cockpit-host-settings/` (`host-settings.py`, `host-settings-notify.py` 0755; `hslib.py`, `hsnotify.py`, `hsstatus.py`, `hsproc.py`, `hsheartbeat.py` 0644) | root |
 | The units | `cockpit-host-settings-notify.service`, `.timer`, `cockpit-host-settings-test@.service` | root |
 | The user | `cockpit-host-settings` (`/usr/lib/sysusers.d/cockpit-host-settings.conf`) | |
 | The settings | `/etc/cockpit-host-settings/notify.conf` | root, 0644 |
 | The target profile | `/etc/cockpit-host-settings/profile.conf`, the file before the last change in `profile.conf.bak` | root, 0644 |
 | The ntfy token | `/etc/cockpit-host-settings/ntfy.token` (empty: no token) | root, 0600 |
+| The watchdog | `/etc/cockpit-host-settings/heartbeat.conf` (empty: no watchdog; adapter and URL, a secret) | root, 0600 |
 | The state | `/var/lib/cockpit-host-settings/` (the units' `StateDirectory`) | cockpit-host-settings, 0755 |
-| | `last.json`, `test-ntfy.json`, `test-mail.json` | 0600 |
+| | `last.json`, `heartbeat.json`, `test-ntfy.json`, `test-mail.json`, `test-heartbeat.json` | 0600 |
 | | `status.json` (status contract) | 0644 |
 | The lock of the settings | `/run/cockpit-host-settings.lock` | root, 0600 |
 
 The package's `configure` script creates the user (`systemd-sysusers`, else `useradd`), the
-state folder with that owner, `/etc/cockpit-host-settings` and an empty token file: the units
-hand the token over with `LoadCredential=`, which fails when the file is missing. Removing the
-package removes the state and the units, and keeps the settings, the token and the user.
+state folder with that owner, `/etc/cockpit-host-settings`, an empty token file and an empty
+watchdog file: the units hand both over with `LoadCredential=`, which fails when a file is
+missing. Removing the package removes the state and the units, and keeps the settings, the token,
+the watchdog's file and the user.
 
 ## Calls from the page
 
@@ -36,7 +38,10 @@ package removes the state and the units, and keeps the settings, the token and t
 | `host-settings.py check ntfy` | require | starts `cockpit-host-settings-test@ntfy.service`, waits, prints `RESULT {json}` |
 | `host-settings.py test mail` | require | the same with `@mail` |
 | `host-settings.py run` | require | starts `cockpit-host-settings-notify.service`, waits |
-| `host-settings.py install timer`, `remove timer` | require | needs a channel; `remove` writes the "switched off" status |
+| `host-settings.py install timer`, `remove timer` | require | needs a channel or a watchdog; `remove` writes the "switched off" status and, with a watchdog, says that it will raise the alarm |
+| `host-settings.py heartbeat set healthchecks\|uptime-kuma` (URL on standard input) | require | the dialog "Set up a watchdog" / "Change" |
+| `host-settings.py heartbeat remove` | require | empties `heartbeat.conf`; says to pause the check at the watchdog |
+| `host-settings.py heartbeat test` | require | starts `cockpit-host-settings-test@heartbeat.service`, waits, prints `RESULT {json}` |
 | `host-settings.py profile roles [ROLE ...]` | require | the dialog "Set up a profile" / "Change roles" |
 | `host-settings.py profile expect add\|remove ITEM` | require | "Expect more", and "Remove" in a row of what is expected |
 | `host-settings.py profile skip add ADDON/CHECK [YYYY-MM-DD]` (reason on standard input) | require | "Leave a check out" |
@@ -50,7 +55,8 @@ characters, a trailing slash dropped; the topic `[A-Za-z0-9_-]{1,64}`; one e-mai
 token `[A-Za-z0-9_.~+/=-]{1,256}`; a role `[a-z0-9-]{1,40}` that is in the catalog; an add-on or a
 check `[a-z0-9][a-z0-9-]{0,40}(/[a-z0-9-]{1,40})?` (the contract's pattern for `expect`); a check
 left out `[a-z0-9][a-z0-9-]{0,40}/[a-z0-9-]{1,40}` (never an add-on alone); a day `YYYY-MM-DD`
-after today. `test/files.test.js` checks that the patterns of the page
+after today; the watchdog's URL as "The watchdog" below says (the page only looks for
+`http(s)://host/path` first). `test/files.test.js` checks that the patterns of the page
 are the helper's.
 
 Exit codes of `host-settings.py`: 0 ok, 1 failed, 2 unit missing, 64 wrong call, 75 busy (the
@@ -73,6 +79,8 @@ lock), 77 needs root. `HOST_SETTINGS_LANG=de|en` selects the language of its mes
   "check": {…},
   "test_mail": {…},
   "docs": "https://docs.ntfy.sh/install/",
+  "heartbeat": {"configured": true, "invalid": false, "adapter": "uptime-kuma", "encrypted": false, "local": false,
+                "last": {…}, "test": {…}},
   "profile": {"set": true, "unreadable": false, "roles": ["web"], "extra": ["security/exposure"],
               "expect": ["host-settings", "update-gaps", "security", "cronjobs", "image-updates", "security/exposure"],
               "skip": [{"check": "update-gaps/cve", "until": "2026-12-31", "reason": "network data off on purpose", "active": true}],
@@ -83,7 +91,9 @@ lock), 77 needs root. `HOST_SETTINGS_LANG=de|en` selects the language of its mes
 
 `smtp.listening` comes from `ss -Hltn`: something listens on port 25 of the loopback (or of every
 address); `null` when `ss` failed. `last` is `last.json` without `sent` and without the steps of
-the daily check; `check` and `test_mail` are the files of the test unit. `profile` is what
+the daily check; `check` and `test_mail` are the files of the test unit. `heartbeat` says whether a watchdog is set up (`invalid`: the file says something that does not
+hold), its adapter, whether its address is encrypted and whether it is this host itself, and
+`heartbeat.json` and `test-heartbeat.json` (below); never the address. `profile` is what
 `profile show` prints (below): `expect` resolved from the roles, each skip `active` or ended now,
 `set_at` from the file (else its time), the lines that do not count, and the catalog of roles,
 which the page shows instead of a copy of its own.
@@ -225,10 +235,14 @@ ntfy is set up when both `ntfy_url` and `ntfy_topic` are there, e-mail when `mai
 7. **Once a day**, with ntfy set up: read the topic without a login (below, steps reach, tls,
    anon-read; nothing is published). A new server or topic makes the check due at once.
 8. Write `last.json` (0600) and `status.json` (0644).
+9. **With a watchdog**, its signal: success or failure as "The watchdog" below decides, and its
+   answer in `heartbeat.json` (0600), then `status.json` again with it.
 
-Exit codes of `host-settings-notify.py`: 0 done (a message that could not be sent is no error),
-1 failed (the previous files stay), 64 wrong call, 75 another run or test holds the lock
-(`/var/lib/cockpit-host-settings/.lock`).
+Exit codes of `host-settings-notify.py`: 0 done (a message that could not be sent is no error;
+the watchdog gets a failure), 1 failed (the previous files stay; the watchdog gets a failure), 64
+wrong call, 75 another run or test holds the lock (`/var/lib/cockpit-host-settings/.lock`; no
+signal at all). A `notify.conf` that is there but cannot be read stops the run (1); a missing one
+is the defaults, as before.
 
 ### Findings
 
@@ -389,6 +403,147 @@ ntfy 2.11 and 2.32 in the job `e2e`: 403 for what a login does not allow, with o
 `/v1/account` answers 200 but does not list what `ntfy access` grants, so the token's rights are
 found out by reading with it.
 
+## The watchdog
+
+An external watchdog notices when the notifier stops or fails: after every run that holds
+the lock the notifier sends it a signal (`lib/hsheartbeat.py`), and the watchdog raises the alarm
+when a failure comes or the signals stay away. It judges whether the notifier works, not whether
+the host is in danger: findings go out as messages. Off by default; one watchdog per host,
+chosen explicitly, never guessed from the address.
+
+### The settings
+
+`/etc/cockpit-host-settings/heartbeat.conf` (root, 0600), written by the helper only:
+
+```
+# Host Settings: the watchdog that gets a signal after every run. Secret: root only (0600).
+adapter = uptime-kuma
+url = http://10.8.0.2:3001/api/push/TOKEN
+```
+
+The whole URL is a secret (whoever knows it can report runs and keep the alarm quiet): it reaches
+the helper on standard input (the page: a password field, cleared once sent), the notifier as the
+systemd credential `heartbeat.conf` (`LoadCredential=` in the notify and test units), and appears
+in no other file, output, log, status, screenshot or process argument. `notify.conf` (0644) holds
+nothing of it. An empty file (the package's default) is no watchdog; a file that says something
+that does not hold (a broken hand edit) is `invalid`: no request, the answer `invalid`.
+
+What the helper takes (`hsheartbeat.normalize`, exit 64 with the reason otherwise):
+
+- `http(s)://host[:port]/path`, at most 500 characters, no user, no fragment; a trailing slash is
+  dropped.
+- `https://` for any host, the certificate and the host name checked as usual. Plain `http://`
+  only to an IP address of a private network: 10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7 or
+  the loopback (a watchdog reached through WireGuard, say), never to a host name, which could
+  resolve to anything. This is the deliberate exception for a watchdog at home behind a VPN; the
+  page marks such an address "Not encrypted: private network".
+- `healthchecks`: the ping URL (`https://hc-ping.com/UUID`, `https://hc-ping.com/KEY/SLUG` or a
+  server of one's own, `…/ping/UUID`), no query, and not ending in `/fail`, `/start`, `/log` or an
+  exit status.
+- `uptime-kuma`: the push URL, `…/api/push/TOKEN`; the query Uptime Kuma's page shows after it
+  (`?status=up&msg=OK&ping=`) is taken and dropped, any other query refused.
+- A watchdog on the loopback is taken (the end-to-end test needs it) and named on the page: it
+  cannot notice when its own host fails.
+
+### The signals
+
+| Signal | Healthchecks | Uptime Kuma |
+|---|---|---|
+| success | `POST URL`, text body "Host Settings: run done" | `GET URL?status=up&msg=…` |
+| failure | `POST URL/fail`, body "Host Settings: " and the reason | `GET URL?status=down&msg=…` (never `/fail`) |
+| test (the page) | `POST URL/log`: logged, neither success nor failure | `GET URL?status=up&msg=…`: Uptime Kuma knows no other kind, so a test counts as a heartbeat |
+
+GET for Uptime Kuma: 1.x takes only GET on the push URL, 2.x any method. The reason is one of our
+own texts, never an add-on's: "the settings could not be read", "reading the add-ons failed", "a
+message could not be sent (ntfy timeout, mail no-mta)", "the state could not be saved", "the run
+failed".
+
+What an answer means (`hsheartbeat.judge`); a 2xx alone is not enough:
+
+| Answer | Healthchecks | Uptime Kuma |
+|---|---|---|
+| taken (`accepted`) | 200 `OK`, 201 | 2xx with `{"ok": true}` |
+| `not-found` | 200 `OK (not found)` (a UUID it does not know), 404 | 404 with `{"ok": false}` |
+| `rate-limited` | 200 `OK (rate limited)`, 429 | |
+| `refused` | | 2xx with `{"ok": false}` |
+| `ambiguous`, `invalid-url` | 409, 400 | |
+| `unexpected` | any other 200 body | a 2xx without `ok` |
+| `redirect` | any 3xx: never followed, so the URL never goes to another target | the same |
+| `http-NNN` | any other status | the same |
+| `tls`, `timeout`, `network` | no answer | the same |
+
+Each signal gets at most 3 tries of 10 seconds each, 2 and 5 seconds apart, never more than 40
+seconds in all; only `timeout`, `network` and 5xx are tried again. The request is
+`hsnotify.http`, as for ntfy: TLS checked with the system's certificates, redirects not followed.
+
+### The result of a run
+
+Decided explicitly in `do_run()` and `main()`, never from the exit code (0 also when a message
+could not be sent) and never in a `finally`:
+
+| The run | Signal |
+|---|---|
+| done and `last.json` and `status.json` written, nothing to send or the message reached every channel set up | success |
+| findings told correctly (a danger, an expected check no longer possible, an add-on whose status cannot be read) | success: they go out as messages; a gap in coverage is no failure of the notifier |
+| a message did not reach at least one channel set up (also when another took it and it is not sent again; delivery and its retry stay as they are) | failure, reason "a message could not be sent" with the channels |
+| `notify.conf` there but not readable | failure ("the settings could not be read"), exit 1 |
+| collecting the add-ons ends with an exception | failure ("reading the add-ons failed"), exit 1 |
+| `last.json` or `status.json` cannot be written | failure ("the state could not be saved"), exit 1 |
+| another run or test holds the lock | nothing at all, exit 75: the run that holds it signals |
+| hangs, is killed (`TimeoutStartSec=5min`), the timer is off, the host is down | nothing: the watchdog notices the silence |
+| a run with nothing set up but the watchdog | success: the watchdog alone is enough for the timer |
+
+The answer goes to `heartbeat.json`, a file of its own:
+
+```json
+{"at": "2026-10-19T19:00:01Z", "adapter": "uptime-kuma", "signal": "failure", "why": "delivery",
+ "result": {"ok": true, "code": 200, "reason": "accepted", "attempts": 1}}
+```
+
+A signal that does not get through changes nothing in `last.json`: no finding is reset, no message
+goes out again, the exit code stays the run's. The status shows it (item `heartbeat`, below), the
+page under Watchdog, the journal as `watchdog: success, accepted` or `watchdog: failure, not
+accepted: timeout`. The test signal writes `test-heartbeat.json` (`{at, channel: "heartbeat",
+adapter, result}` or `{at, channel, error: "not-set-up"|"invalid"}`), never `heartbeat.json`.
+
+### Period and grace
+
+The timer: `OnCalendar=*:0/5`, `RandomizedDelaySec=30s`, `AccuracySec=10s`, so each run starts 0
+to 40 seconds after its 5-minute mark, and two starts are 260 to 340 seconds apart. The signal
+goes at the end of a run, which takes seconds; at worst the status verbs (10 s each), ntfy and
+SMTP (20 s each), the daily check of the topic (3 × 20 s) and the signal itself (40 s), well
+within the unit's 5 minutes, after which a run is killed and sends nothing. With runs under a
+minute, two signals are at most about 400 seconds apart, and one missed or killed run makes about
+700 seconds. Hence, so that one late or missed run raises no alarm and two in a row do (an alarm
+at the latest 12 minutes after the last signal):
+
+| Watchdog | Setting |
+|---|---|
+| Healthchecks | Period 5 minutes, Grace 7 minutes |
+| Uptime Kuma, monitor of type Push | Heartbeat interval 720 seconds, Retries 0; a failure signal then raises the alarm at once (with Retries 1 a single failure, or the first missed window, waits one Heartbeat Retry Interval) |
+
+The watchdog must not run on the watched host alone: it has to run outside the host and outside
+what fails together with it (power, network, the same hypervisor), and something else should
+watch the watchdog in turn. Which watchdog watches the servers, where it runs and who watches it
+is decided outside this repository.
+
+### Switching off
+
+The signals simply stop, which the watchdog cannot tell from a failure. `remove timer`,
+`heartbeat remove` and the page's dialogs say so before and after: pause or delete the check at
+the watchdog first, or it raises the alarm once its grace time is over. Removing the package stops
+the timer the same way and keeps `heartbeat.conf`.
+
+### Tested against
+
+- Uptime Kuma 2.5.7 (`louislam/uptime-kuma:2.5.7-slim`, pinned by digest) in job `e2e`: its first
+  user and a push monitor made through its own Socket.IO API in the container (`test/e2e/kuma.py`,
+  nothing leaves the runner), heartbeats while the timer runs, down when it stops, exactly one
+  recovery, a failure with its reason. Uptime Kuma 1.x is untested; its push URL is the same, and
+  the signal is a GET, which 1.x needs.
+- Healthchecks: a stand-in for its pinging API (`test/e2e/watchdog.py`, the answers its
+  documentation gives, also 200 `OK (not found)`), not Healthchecks itself.
+
 ## `last.json`
 
 ```json
@@ -428,6 +583,7 @@ the verb answers in the language asked for. Items, each with the link `#/notific
 | `setup` | ok with the channels (value: their number), none without one |
 | `delivery` | ok when the last message went out everywhere, warning with the channels that failed and why, none before the first message |
 | `access` | only with ntfy: warning when the topic is readable or writable without a login, ok when closed, none when not checked |
+| `heartbeat` | only with a watchdog: ok when it took the last signal (detail: when, and whether it was told of a failed run), warning when the signal did not get through (with the reason) or the settings do not hold, none before the first signal; never the address |
 | `run` | ok (value: the add-ons read), none without a channel (the notifier tells nobody); `stale_after` 900 seconds, so the verb and the menu icon make it a warning when three runs are missed |
 
 Without `status.json` the verb answers "Not set up yet"; after `remove timer` the file says
@@ -464,6 +620,12 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
 - The commands for the ntfy server are built from the topic: user and topic are the same name;
   the reader's pattern replaces the host name in the topic with `*`.
 - Tabs: `TABS` has one entry, so the tab bar stays hidden; the location `#/notifications` selects it.
+- The watchdog is a section of the Notifications tab (`renderHeartbeat()`): set up or not, the
+  service, "Stored (readable by root only)" instead of the address, "Not encrypted: private
+  network" for plain http, the last signal and the last test, the settings that fit the timer.
+  "Set up a watchdog" and "Change" take the URL in a password field and hand it to the helper on
+  standard input; "Remove" and "Switch off" say first that the watchdog will raise the alarm. A
+  watchdog alone enables "Set up the regular check".
 - The target profile is a section of the Notifications tab (`renderProfile()`), with
   administrative access only: the roles, what is expected and why (every host, a role, added
   here) with the coverage the notifier found last, the checks left out with reason and end. Each
@@ -488,7 +650,17 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   network, SMTP and the clock (also with a `last.json` of 0.1.0, and with a target profile set up
   first or later); the own status against the board's rules.
 - `test/helper_test.py`: the verbs of `host-settings.py`, the profile's among them (refusals,
-  unknown roles, the file line by line, atomic write and backup, the limits, the status field).
+  unknown roles, the file line by line, atomic write and backup, the limits, the status field),
+  and the watchdog's (the URL from standard input only, 0600, never printed, not by `show`
+  either; the refusals; the timer with a watchdog alone; what switching off says).
+- `test/heartbeat_test.py`: the addresses each adapter takes, the requests of both protocols,
+  every answer (also 200 bodies that say no and `{"ok": false}`), the tries and the budget;
+  `hsnotify.http` against real sockets (a redirect not followed, a timeout, a TLS error, nobody
+  listening); whole runs: success only once the state is saved, failure when a message did not go
+  out although the run exits 0, when the settings cannot be read, collecting aborts or the state
+  cannot be written, nothing when another run holds the lock, no request at all without a
+  watchdog, a signal that does not get through kept apart from the findings, the URL in no file,
+  output, status or argument; the status item by the board's rules.
 - `test/page.test.js`, `test/files.test.js`, `test/i18n.test.js`: the page under jsdom, its files,
   its texts.
 - `tools/check-board-fixtures.sh`: `test/fixtures/board` is unchanged from Status Board
@@ -509,8 +681,13 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   the first run with the summary through both channels, a change, a run without one, a second
   finding of an item that is a danger already (one message), a target profile that expects the
   stand-in, which then goes away (one message "Check no longer possible"), the status verb as
-  nobody with the profile in it, switching off, and looks for the token in every file and the
-  journal. It also checks that
+  nobody with the profile in it, the watchdog against `test/e2e/watchdog.py` (a stand-in for both
+  protocols: a success after a run, a failure for a message that reached e-mail only while the run
+  ends with 0 and for settings that cannot be read, nothing from a run that loses the lock, an
+  unknown push token, a 200 `OK (not found)`, a redirect; then, with the timer every 5 seconds, the
+  timer stopped, the signals missed, the timer started, exactly one recovery, for both protocols),
+  with `KUMA_IMAGE` the same against a real Uptime Kuma, switching off, and looks for the token
+  and the watchdog's address in every file, the journal and every process's arguments. It also checks that
   Cockpit lists the page (`cockpit-bridge --packages`).
 - Job `e2e-el` (`tools/vm.sh` and `test/e2e/run.sh` with the `.rpm`): the same test in a Rocky
   Linux 9 or 10 VM under KVM on the runner, from a cloud image pinned by name and SHA-256, with

@@ -66,7 +66,12 @@ t("only the fixed verbs, and require only for the dialog", () => {
     // The dialog's calls: the first word of every argv in ACTIONS and the two forms.
     const block = js.slice(js.indexOf("const ACTIONS = {"), js.indexOf("function copyCommands"));
     const verbs = [...block.matchAll(/\["([a-z]+)"/g)].map((m) => m[1]).filter((v) => v !== "en" && v !== "de");
-    assert.deepStrictEqual([...new Set(verbs)].sort(), ["check", "install", "profile", "remove", "run", "set", "test", "token", "unset"]);
+    assert.deepStrictEqual([...new Set(verbs)].sort(), ["check", "heartbeat", "install", "profile", "remove", "run", "set", "test", "token", "unset"]);
+    // The watchdog's verbs, each a fixed form; its address goes on standard input.
+    const beat = [...block.matchAll(/\["heartbeat", "([a-z]+)"/g)].map((m) => m[1]);
+    assert.deepStrictEqual([...new Set(beat)].sort(), ["remove", "set", "test"]);
+    assert.ok(/\["heartbeat", "set", v\.adapter\]/.test(block), "heartbeat set takes the adapter only");
+    assert.ok(/input: \(v\) => v\.url \+ "\\n"/.test(block), "the address goes to standard input");
     // The profile's verbs, each a fixed form; the reason of a skip goes on standard input.
     const profile = [...block.matchAll(/\["profile", "([a-z]+)"(?:, "([a-z]+)")?/g)].map((m) => m[1] + (m[2] ? " " + m[2] : ""));
     assert.deepStrictEqual([...new Set(profile)].sort(), ["expect add", "expect remove", "remove", "roles", "skip add", "skip remove"]);
@@ -82,6 +87,7 @@ t("the token: on standard input, from a password field, never in an argument", (
     assert.ok(/input: \(v\) => v\.token \+ "\\n"/.test(js), "the token goes to standard input");
     assert.ok(/if \(input !== null\) proc\.input\(input\)/.test(js));
     assert.ok(/type: "password"/.test(js));
+    assert.ok(/\{ id: "url", label: t\("dlg\.beat\.url"\), type: "password"/.test(js), "the watchdog's address in a password field");
     assert.ok(!/console\.(log|info|debug)/.test(js), "nothing is logged to the console");
 });
 

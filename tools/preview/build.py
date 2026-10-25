@@ -6,9 +6,10 @@
     open tools/preview/out/host-settings/index.html?scenario=ready&lang=de
 
 Scenarios: fresh (nothing set up, no target profile), ready (ntfy and e-mail, the timer on, four
-add-ons read, the target profile of a web server with one check left out),
-open (the topic is open without a login, the last message did not go out everywhere), nomta (only
-a sendmail command, no mail server on localhost:25). admin=0 shows the summary without
+add-ons read, the target profile of a web server with one check left out, a watchdog in Uptime
+Kuma), open (the topic is open without a login, the last message did not go out everywhere, the
+last signal did not reach the watchdog), nomta (only a sendmail command, no mail server on
+localhost:25). admin=0 shows the summary without
 administrative access. Cockpit's base1/cockpit.js is replaced by cockpit-stub.js, which answers
 the page's calls from these scenarios; the dialogs run against it too. Nothing touches a real
 server. The output directory is generated and git-ignored.
@@ -52,6 +53,13 @@ STEPS = [{"id": "reach", "result": "ok", "code": 200, "reason": "answered"}, {"i
          {"id": "anon-write", "result": "ok", "code": 403, "reason": "protected"}, {"id": "token", "result": "ok", "code": 200, "reason": "write-only"}]
 
 
+# The watchdog as `show` sends it: never the address.
+BEAT = {"configured": True, "invalid": False, "adapter": "uptime-kuma", "encrypted": True, "local": False,
+        "last": {"at": "2026-10-19T19:00:04Z", "adapter": "uptime-kuma", "signal": "success", "why": None,
+                 "result": {"ok": True, "code": 200, "reason": "accepted", "attempts": 1}},
+        "test": None}
+
+
 def item(iid, title, state, value=None, stale=False):
     return {"id": iid, "title": title, "state": state, "value": value, "detail": None, "link": None, "stale": stale}
 
@@ -80,6 +88,7 @@ READY = dict(FRESH, **{
                       "gaps": []} for pkg in hslib.resolve_expect(["web"])],
     },
     "profile": WEB_PROFILE,
+    "heartbeat": BEAT,
     "check": {"at": "2026-10-19T09:00:00Z", "channel": "ntfy", "target": TARGET, "token": True, "steps": STEPS,
               "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok"}},
     "test_mail": {"at": "2026-10-18T09:05:00Z", "channel": "mail", "result": {"ok": True, "code": None, "reason": "sent"}},
@@ -90,6 +99,7 @@ OPEN["check"]["steps"] = [dict(s, result="warning", reason="readable" if s["id"]
                           if s["id"] in ("anon-read", "anon-write") else s for s in STEPS]
 OPEN["check"]["steps"][-1] = {"id": "token", "result": "info", "code": 200, "reason": "can-read"}
 OPEN["last"]["delivery"]["results"]["ntfy"] = {"ok": False, "code": 403, "reason": "rejected"}
+OPEN["heartbeat"]["last"]["result"] = {"ok": False, "code": None, "reason": "timeout", "attempts": 3}
 NOMTA = copy.deepcopy(READY)
 NOMTA["smtp"] = {"listening": False, "sendmail": True}
 NOMTA["test_mail"] = {"at": "2026-10-19T18:50:00Z", "channel": "mail", "result": {"ok": False, "code": None, "reason": "no-mta"}}
@@ -97,7 +107,8 @@ NOMTA["test_mail"] = {"at": "2026-10-19T18:50:00Z", "channel": "mail", "result":
 
 def main():
     info = {"channels": ["ntfy", "mail"], "delivery": {"at": "2026-10-19T18:30:00Z", "results": {"ntfy": {"ok": False, "reason": "rejected"}}},
-            "access": {"state": "ok"}, "run": {"at": "2026-10-19T19:00:00Z", "addons": 4}}
+            "access": {"state": "ok"}, "run": {"at": "2026-10-19T19:00:00Z", "addons": 4},
+            "heartbeat": {"invalid": False, "at": BEAT["last"]["at"], "signal": "success", "result": BEAT["last"]["result"]}}
     status = hsstatus.status_file(info, hsstatus.version())
     # The status verb adds the profile from profile.conf (host-settings.py, do_status).
     profile = hslib.profile_answer(hslib.parse_profile("roles = web\nskip = update-gaps/cve: Network data off on purpose\n"

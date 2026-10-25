@@ -2,20 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Host Settings, the Cockpit add-on: the notifier.
 
-  host-settings-notify.py run          one run (cockpit-host-settings-notify.service, every 5 minutes)
-  host-settings-notify.py test ntfy    "Check connection" of the page (cockpit-host-settings-test@ntfy)
-  host-settings-notify.py test mail    "Send a test message" of the page (cockpit-host-settings-test@mail)
+  host-settings-notify.py run             one run (cockpit-host-settings-notify.service, every 5 minutes)
+  host-settings-notify.py test ntfy       "Check connection" of the page (cockpit-host-settings-test@ntfy)
+  host-settings-notify.py test mail       "Send a test message" of the page (cockpit-host-settings-test@mail)
+  host-settings-notify.py test heartbeat  "Send a test signal" of the page (cockpit-host-settings-test@heartbeat)
 
 Runs as the user cockpit-host-settings, never as root: it reads the status
 verbs of the Azentrius add-ons on this host (they work without root, as the
 status contract asks), tells what changed through ntfy and/or the local MTA,
 and writes its state to /var/lib/cockpit-host-settings. The ntfy token comes
 from systemd as the credential ntfy.token (LoadCredential=); nothing here
-writes it anywhere. Formats and steps: docs/INTERNALS.md.
+writes it anywhere. With a watchdog set up (credential heartbeat.conf), every
+run that holds the lock ends with a signal to it: success once the run is done
+and its state saved, failure when it could not run or a message could not be
+sent (lib/hsheartbeat.py). Formats and steps: docs/INTERNALS.md.
 
 Exit codes: 0 done (a message that could not be sent is no error: it is in
-the state and the status), 1 failed, 64 wrong call, 75 another run holds the
-lock.
+the state and the status, and the watchdog is told), 1 failed, 64 wrong call,
+75 another run holds the lock (no signal: the run that holds it gives one).
 """
 
 import fcntl
@@ -30,6 +34,7 @@ import time
 # directory only, and no bytecode is written next to them.
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hsheartbeat  # noqa: E402
 import hslib  # noqa: E402
 import hsnotify  # noqa: E402
 import hsproc  # noqa: E402
@@ -37,16 +42,22 @@ import hsstatus  # noqa: E402
 
 CONF = "/etc/cockpit-host-settings/notify.conf"
 PROFILE = "/etc/cockpit-host-settings/profile.conf"
-USAGE = "usage: host-settings-notify.py run | test ntfy | test mail"
+USAGE = "usage: host-settings-notify.py run | test ntfy | test mail | test heartbeat"
+
+
+class ConfigError(Exception):
+    """notify.conf is there but cannot be read: the run cannot know where messages go."""
 
 
 class Env:
     """Everything a run touches; the tests replace what they need."""
 
     def __init__(self, **kw):
+        creds = os.environ.get("CREDENTIALS_DIRECTORY", "/nonexistent")
         self.conf = CONF
         self.profile = PROFILE
-        self.token_file = os.path.join(os.environ.get("CREDENTIALS_DIRECTORY", "/nonexistent"), "ntfy.token")
+        self.token_file = os.path.join(creds, "ntfy.token")
+        self.heartbeat_file = os.path.join(creds, "heartbeat.conf")
         self.state_dir = os.environ.get("STATE_DIRECTORY", "/var/lib/cockpit-host-settings").split(":")[0]
         self.root = "/usr/share/cockpit"
         self.now = None
@@ -54,9 +65,14 @@ class Env:
         self.smtp = None
         self.runner = hsproc.run
         self.lstat = os.lstat
+        self.sleep = time.sleep
         self.host = socket.gethostname().split(".")[0] or "localhost"
         self.fqdn = None
         self.out = sys.stdout
+        # The result of a run for the watchdog: where it got to, and what do_run decided.
+        self.stage = "config"
+        self.outcome = None
+        self.saved = None
         self.__dict__.update(kw)
 
     def path(self, name):
@@ -75,12 +91,21 @@ class Env:
 
 
 def read_config(path):
+    """(config, bad line numbers) of notify.conf; the defaults when there is none. A file that is
+    there but cannot be read stops the run (ConfigError): it says where messages go."""
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read(1 << 16)
-    except OSError:
+    except FileNotFoundError:
         text = ""
+    except (OSError, UnicodeDecodeError) as e:
+        raise ConfigError(f"{path} cannot be read: {getattr(e, 'strerror', None) or 'UTF-8'}") from None
     return hslib.parse_config(text)
+
+
+def read_heartbeat(env):
+    """The watchdog the credential sets up ({adapter, url}, or {"invalid": True}), or None."""
+    return hsheartbeat.read_conf(env.heartbeat_file)
 
 
 def read_profile(path):
@@ -159,11 +184,22 @@ def seen_of(snapshot):
     return out
 
 
+def heartbeat_info(env):
+    """What the status says about the watchdog: None without one; else whether its settings hold
+    and the last signal's answer (heartbeat.json), never the address."""
+    conf = read_heartbeat(env)
+    if conf is None:
+        return None
+    last = load(env.path("heartbeat.json"))
+    return {"invalid": bool(conf.get("invalid")), "at": last.get("at"), "signal": last.get("signal"),
+            "result": last.get("result") if isinstance(last.get("result"), dict) else None}
+
+
 def write_status(env, last, cfg):
     if not last.get("run"):
         return
     info = {"channels": hslib.channels(cfg), "delivery": last.get("delivery"), "access": last.get("access"),
-            "run": last["run"]}
+            "run": last["run"], "heartbeat": heartbeat_info(env)}
     write_atomic(env.path("status.json"), hsstatus.status_file(info, hsstatus.version()), 0o644)
 
 
@@ -180,12 +216,15 @@ def deliver(env, cfg, token, msg):
 def do_run(env):
     started = time.monotonic()
     now = env.clock()
+    # env.stage says how far the run got, for the failure signal should it end with an exception.
+    env.stage = "config"
     cfg, bad = read_config(env.conf)
     token = read_token(env.token_file)
     last = load(env.path("last.json"))
     if last.get("format") != hsnotify.FORMAT:
         last = {}
     lang = cfg["language"]
+    env.stage = "collect"
     snapshot = hsnotify.collect(lang, now, env.runner, env.root, env.lstat)
     profile = read_profile(env.profile)
     coverage = hsnotify.profile_coverage(profile, snapshot, now, hsnotify.installed(env.root)) if profile else None
@@ -210,6 +249,7 @@ def do_run(env):
             msg = hsnotify.message(lang, env.host, events=events) if events else None
             count = len(events)
         if msg:
+            env.stage = "delivery"
             results = deliver(env, cfg, token, msg)
             last["delivery"] = {"at": hslib.iso(now), "summary": summary, "changes": count, "title": msg["title"],
                                 "results": results}
@@ -229,6 +269,7 @@ def do_run(env):
     if "ntfy" in chans:
         at = hslib.parse_time((access or {}).get("at"))
         if at is None or now - at >= hsnotify.CHECK_EVERY:
+            env.stage = "delivery"
             steps = hsnotify.check_ntfy(cfg, token, lang, env.host, env.http, ("reach", "tls", "anon-read"))
             access = dict(hsnotify.access_of(steps, access), at=hslib.iso(now), target=target(cfg), full=False,
                           steps=steps)
@@ -236,8 +277,19 @@ def do_run(env):
                 coverage=coverage[0] if coverage else None,
                 run={"at": hslib.iso(now), "took_ms": int((time.monotonic() - started) * 1000),
                      "addons": len(snapshot), "bad_lines": bad})
+    env.stage = "state"
     write_atomic(env.path("last.json"), last, 0o600)
     write_status(env, last, cfg)
+    # The run is done and its state saved: now its result for the watchdog, decided here and not
+    # from the exit code (0 also when a message could not be sent). A message that did not reach
+    # every channel set up is a failure, even when another channel took it and it is not sent
+    # again; an add-on that cannot be read or a gap in what the profile expects is a finding,
+    # told through the messages, and no failure of the notifier.
+    env.stage = "done"
+    failed = sorted(c for c, r in (told or {}).items() if not r.get("ok"))
+    env.outcome = (("failure", "delivery", [f"{c} {told[c]['reason']}" for c in failed]) if failed
+                   else ("success", None, None))
+    env.saved = (last, cfg)
     bad_addons = sorted(p for p, a in snapshot.items() if a["kind"] in hsnotify.ERROR_KINDS)
     print(f"{len(snapshot)} add-ons" + (f", not readable: {', '.join(bad_addons)}" if bad_addons else "") +
           ("" if told is None else ", message: " + ", ".join(f"{c} {r['reason']}" for c, r in sorted(told.items()))),
@@ -245,8 +297,49 @@ def do_run(env):
     return 0
 
 
+# Where a run that ended with an exception got to, as the reason of its failure signal.
+STAGE_WHY = {"config": "config", "collect": "collect", "delivery": "delivery", "state": "state"}
+
+
+def heartbeat(env):
+    """The signal to the watchdog at the end of a run that held the lock: nothing at all without
+    one; else success or failure as the run decided (env.outcome), and the answer in
+    heartbeat.json. The answer never changes last.json: a signal that did not get through resets
+    no finding and makes no message go out again; the status shows it (item heartbeat)."""
+    conf = read_heartbeat(env)
+    if conf is None:
+        return
+    signal, why, detail = env.outcome or ("failure", STAGE_WHY.get(env.stage, "error"), None)
+    if conf.get("invalid"):
+        result = {"ok": False, "code": None, "reason": "invalid", "attempts": 0}
+    else:
+        result = hsheartbeat.send(conf["adapter"], conf["url"], signal, why, detail, env.http, env.sleep)
+    doc = {"at": hslib.iso(env.clock()), "adapter": conf.get("adapter"), "signal": signal, "why": why,
+           "result": result}
+    print(f"watchdog: {signal}, " + ("accepted" if result["ok"] else "not accepted: " + result["reason"]), file=env.out)
+    try:
+        write_atomic(env.path("heartbeat.json"), doc, 0o600)
+        if env.saved:
+            write_status(env, *env.saved)
+    except OSError as e:
+        print(f"the watchdog's answer could not be saved: {e.strerror}", file=sys.stderr)
+
+
 def do_test(env, channel):
     now = env.clock()
+    if channel == "heartbeat":
+        # A test signal: Healthchecks' /log (counts as neither success nor failure), Uptime Kuma's
+        # status=up (Uptime Kuma has nothing else). The answer, never the address.
+        conf = read_heartbeat(env)
+        if conf is None or conf.get("invalid"):
+            result = {"at": hslib.iso(now), "channel": "heartbeat", "error": "invalid" if conf else "not-set-up"}
+        else:
+            result = {"at": hslib.iso(now), "channel": "heartbeat", "adapter": conf["adapter"],
+                      "result": hsheartbeat.send(conf["adapter"], conf["url"], "test", request=env.http, sleep=env.sleep)}
+        write_atomic(env.path("test-heartbeat.json"), result, 0o600)
+        json.dump(result, env.out, ensure_ascii=False)
+        env.out.write("\n")
+        return 0
     cfg, _ = read_config(env.conf)
     token = read_token(env.token_file)
     lang = cfg["language"]
@@ -278,7 +371,7 @@ def main(argv, env=None):
     env = env or Env()
     if argv == ["run"]:
         verb = do_run
-    elif len(argv) == 2 and argv[0] == "test" and argv[1] in ("ntfy", "mail"):
+    elif len(argv) == 2 and argv[0] == "test" and argv[1] in ("ntfy", "mail", "heartbeat"):
         def verb(e):
             return do_test(e, argv[1])
     else:
@@ -286,13 +379,22 @@ def main(argv, env=None):
         return 64
     held = lock(env)
     if held is None:
+        # No signal at all: the run or test that holds the lock is the one that tells the watchdog.
         print("another run holds the lock", file=sys.stderr)
         return 75
     try:
-        return verb(env)
-    except Exception as e:  # noqa: BLE001 - the previous state stays as it is
-        print(f"failed: {type(e).__name__}: {e}", file=sys.stderr)
-        return 1
+        try:
+            code = verb(env)
+        except Exception as e:  # noqa: BLE001 - the previous state stays as it is
+            print(f"failed: {type(e).__name__}: {e}", file=sys.stderr)
+            code = 1
+            env.outcome = ("failure", STAGE_WHY.get(env.stage, "error"), None)
+        if verb is do_run:
+            try:
+                heartbeat(env)
+            except Exception as e:  # noqa: BLE001 - the run's own result stands; the type only, never a text
+                print(f"watchdog: failed: {type(e).__name__}", file=sys.stderr)
+        return code
     finally:
         os.close(held)
 

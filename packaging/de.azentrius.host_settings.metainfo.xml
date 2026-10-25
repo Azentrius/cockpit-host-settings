@@ -15,8 +15,9 @@
       when a finding turns to a warning or a danger, and when it is OK again. The messages hold
       only what the add-ons report and the server's name. The page sets up the channels, shows
       the commands the ntfy server needs for this server's user, topic and token, and checks that
-      the topic is closed to anyone without a login. The notifier runs as a user of its own,
-      never as root.
+      the topic is closed to anyone without a login. An external watchdog (Healthchecks or Uptime
+      Kuma) can get a signal after every run, so that a notifier that stops or fails is noticed.
+      The notifier runs as a user of its own, never as root.
     </p>
     <p xml:lang="de">
       Alle 5 Minuten liest der Notifier den Status der Azentrius-Add-ons auf dem Server über den
@@ -24,8 +25,10 @@
       Befund zur Warnung oder Gefahr wird und wenn er wieder in Ordnung ist. Die Nachrichten
       enthalten nur, was die Add-ons melden, und den Namen des Servers. Die Seite richtet die Kanäle
       ein, zeigt die Befehle, die der ntfy-Server für Benutzer, Thema und Token dieses Servers
-      braucht, und prüft, dass das Thema ohne Anmeldung geschlossen ist. Der Notifier läuft als
-      eigener Benutzer, nie als root.
+      braucht, und prüft, dass das Thema ohne Anmeldung geschlossen ist. Ein externer Wächter
+      (Healthchecks oder Uptime Kuma) kann nach jedem Lauf ein Signal bekommen, damit ein Notifier,
+      der ausfällt oder scheitert, bemerkt wird. Der Notifier läuft als eigener Benutzer, nie als
+      root.
     </p>
   </description>
   <extends>org.cockpit_project.cockpit</extends>

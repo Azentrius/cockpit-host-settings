@@ -16,6 +16,10 @@ Status Board.
   host-settings.py run                       one run of the notifier now (root)
   host-settings.py install timer             the regular run: every 5 minutes (root)
   host-settings.py remove timer              switch it off (root)
+  host-settings.py heartbeat set healthchecks|uptime-kuma   the watchdog; its ping or push URL, a
+                                             secret, read from standard input (root)
+  host-settings.py heartbeat remove          no watchdog any more (root)
+  host-settings.py heartbeat test            a test signal (cockpit-host-settings-test@heartbeat, root)
   host-settings.py profile show              the host's target profile (no root: the file is 0644)
   host-settings.py profile roles [ROLE ...]  set the roles; none: the add-ons of every host (root)
   host-settings.py profile expect add|remove ADDON[/CHECK]   an extra expectation (root)
@@ -26,10 +30,11 @@ Status Board.
 
 Everything else is a wrong call (exit 64). Every argument is checked here.
 The changes this helper makes are the settings in /etc/cockpit-host-settings
-(notify.conf and profile.conf 0644, ntfy.token 0600, all root's; the profile
-keeps its previous version in profile.conf.bak) and the add-on's own timer;
-the token never appears in an argument, an output or a log. Sending and
-checking run in the add-on's services as their own user, never as root.
+(notify.conf and profile.conf 0644, ntfy.token and heartbeat.conf 0600, all
+root's; the profile keeps its previous version in profile.conf.bak) and the
+add-on's own timer; the token and the watchdog's URL never appear in an
+argument, an output or a log. Sending and checking run in the add-on's
+services as their own user, never as root.
 
 Exit codes: 0 ok, 1 failed, 2 unit missing, 64 wrong call, 75 busy, 77 needs
 root. HOST_SETTINGS_LANG=de|en selects the language of the messages.
@@ -49,6 +54,7 @@ from datetime import datetime, timezone
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hsheartbeat  # noqa: E402
 import hslib  # noqa: E402
 import hsproc  # noqa: E402
 import hsstatus  # noqa: E402
@@ -57,6 +63,7 @@ CONF_DIR = "/etc/cockpit-host-settings"
 CONF = CONF_DIR + "/notify.conf"
 PROFILE = CONF_DIR + "/profile.conf"
 TOKEN = CONF_DIR + "/ntfy.token"
+HEARTBEAT = CONF_DIR + "/heartbeat.conf"
 STATE_DIR = "/var/lib/cockpit-host-settings"
 LOCK = "/run/cockpit-host-settings.lock"
 SERVICE = "cockpit-host-settings-notify.service"
@@ -66,7 +73,8 @@ USER = "cockpit-host-settings"
 LANG_RE = re.compile(r"[A-Za-z]{2,3}(?:[_-][A-Za-z0-9]{2,8})?")
 USAGE = ("usage: host-settings.py status [--lang en|de] | show | set ntfy URL TOPIC | set mail ADDRESS | "
          "set language en|de | unset ntfy|mail | token set|remove | check ntfy | test mail | run | "
-         "install timer | remove timer | profile show | profile roles [ROLE ...] | "
+         "install timer | remove timer | heartbeat set healthchecks|uptime-kuma | heartbeat remove | "
+         "heartbeat test | profile show | profile roles [ROLE ...] | "
          "profile expect add|remove ADDON[/CHECK] | profile skip add ADDON/CHECK [YYYY-MM-DD] | "
          "profile skip remove ADDON/CHECK | profile remove")
 ENV = {"PATH": hsproc.PATH, "LC_ALL": "C.UTF-8", "TZ": "UTC"}
@@ -260,7 +268,26 @@ def profile_view(path=PROFILE, now=None):
             "bad_lines": bad, "catalog": catalog}
 
 
-def do_show(rest, conf=CONF, token=TOKEN, state_dir=STATE_DIR, run=hsproc.run, profile=None):
+def heartbeat_view(path, state_dir):
+    """What the page may know about the watchdog: set up or not, the adapter, whether the address
+    is encrypted and whether it is this host itself, the last signal and the last test (their
+    answers). Never the address: it is a secret."""
+    conf = hsheartbeat.read_conf(path)
+    view = {"configured": bool(conf) and not conf.get("invalid"), "invalid": bool(conf and conf.get("invalid")),
+            "adapter": None, "encrypted": None, "local": None,
+            "last": read_json(os.path.join(state_dir, "heartbeat.json")),
+            "test": read_json(os.path.join(state_dir, "test-heartbeat.json"))}
+    if view["configured"]:
+        view.update(adapter=conf["adapter"], **hsheartbeat.describe(conf["url"]))
+    return view
+
+
+def heartbeat_set_up(path=None):
+    conf = hsheartbeat.read_conf(path or HEARTBEAT)
+    return bool(conf) and not conf.get("invalid")
+
+
+def do_show(rest, conf=CONF, token=TOKEN, state_dir=STATE_DIR, run=hsproc.run, profile=None, heartbeat=None):
     if rest:
         raise WRONG
     need_root()
@@ -287,6 +314,7 @@ def do_show(rest, conf=CONF, token=TOKEN, state_dir=STATE_DIR, run=hsproc.run, p
         "test_mail": read_json(os.path.join(state_dir, "test-mail.json")),
         "docs": hslib.NTFY_DOCS,
         "profile": profile_view(profile or PROFILE),
+        "heartbeat": heartbeat_view(heartbeat or HEARTBEAT, state_dir),
     }
     if out["last"] and isinstance(out["last"].get("access"), dict):
         out["last"]["access"] = {k: v for k, v in out["last"]["access"].items() if k != "steps"}
@@ -400,6 +428,87 @@ def do_token(rest, token=TOKEN, lock=LOCK, stdin=None):
             write_text_atomic(token, "", 0o600)
         say("Token entfernt.", "Token removed.")
         return 0
+    raise WRONG
+
+
+# ---------------------------------------------------------------------------
+# The watchdog (root): heartbeat.conf, a secret like the token
+
+HEARTBEAT_INVALID = {
+    "input": ("Die Adresse fehlt oder ist ungültig: eine Zeile auf der Standardeingabe.",
+              "The address is missing or not valid: one line on standard input."),
+    "form": ("Die Adresse ist ungültig: http:// oder https://, ein Host, auf Wunsch ein Port, ein Pfad; keine "
+             "Anmeldedaten, kein Fragment, höchstens 500 Zeichen.",
+             "The address is not valid: http:// or https://, a host, optionally a port, a path; no credentials, no "
+             "fragment, at most 500 characters."),
+    "http-public": ("Unverschlüsseltes http:// ist nur zu einer IP-Adresse eines privaten Netzes erlaubt (10/8, "
+                    "172.16/12, 192.168/16, 100.64/10, fc00::/7, Loopback), etwa über WireGuard. Verwenden Sie sonst "
+                    "https://.",
+                    "Plain http:// is allowed only to an IP address of a private network (10/8, 172.16/12, 192.168/16, "
+                    "100.64/10, fc00::/7, loopback), such as one reached through WireGuard. Use https:// otherwise."),
+    "kuma-path": ("Eine Push-Adresse von Uptime Kuma endet auf /api/push/TOKEN; die Abfrage ?status=… darf "
+                  "folgen, sie wird entfernt.",
+                  "An Uptime Kuma push address ends in /api/push/TOKEN; a query ?status=… may follow, it is dropped."),
+    "hc-signal": ("Geben Sie die Ping-Adresse selbst an, ohne /fail, /start, /log oder einen Exitcode am Ende.",
+                  "Enter the ping address itself, without /fail, /start, /log or an exit status at the end."),
+    "query": ("Die Abfrage (?…) ist hier nicht erlaubt: bei Healthchecks keine, bei Uptime Kuma nur status, msg und "
+              "ping.",
+              "This query (?…) is not allowed: none for Healthchecks, only status, msg and ping for Uptime Kuma."),
+}
+
+
+def do_heartbeat(rest, path=None, lock=LOCK, stdin=None):
+    path = path or HEARTBEAT
+    if len(rest) == 2 and rest[0] == "set":
+        adapter = rest[1]
+        if adapter not in hsheartbeat.ADAPTERS:
+            raise WRONG
+        need_root()
+        # The URL is a secret: from standard input only, never an argument, never printed.
+        data = (stdin or sys.stdin.buffer).read(hsheartbeat.INPUT_MAX + 1)
+        try:
+            text = data.decode("utf-8").rstrip("\r\n").strip()
+        except UnicodeDecodeError:
+            text = ""
+        if len(data) > hsheartbeat.INPUT_MAX or not text or "\n" in text or "\r" in text:
+            raise Fail(64, *HEARTBEAT_INVALID["input"])
+        try:
+            url = hsheartbeat.normalize(adapter, text)
+        except hsheartbeat.Invalid as e:
+            raise Fail(64, *HEARTBEAT_INVALID.get(e.reason, HEARTBEAT_INVALID["form"])) from None
+        with Locked(lock):
+            os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+            write_text_atomic(path, hsheartbeat.format_conf(adapter, url), 0o600)
+        label = hsheartbeat.LABELS[adapter]
+        about = hsheartbeat.describe(url)
+        say(f"Wächter eingerichtet: {label}. Die Adresse ist nur für root lesbar gespeichert und wird nicht mehr "
+            f"angezeigt. Nach jedem Lauf der regelmäßigen Prüfung bekommt er ein Signal.",
+            f"Watchdog set up: {label}. The address is stored readable by root only and is not shown again. It gets "
+            f"a signal after every run of the regular check.")
+        if not about["encrypted"]:
+            say("Die Adresse ist unverschlüsselt (http): erlaubt, weil sie in einem privaten Netz liegt.",
+                "The address is not encrypted (http): allowed because it is in a private network.")
+        if about["local"]:
+            say("Der Wächter ist dieser Server selbst: Er kann nicht bemerken, wenn dieser Server ausfällt.",
+                "The watchdog is this server itself: it cannot notice when this server fails.")
+        return 0
+    if rest == ["remove"]:
+        need_root()
+        if hsheartbeat.read_conf(path) is None:
+            say(*UNCHANGED)
+            return 0
+        with Locked(lock):
+            os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+            write_text_atomic(path, "", 0o600)
+        say("Wächter entfernt: Er bekommt keine Signale mehr von diesem Server. Pausieren oder löschen Sie die "
+            "Prüfung beim Wächter, sonst schlägt er nach seiner Kulanzzeit Alarm.",
+            "Watchdog removed: it gets no more signals from this server. Pause or delete the check at the watchdog, "
+            "or it raises an alarm once its grace time is over.")
+        return 0
+    if rest == ["test"]:
+        need_root()
+        say("Schicke ein Testsignal an den Wächter …", "Sending a test signal to the watchdog …")
+        return start_test("heartbeat")
     raise WRONG
 
 
@@ -645,34 +754,39 @@ def do_run(rest):
                    f"The service {SERVICE} is missing (package cockpit-host-settings).")
     print(f"+ systemctl start {SERVICE}")
     p = systemctl("start", SERVICE)
-    sys.stdout.write(journal_tail(SERVICE, 3))
+    sys.stdout.write(journal_tail(SERVICE, 5))
     if p.returncode:
         raise Fail(1, f"Der Lauf ist fehlgeschlagen: journalctl -u {SERVICE}", f"The run failed: journalctl -u {SERVICE}")
     say("Fertig.", "Done.")
     return 0
 
 
-def do_timer(verb, rest, conf=CONF, state_dir=STATE_DIR):
+def do_timer(verb, rest, conf=CONF, state_dir=STATE_DIR, heartbeat=None):
     if rest != ["timer"]:
         raise WRONG
     need_root()
     if not unit_exists(TIMER):
         raise Fail(2, f"Der Timer {TIMER} fehlt (Paket cockpit-host-settings).",
                    f"The timer {TIMER} is missing (package cockpit-host-settings).")
+    watchdog = heartbeat_set_up(heartbeat)
     if verb == "install":
         try:
             with open(conf, encoding="utf-8") as f:
                 cfg, _ = hslib.parse_config(f.read(1 << 16))
         except OSError:
             cfg, _ = hslib.parse_config("")
-        if not hslib.channels(cfg):
-            raise Fail(1, "Richten Sie zuerst ntfy oder E-Mail ein.", "Set up ntfy or e-mail first.")
+        # A channel or a watchdog: the notifier runs for the watchdog alone as well.
+        if not hslib.channels(cfg) and not watchdog:
+            raise Fail(1, "Richten Sie zuerst ntfy, E-Mail oder einen Wächter ein.",
+                       "Set up ntfy, e-mail or a watchdog first.")
         print(f"+ systemctl enable --now {TIMER}")
         systemctl("enable", "--now", TIMER, check=True)
         print(f"+ systemctl start {SERVICE}")
         systemctl("start", SERVICE, check=True)
-        sys.stdout.write(journal_tail(SERVICE, 1))
+        sys.stdout.write(journal_tail(SERVICE, 2))
         say("Regelmäßige Prüfung eingerichtet: alle 5 Minuten.", "Regular check set up: every 5 minutes.")
+        if watchdog:
+            say("Der Wächter bekommt nach jedem Lauf ein Signal.", "The watchdog gets a signal after every run.")
     else:
         print(f"+ systemctl disable --now {TIMER}")
         systemctl("disable", "--now", TIMER, check=True)
@@ -683,6 +797,12 @@ def do_timer(verb, rest, conf=CONF, state_dir=STATE_DIR):
                               0o644)
         say("Regelmäßige Prüfung ausgeschaltet: Von diesem Host kommen keine Nachrichten mehr.",
             "Regular check switched off: this host sends no more messages.")
+        if watchdog:
+            # Switching off is no failure the notifier could tell: the signals just stop.
+            say("Der Wächter bekommt keine Signale mehr und schlägt nach seiner Kulanzzeit Alarm: Pausieren Sie die "
+                "Prüfung dort, wenn das Ausschalten geplant ist.",
+                "The watchdog gets no more signals and raises an alarm once its grace time is over: pause the check "
+                "there if switching off is planned.")
     return 0
 
 
@@ -707,6 +827,8 @@ def main(argv):
             return do_run(rest)
         if verb in ("install", "remove"):
             return do_timer(verb, rest)
+        if verb == "heartbeat":
+            return do_heartbeat(rest)
         if verb == "profile":
             return do_profile(rest)
         raise WRONG

@@ -72,15 +72,25 @@ second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
   add-on or check can no longer be checked (not installed, failed, no access, not set up, status
   not readable), one message says so, and one more when it can again. Add-ons the profile does
   not expect give no such message.
+- **Tells an external watchdog that it works** (optional): after every run a signal to
+  [Healthchecks](https://healthchecks.io/) or a push monitor of
+  [Uptime Kuma](https://github.com/louislam/uptime-kuma), success once the run is done and its
+  state saved, failure when it could not run or a message did not reach every channel. The
+  watchdog raises the alarm when a failure comes or the signals stop, so a notifier that hangs,
+  fails or is switched off does not go unnoticed.
 - **Reports its own state** through the status contract: Status Board shows whether messages are
-  set up, whether the last one went out, whether the topic is closed and when the notifier last
-  ran, and reads the server's target profile from it; Cockpit's menu shows it as an icon.
+  set up, whether the last one went out, whether the topic is closed, whether the watchdog took
+  the last signal and when the notifier last ran, and reads the server's target profile from it;
+  Cockpit's menu shows it as an icon.
 
 ## What it does not do
 
 - It makes no checks of its own: it says only what the add-ons say, and only on its own server.
-- Nothing comes while the server is off or cannot reach the ntfy server or its mail server. Status
-  Board on the bastion shows such a server as unreachable.
+- Nothing comes while the server is off or cannot reach the ntfy server or its mail server. A
+  watchdog notices that its signals stop; Status Board on the bastion shows such a server as
+  unreachable.
+- It is no watchdog itself: one has to run elsewhere (Healthchecks, Uptime Kuma), outside what
+  fails together with the server.
 - It does not install, configure or run an ntfy server.
 - E-mail needs a mail server that accepts mail on `localhost:25`. A `sendmail` command alone
   (nullmailer, msmtp, dma) is not used.
@@ -110,11 +120,16 @@ out on any channel is sent again on the next run.
   `COMMAND status --lang en|de`, judges the answers with the rules of Status Board, compares every
   finding with what it told last, sends one message for the changes and writes its state to
   `/var/lib/cockpit-host-settings`.
-- "Check connection" and "Send a test message" run in `cockpit-host-settings-test@ntfy.service` and
-  `@mail.service`, as the same user as the notifier.
+- With a watchdog set up, each run that holds the notifier's lock ends with its signal: success
+  only after the state is written, failure when the settings cannot be read, the add-ons cannot be
+  collected, the state cannot be written or a message did not reach every channel. A run that
+  finds another one running sends nothing.
+- "Check connection", "Send a test message" and "Send a test signal" run in
+  `cockpit-host-settings-test@ntfy.service`, `@mail.service` and `@heartbeat.service`, as the same
+  user as the notifier.
 - The page calls only the fixed verbs of `/usr/lib/cockpit-host-settings/host-settings.py`: the
-  settings in `/etc/cockpit-host-settings/notify.conf`, the token, the timer, a run now, the checks,
-  the target profile in `/etc/cockpit-host-settings/profile.conf`.
+  settings in `/etc/cockpit-host-settings/notify.conf`, the token, the watchdog, the timer, a run
+  now, the checks, the target profile in `/etc/cockpit-host-settings/profile.conf`.
 - Paths, verbs, formats and every step in detail: [docs/INTERNALS.md](docs/INTERNALS.md).
 
 ## Security model
@@ -127,6 +142,15 @@ out on any channel is sent again on the next run.
   `/etc/cockpit-host-settings/ntfy.token` (root, 0600), and reaches the notifier as a systemd
   credential (`LoadCredential=`). It leaves the server only as the `Authorization` header of a
   request to the ntfy server set up; redirects are not followed. The page never shows it.
+- **The watchdog's address** is a secret as well: whoever knows the ping or push URL can report
+  runs and keep the alarm quiet. It goes from the page (a password field) to the helper on
+  standard input, lands in `/etc/cockpit-host-settings/heartbeat.conf` (root, 0600) and reaches
+  the notifier as a systemd credential; it is in no output, log, state file, status or process
+  argument, and the page shows only that it is set up. `https://` is checked as usual
+  (certificate and host name); plain `http://` is taken only for an IP address of a private
+  network (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7, loopback), such as a watchdog reached
+  through WireGuard, so that the address never crosses the internet in the clear. Redirects are
+  not followed; a signal gets at most 3 tries of 10 seconds, 40 seconds in all.
 - **The page** changes something only through its dialog, with administrative access. Everything an
   add-on reports reaches the page and the messages as text, cut and cleaned of control and
   bidirectional characters.
@@ -221,8 +245,23 @@ Removing the package removes its state and keeps the settings, the token and the
    server: `ntfy access READER 'cockpit-*' read-only`. "Check connection" then shows whether
    everything is as it should be.
 2. **E-mail:** "Set up e-mail" with a recipient, then "Send a test message".
-3. **The regular check:** "Set up the regular check". The first run sends the summary.
-4. **The target profile** (optional): "Set up a profile" under Target profile, and choose the
+3. **A watchdog** (optional, outside this server): in Healthchecks a check, or in Uptime Kuma a
+   monitor of type Push, then "Set up a watchdog" with its ping or push URL and "Send a test
+   signal". The notifier runs every 5 minutes, up to 40 seconds late, and signals at the end of a
+   run; so that one late or missed run raises no alarm and two in a row do, set:
+
+   | Watchdog | Setting |
+   |---|---|
+   | Healthchecks | Period 5 minutes, Grace 7 minutes |
+   | Uptime Kuma (Push) | Heartbeat interval 720 seconds, Retries 0 (with Retries 1, a single failure waits for the next run) |
+
+   The same on the console: `sudo /usr/lib/cockpit-host-settings/host-settings.py heartbeat set healthchecks`
+   (or `uptime-kuma`), paste the URL, Enter and Ctrl-D (so that it stays out of the shell's
+   history), then `sudo … heartbeat test`. A watchdog alone is enough for the regular
+   check; ntfy and e-mail are not needed for it. The watchdog itself should be watched from
+   somewhere else again.
+4. **The regular check:** "Set up the regular check". The first run sends the summary.
+5. **The target profile** (optional): "Set up a profile" under Target profile, and choose the
    server's roles. Every server is expected to have Host Settings, Update Gaps, Security Monitor
    and Cron Jobs; the roles add to that:
 
@@ -274,7 +313,12 @@ Removing the package removes its state and keeps the settings, the token and the
 - The target profile: the page, or `/usr/lib/cockpit-host-settings/host-settings.py profile show`;
   `sudo … profile remove` takes it away again.
 - Switching off: "Switch off" on the page (`host-settings.py remove timer`); Status Board then shows
-  Host Settings as switched off.
+  Host Settings as switched off. With a watchdog, pause its check there first: the signals stop,
+  and it raises the alarm once its grace time is over. The same holds for removing the watchdog
+  here (`heartbeat remove`) or the package.
+- The watchdog: its last answer on the page and in Status Board (item "Watchdog"); "not taken"
+  with the reason (the watchdog does not know the check, too many signals, a redirect, no answer,
+  certificate not valid). It never changes what the messages tell.
 - A topic shown as open: set `auth-default-access: deny-all` on the ntfy server and give the
   server's user write access to its topic only, then "Check connection" again.
 
@@ -327,6 +371,9 @@ The screenshots in `docs/img` come from the CI artifact `screenshots` of the tes
   its own.
 - "Check connection" is tested against ntfy 2.32 and was against 2.11 before; it reads a topic
   with `poll=1&since=1m`, which older and newer servers know as well.
+- The watchdog is tested against Uptime Kuma 2.5.7 (in CI, its push monitor made through its own
+  API) and against a stand-in for Healthchecks' pinging API, not against Healthchecks itself. For
+  Uptime Kuma 1.x the push URL is the same and the signal a GET, as 1.x needs, but untested.
 - The tab for Cockpit's own settings is not there yet.
 
 ## License
