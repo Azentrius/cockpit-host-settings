@@ -69,7 +69,9 @@ class Base(unittest.TestCase):
         self.lock = os.path.join(self.dir, "lock")
         self.state = os.path.join(self.dir, "state")
         os.makedirs(self.state)
-        self.saved = {k: getattr(hs, k) for k in ("need_root", "systemctl", "unit_exists", "journal_tail", "STATE_DIR")}
+        self.saved = {k: getattr(hs, k, None) for k in ("need_root", "systemctl", "unit_exists", "journal_tail", "STATE_DIR",
+                                                         "PROFILE")}
+        hs.PROFILE = os.path.join(self.dir, "etc", "profile.conf")
         hs.need_root = lambda: None
         self.sc = Systemctl()
         hs.systemctl = self.sc
@@ -259,6 +261,244 @@ class Show(Base):
         for out, want in cases:
             self.assertEqual(hs.smtp_listening(ss(out)), want, out)
         self.assertIsNone(hs.smtp_listening(ss("", 1)))
+
+
+NOW = hslib.parse_time("2026-10-19T19:00:00Z")
+
+
+class Profile(Base):
+    """The target profile: profile.conf through the fixed verbs, and the status field."""
+
+    def setUp(self):
+        super().setUp()
+        self.profile = os.path.join(self.dir, "etc", "profile.conf")
+
+    def run_profile(self, *rest, reason=None):
+        stdin = io.BytesIO(reason if isinstance(reason, bytes) else (reason or "").encode())
+        return call(hs.do_profile, list(rest), self.profile, self.lock, stdin, NOW)
+
+    def text(self, path=None):
+        with open(path or self.profile, encoding="utf-8") as f:
+            return f.read()
+
+    def write(self, text):
+        os.makedirs(os.path.dirname(self.profile), exist_ok=True)
+        with open(self.profile, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def status(self, lang="en"):
+        code, out, _ = call(hs.do_status, ["--lang", lang], os.path.join(self.state, "status.json"), NOW, self.profile)
+        self.assertEqual(code, 0)
+        return out
+
+    def test_roles_expect_skip_and_the_status_field(self):
+        self.assertEqual(self.run_profile("roles", "web")[:2], (0, "Profile saved: roles web.\n"))
+        self.assertEqual(stat.S_IMODE(os.stat(self.profile).st_mode), 0o644)
+        self.assertEqual(self.run_profile("expect", "add", "security/exposure")[0], 0)
+        code, out, _ = self.run_profile("skip", "add", "update-gaps/cve", "2026-12-31", reason="network data off on purpose\n")
+        self.assertEqual((code, out), (0, "Left out on purpose until 2026-12-31: update-gaps/cve.\n"))
+        self.assertEqual(self.run_profile("skip", "add", "security/fail2ban", reason="CrowdSec  instead\t")[0], 0)
+        prof, bad = hslib.parse_profile(self.text())
+        self.assertEqual(bad, [])
+        self.assertEqual(prof, {"roles": ["web"], "extra": ["security/exposure"], "set_at": "2026-10-19T19:00:00Z",
+                                "skip": [{"check": "update-gaps/cve", "until": "2026-12-31", "reason": "network data off on purpose"},
+                                         {"check": "security/fail2ban", "until": None, "reason": "CrowdSec instead"}]})
+        out = self.status()
+        doc = json.loads(out)
+        self.assertEqual(doc["features"], ["profile"])
+        self.assertEqual(doc["profile"], {
+            "roles": ["web"], "expect": ["host-settings", "update-gaps", "security", "cronjobs", "image-updates", "security/exposure"],
+            "skip": [{"check": "update-gaps/cve", "reason": "network data off on purpose", "until": "2026-12-31T00:00:00Z"},
+                     {"check": "security/fail2ban", "reason": "CrowdSec instead"}],
+            "set_at": "2026-10-19T19:00:00Z"})
+        # Status Board's rules (hslib.validate_profile, the twin of the board's validateProfile) keep
+        # all of it: nothing left out, nothing changed
+        good, st = hslib.validate_status(out, "host-settings")
+        self.assertTrue(good, st)
+        self.assertEqual(st["ext_dropped"], 0)
+        self.assertEqual(st["profile"], {"roles": doc["profile"]["roles"], "expect": doc["profile"]["expect"],
+                                         "skip": [{"check": "update-gaps/cve", "reason": "network data off on purpose",
+                                                   "until": hslib.parse_time("2026-12-31T00:00:00Z")},
+                                                  {"check": "security/fail2ban", "reason": "CrowdSec instead", "until": None}],
+                                         "set_at": NOW})
+        self.assertEqual(json.loads(self.status("de"))["profile"], doc["profile"])
+
+    def test_no_profile_no_field(self):
+        for setup in (None, "# only a comment\nexpect = security/exposure\n"):
+            if setup is not None:
+                self.write(setup)
+            doc = json.loads(self.status())
+            self.assertNotIn("profile", doc)
+            self.assertNotIn("features", doc)
+            good, st = hslib.validate_status(json.dumps(doc), "host-settings")
+            self.assertTrue(good)
+            self.assertEqual((st["profile"], st["ext_dropped"]), (None, 0))
+        # a profile with no role is a profile: the add-ons of every host (and the line expect, which
+        # counts from now on)
+        self.assertEqual(self.run_profile("roles")[0], 0)
+        self.assertEqual(json.loads(self.status())["profile"]["expect"], list(hslib.BASE_EXPECT) + ["security/exposure"])
+        # a file nobody may read: no field, and the status still answers
+        os.chmod(self.profile, 0)
+        if os.geteuid() != 0:
+            self.assertNotIn("profile", json.loads(self.status()))
+
+    def test_every_argument_is_checked_before_anything_is_written(self):
+        refused = [("roles", "mail"), ("roles", "Web"), ("roles", "web;rm"), ("roles", "../x"), ("roles", "web", "x" * 41),
+                   ("expect", "add", "Security"), ("expect", "add", "a/b/c"), ("expect", "add", "-x"), ("expect", "add", ""),
+                   ("expect", "remove", "security/"), ("expect", "drop", "security"), ("expect", "add"),
+                   ("skip", "add", "security/Exposure"), ("skip", "add", "x", "2026-13-01"), ("skip", "add", "x", "31.12.2026"),
+                   ("skip", "add", "x", "2026-10-19"), ("skip", "add", "x", "2020-01-01"), ("skip", "add", "x", "2026-12-31", "y"),
+                   ("skip", "add"), ("skip", "remove", "x y"), ("skip",), ("remove", "x"), ("show", "x"), (), ("bogus",)]
+        for rest in refused:
+            with self.subTest(rest):
+                code, _, _ = self.run_profile(*rest, reason="r")
+                self.assertEqual(code, 64)
+                self.assertFalse(os.path.exists(self.profile))
+        code, _, err = self.run_profile("roles", "web", "mail")
+        self.assertIn("Unknown role: mail. Known roles: web, database, build, bastion.", err)
+        # a skip names one check of an add-on, never an add-on alone
+        for rest in (("skip", "add", "security"), ("skip", "add", "image-updates", "2026-12-31"), ("skip", "remove", "security")):
+            code, _, err = self.run_profile(*rest, reason="r")
+            self.assertEqual(code, 64, rest)
+            self.assertIn("Only a check of an add-on can be left out, as ADDON/CHECK (update-gaps/cve); an add-on alone "
+                          "cannot be left out.", err)
+        self.assertEqual(self.run_profile("roles", "web")[0], 0)
+        before = self.text()
+        for reason in (b"", b"\n", b"two\nlines\n", b"x" * 5000, b"\xff\xfe", chr(0x200B).encode()):
+            with self.subTest(reason[:12]):
+                self.assertEqual(self.run_profile("skip", "add", "update-gaps/cve", reason=reason)[0], 64)
+                self.assertEqual(self.text(), before)
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(hs.main(["profile", "bogus"]), 64)
+
+    def test_unknown_roles_are_refused_and_a_profile_comes_first(self):
+        self.assertEqual(self.run_profile("expect", "add", "image-updates")[:1], (1,))
+        self.assertIn("set the roles first", self.run_profile("skip", "add", "update-gaps/cve", reason="r")[2])
+        self.assertEqual(self.run_profile("skip", "remove", "update-gaps/cve")[0], 1)
+        self.assertFalse(os.path.exists(self.profile))
+        # a role from the file that this version does not know: the line does not count
+        self.write("roles = web, mail\n")
+        prof, bad = hslib.parse_profile(self.text())
+        self.assertEqual((prof["roles"], bad), (None, [1]))
+        self.assertNotIn("profile", json.loads(self.status()))
+
+    def test_comments_and_other_lines_stay_line_by_line(self):
+        self.write("# my notes\n"
+                   "roles = web\n"
+                   "\n"
+                   "colour = blue\n"
+                   "expect = security/exposure\n"
+                   "# the CVE feed is off\n"
+                   "skip = update-gaps/cve: network data off\n"
+                   "roles = nonsense\n"
+                   "expect = update-gaps/held\n"
+                   "skip = security: an add-on alone does not count\n")
+        self.assertEqual(hslib.parse_profile(self.text())[1], [4, 8, 10])
+        self.assertEqual(self.run_profile("roles", "web", "database")[0], 0)
+        self.assertEqual(self.run_profile("expect", "remove", "update-gaps/held")[0], 0)
+        self.assertEqual(self.run_profile("skip", "add", "update-gaps/cve", "2026-12-31", reason="network data off")[0], 0)
+        self.assertEqual(self.run_profile("expect", "add", "cronjobs/cron")[0], 0)
+        self.assertEqual(self.text(), "# my notes\n"
+                                      "roles = web, database\n"
+                                      "\n"
+                                      "colour = blue\n"
+                                      "expect = security/exposure\n"
+                                      "# the CVE feed is off\n"
+                                      "skip = update-gaps/cve until 2026-12-31: network data off\n"
+                                      "roles = nonsense\n"
+                                      "skip = security: an add-on alone does not count\n"
+                                      "set_at = 2026-10-19T19:00:00Z\n"
+                                      "expect = cronjobs/cron\n")
+        # the profile removed: its lines go, every other line stays
+        self.assertEqual(self.run_profile("remove")[:2], (0, "Profile removed: this host has no target profile any more.\n"))
+        self.assertEqual(self.text(), "# my notes\n\ncolour = blue\n# the CVE feed is off\nroles = nonsense\n"
+                                      "skip = security: an add-on alone does not count\n")
+        self.assertNotIn("profile", json.loads(self.status()))
+        self.assertEqual(self.run_profile("remove")[:2], (0, "Nothing changed.\n"))
+
+    def test_a_new_file_and_a_change_that_changes_nothing(self):
+        self.assertEqual(self.run_profile("remove")[:2], (0, "Nothing changed.\n"))
+        self.assertFalse(os.path.exists(self.profile))
+        self.run_profile("roles", "build")
+        self.assertEqual(self.text(), "\n".join(hslib.PROFILE_HEADER) + "\nroles = build\nset_at = 2026-10-19T19:00:00Z\n")
+        os.remove(self.profile + ".bak") if os.path.exists(self.profile + ".bak") else None
+        for rest in (("roles", "build"), ("expect", "add", "security"), ("expect", "remove", "update-gaps/held"),
+                     ("skip", "remove", "update-gaps/cve")):
+            with self.subTest(rest):
+                self.assertEqual(self.run_profile(*rest)[:2], (0, "Nothing changed.\n"))
+                self.assertFalse(os.path.exists(self.profile + ".bak"), "nothing written")
+        code, _, err = self.run_profile("expect", "remove", "security")
+        self.assertEqual(code, 1)
+        self.assertIn("is expected by the roles or by every host", err)
+        # a second skip of the same check replaces the first
+        self.run_profile("skip", "add", "security/fail2ban", reason="one")
+        self.run_profile("skip", "add", "security/fail2ban", "2027-01-01", reason="two")
+        self.assertEqual(hslib.parse_profile(self.text())[0]["skip"],
+                         [{"check": "security/fail2ban", "until": "2027-01-01", "reason": "two"}])
+
+    def test_atomic_write_and_backup(self):
+        self.run_profile("roles", "web")
+        first = self.text()
+        self.run_profile("roles", "database")
+        self.assertEqual(self.text(self.profile + ".bak"), first, "the file as it was")
+        self.assertEqual(stat.S_IMODE(os.stat(self.profile + ".bak").st_mode), 0o644)
+        second = self.text()
+        saved = hs.os.replace
+
+        def broken(src, dst):
+            if dst == self.profile:
+                raise OSError(28, "No space left on device")
+            return saved(src, dst)
+        hs.os.replace = broken
+        try:
+            with self.assertRaises(OSError):
+                hs.do_profile(["roles", "build"], self.profile, self.lock, None, NOW)
+        finally:
+            hs.os.replace = saved
+        self.assertEqual(self.text(), second, "a write that fails leaves the file as it was")
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.profile))), ["profile.conf", "profile.conf.bak"],
+                         "no temporary file is left")
+
+    def test_the_lock_and_the_limits(self):
+        self.run_profile("roles", "web")
+        held = hs.Locked(self.lock).__enter__()
+        try:
+            self.assertEqual(self.run_profile("roles", "build")[0], 75)
+        finally:
+            held.__exit__(None, None, None)
+        for n in range(hslib.MAX_SKIP):
+            self.assertEqual(self.run_profile("skip", "add", f"security/c{n}", reason="r")[0], 0)
+        self.assertEqual(self.run_profile("skip", "add", "security/one-more", reason="r")[0], 1)
+        for n in range(hslib.MAX_EXPECT - len(hslib.resolve_expect(["web"]))):
+            self.assertEqual(self.run_profile("expect", "add", f"extra-{n}")[0], 0)
+        self.assertEqual(self.run_profile("expect", "add", "one-more")[0], 1)
+        doc = json.loads(self.status())
+        self.assertEqual((len(doc["profile"]["expect"]), len(doc["profile"]["skip"])), (hslib.MAX_EXPECT, hslib.MAX_SKIP))
+        good, st = hslib.validate_status(json.dumps(doc), "host-settings")
+        self.assertEqual(st["ext_dropped"], 0, "at the limits nothing is left out either")
+        self.assertLess(len(json.dumps(doc).encode()), hslib.MAX_OUTPUT)
+
+    def test_show_needs_no_root_and_show_names_the_profile(self):
+        self.run_profile("roles", "web")
+        self.run_profile("skip", "add", "update-gaps/cve", "2026-10-20", reason="for a day")
+        hs.need_root = lambda: (_ for _ in ()).throw(hs.Fail(77, "", "root"))
+        code, out, _ = self.run_profile("show")
+        self.assertEqual(code, 0)
+        view = json.loads(out)
+        self.assertEqual((view["set"], view["roles"], view["extra"], view["set_at"], view["bad_lines"]),
+                         (True, ["web"], [], "2026-10-19T19:00:00Z", []))
+        self.assertEqual(view["expect"], hslib.resolve_expect(["web"]))
+        self.assertEqual(view["skip"], [{"check": "update-gaps/cve", "until": "2026-10-20", "reason": "for a day", "active": True}])
+        self.assertEqual(view["catalog"]["roles"], [["web", ["image-updates"]], ["database", ["image-updates"]], ["build", []],
+                                                    ["bastion", []]])
+        self.assertEqual(json.loads(call(hs.do_profile, ["show"], self.profile, self.lock, None, NOW + 86400)[1])["skip"][0]["active"],
+                         False, "it ends on its day")
+        self.assertEqual(self.run_profile("roles", "build")[0], 77, "a change needs root")
+        hs.need_root = lambda: None
+        ss = lambda argv, limit=60, max_output=0: hsproc.Result(0, "")  # noqa: E731
+        doc = json.loads(call(hs.do_show, [], self.conf, self.token, self.state, ss, self.profile)[1])
+        self.assertEqual(doc["profile"]["roles"], ["web"])
+        self.assertTrue(doc["profile"]["set"])
 
 
 if __name__ == "__main__":

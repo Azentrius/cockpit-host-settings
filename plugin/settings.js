@@ -2,9 +2,9 @@
 /* Host Settings, a Cockpit add-on: where messages about the Azentrius add-ons of this
  * server go (ntfy, e-mail or both), and whether the way there is safe.
  *
- *   show    -> cockpit.spawn(host-settings.py show), superuser "try"   settings, timer, last run (root)
+ *   show    -> cockpit.spawn(host-settings.py show), superuser "try"   settings, timer, last run, profile (root)
  *   status  -> cockpit.spawn(host-settings.py status --lang xx)        the summary without root
- *   changes -> host-settings.py set|unset|token|check|test|run|install|remove …, through the dialog
+ *   changes -> host-settings.py set|unset|token|check|test|run|install|remove|profile …, through the dialog
  *   watch   -> cockpit.file(/var/lib/cockpit-host-settings/status.json) written by every run
  *
  * menu-status.js runs first: it sets the status icon in Cockpit's menu, also while
@@ -45,6 +45,17 @@
     const MAIL_RE = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
     const TOKEN_RE = /^[A-Za-z0-9_.~+/=-]{1,256}$/;
     const HOST_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/;
+    // The target profile: an add-on or one of its checks, a check left out (never an add-on
+    // alone: Status Board lets only a check be left out), a role, a day.
+    const EXPECT_RE = /^[a-z0-9][a-z0-9-]{0,40}(?:\/[a-z0-9-]{1,40})?$/;
+    const SKIP_RE = /^[a-z0-9][a-z0-9-]{0,40}\/[a-z0-9-]{1,40}$/;
+    const ROLE_RE = /^[a-z0-9-]{1,40}$/;
+    const DATE_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+    // What the board knows about an expected add-on or check (its coverage); every gap of
+    // something expected is a warning, what does not apply is no gap.
+    const COVERAGES = ["checked", "partial", "stale", "failed", "unconfigured", "noaccess", "unreadable", "missing",
+                       "unsupported", "unchecked", "notapplicable"];
+    const COVERAGE_STATE = { checked: "ok", notapplicable: "none" };
 
     // --- i18n --------------------------------------------------------------
     const I18N = window.HostSettingsI18n;
@@ -157,6 +168,14 @@
         const d = new Date(iso || "");
         return isNaN(d) ? "?" : d.toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" });
     }
+    // A day "YYYY-MM-DD" (an end of a skip), and today in UTC in the same form.
+    function fmtDay(day) {
+        const d = DATE_RE.test(String(day || "")) ? new Date(day + "T00:00:00Z") : new Date("");
+        return isNaN(d) ? "?" : d.toLocaleDateString(LOCALE, { dateStyle: "medium", timeZone: "UTC" });
+    }
+    function today() {
+        return new Date(Date.now()).toISOString().slice(0, 10);
+    }
     function ago(iso) {
         const ts = Date.parse(iso || "");
         if (isNaN(ts)) return "?";
@@ -209,6 +228,12 @@
                 tr("status.badLines", { lines: view.bad_lines.join(", ") })));
         }
         if (view && view.timer === "missing") out.push(alertBox("warning", t("status.noUnitTitle"), rich(t("status.noUnit"))));
+        const prof = view && view.profile;
+        if (prof && prof.unreadable) out.push(alertBox("warning", t("status.profileUnreadableTitle"), rich(t("status.profileUnreadable"))));
+        if (prof && Array.isArray(prof.bad_lines) && prof.bad_lines.length) {
+            out.push(alertBox("warning", t("status.profileBadLinesTitle"),
+                tr("status.profileBadLines", { lines: prof.bad_lines.join(", ") })));
+        }
         fill($("hs-status"), out);
     }
 
@@ -253,8 +278,12 @@
         const list = h("ul", { class: "hs-plain-list hs-summary-list" }, items.map((i) =>
             h("li", null, label(i.state), " ", h("strong", { text: i.title }), i.value ? " " + i.value : "",
                 i.detail ? h("span", { class: "hs-sub", text: i.detail }) : null)));
+        // The target profile as the status answer names it, read only.
+        const prof = summary && summary.profile && Array.isArray(summary.profile.expect) ? summary.profile : null;
         fill(box, card("hs-sum", t("sum.title"), summary ? label(summary.state) : null,
             [h("p", { class: "hs-intro", text: summary ? summary.summary : t("sum.none") }), items.length ? list : null,
+             summary ? h("p", { class: "hs-line", id: "hs-sum-profile",
+                                text: prof ? t("sum.profile", { roles: rolesText(prof.roles), n: prof.expect.length }) : t("sum.noProfile") }) : null,
              h("p", { class: "hs-note", text: t("sum.intro") })]));
     }
 
@@ -465,6 +494,84 @@
         return card("hs-addons", t("addons.title"), null, body);
     }
 
+    // --- The target profile ----------------------------------------------------------
+    // What `show` says about /etc/cockpit-host-settings/profile.conf (host-settings.py, profile_view),
+    // and what the notifier found last for each expected add-on or check (last.coverage).
+    function profile() { return (view && view.profile) || {}; }
+    function catalog() { return profile().catalog || {}; }
+    function rolesText(roles) {
+        const list = (Array.isArray(roles) ? roles : []).filter((r) => typeof r === "string" && ROLE_RE.test(r));
+        return list.length ? list.join(", ") : t("profile.noRole");
+    }
+    // "Security Monitor" for security, "Security Monitor: exposure" for one of its checks.
+    function addonName(id) {
+        const parts = String(id).split("/");
+        const labels = catalog().labels || {};
+        const name = Object.prototype.hasOwnProperty.call(labels, parts[0]) ? String(labels[parts[0]]) : parts[0];
+        return parts[1] ? name + ": " + parts[1] : name;
+    }
+    function sourceOf(id) {
+        const c = catalog();
+        if ((c.base || []).indexOf(id) >= 0) return t("profile.from.base");
+        const roles = (c.roles || []).filter((r) => Array.isArray(r) && (profile().roles || []).indexOf(r[0]) >= 0 &&
+            Array.isArray(r[1]) && r[1].indexOf(id) >= 0).map((r) => r[0]);
+        return roles.length ? t("profile.from.role", { roles: roles.join(", ") }) : t("profile.from.extra");
+    }
+    function coverageLabel(coverage) {
+        return label(COVERAGE_STATE[coverage] || "warning", t("cov." + coverage));
+    }
+    function coverageCell(row) {
+        if (!row || COVERAGES.indexOf(row.coverage) < 0) return h("span", { class: "hs-sub", text: t("profile.notRead") });
+        const gaps = (Array.isArray(row.gaps) ? row.gaps : []).filter((g) => g && COVERAGES.indexOf(g.coverage) >= 0);
+        return [coverageLabel(row.coverage), gaps.length ? h("ul", { class: "hs-findings" }, gaps.map((g) =>
+            h("li", null, coverageLabel(g.coverage), " ", String(g.title || g.id || "")))) : null];
+    }
+    function nameCell(id) {
+        return h("span", null, h("strong", { text: addonName(id) }), h("span", { class: "hs-sub" }, code(id)));
+    }
+    function renderProfile() {
+        const p = profile();
+        if (!p.set) {
+            return card("hs-profile", t("profile.title"), label("none", t("profile.none")), [
+                h("p", { class: "hs-intro" }, rich(t("profile.intro"))),
+                h("div", { class: "hs-actions" }, btn("az-btn--secondary", "plus", t("btn.setupProfile"), { id: "hs-profile-roles" })),
+            ]);
+        }
+        const found = new Map(((view.last && Array.isArray(view.last.coverage)) ? view.last.coverage : [])
+            .filter((r) => r && typeof r.id === "string").map((r) => [r.id, r]));
+        const expect = (p.expect || []).filter((id) => EXPECT_RE.test(String(id)));
+        const extra = p.extra || [];
+        const gaps = expect.filter((id) => found.has(id) && ["checked", "notapplicable"].indexOf(found.get(id).coverage) < 0).length;
+        const skips = (p.skip || []).filter((s) => s && SKIP_RE.test(String(s.check)));
+        return card("hs-profile", t("profile.title"), gaps ? label("warning", t("profile.gaps", { n: gaps })) : label("ok", t("profile.on")), [
+            h("p", { class: "hs-intro", text: t("profile.introSet") }),
+            kv([
+                [t("profile.roles"), [h("span", { text: rolesText(p.roles) }),
+                                      btn("az-btn--link", null, t("btn.changeRoles"), { id: "hs-profile-roles" })]],
+                p.set_at ? [t("profile.setAt"), h("span", { text: fmtDate(p.set_at) })] : null,
+            ]),
+            h("h3", { class: "hs-sub-title", text: t("profile.expectTitle") }),
+            table([t("profile.col.what"), t("profile.col.why"), t("profile.col.coverage")], expect.map((id) => [
+                nameCell(id),
+                [h("span", { text: sourceOf(id) }), extra.indexOf(id) >= 0
+                    ? btn("az-btn--link", null, t("btn.remove"), { "data-action": "expect-remove", "data-value": id }) : null],
+                coverageCell(found.get(id)),
+            ])),
+            h("h3", { class: "hs-sub-title", text: t("profile.skipTitle") }),
+            skips.length ? table([t("profile.col.check"), t("profile.col.reason"), t("profile.col.until")], skips.map((s) => [
+                nameCell(s.check),
+                h("span", { text: String(s.reason || "") }),
+                [s.active ? label("none", s.until ? t("profile.until", { date: fmtDay(s.until) }) : t("profile.noEnd"))
+                          : label("warning", t("profile.ended", { date: fmtDay(s.until) })),
+                 btn("az-btn--link", null, t("btn.remove"), { "data-action": "skip-remove", "data-value": s.check })],
+            ])) : h("p", { class: "hs-sub", text: t("profile.noSkips") }),
+            h("div", { class: "hs-actions" },
+                btn("az-btn--secondary", "plus", t("btn.addExpect"), { id: "hs-profile-expect-add" }),
+                btn("az-btn--secondary", "ban", t("btn.addSkip"), { id: "hs-profile-skip-add" }),
+                btn("az-btn--link", null, t("btn.removeProfile"), { id: "hs-profile-remove" })),
+        ]);
+    }
+
     function renderLimits() {
         return card("hs-limits", t("limits.title"), null,
             h("ul", { class: "hs-plain-list" }, ["limits.contract", "limits.offline", "limits.content", "limits.mail", "limits.server"]
@@ -474,7 +581,7 @@
     function renderNotifications() {
         const panel = $("hs-tab-notifications");
         if (!view) { fill(panel); return; }
-        fill(panel, renderOverview(), renderNtfy(), renderMail(), renderAddons(), renderLimits());
+        fill(panel, renderOverview(), renderNtfy(), renderMail(), renderAddons(), renderProfile(), renderLimits());
     }
 
     function render() {
@@ -574,6 +681,16 @@
             $("hs-dialog-title").textContent = spec.title;
             fill($("hs-dialog-desc"), rich(spec.desc));
             fill($("hs-dialog-fields"), (spec.fields || []).map((f) => {
+                // A group of switches (the roles): the values of those switched on.
+                if (f.type === "switches") {
+                    return h("fieldset", { id: "hs-f-" + f.id, class: "az-field hs-switches" },
+                        h("legend", { class: "az-field__label", text: f.label }),
+                        f.options.map(([v, text, sub]) => h("label", { class: "az-switch" },
+                            h("input", { type: "checkbox", value: v, checked: (f.value || []).indexOf(v) >= 0 }),
+                            h("span", { class: "az-switch__track", "aria-hidden": "true" }),
+                            h("span", { class: "az-switch__label" }, h("strong", { text: v }), " ", text,
+                                sub ? h("span", { class: "hs-sub", text: sub }) : null))));
+                }
                 const input = f.type === "select"
                     ? h("select", { id: "hs-f-" + f.id, class: "az-input" }, f.options.map(([v, text]) => h("option", { value: v, text, selected: v === f.value })))
                     : h("input", { id: "hs-f-" + f.id, class: "az-input" + (f.mono ? " az-mono" : ""), type: f.type || "text",
@@ -605,7 +722,11 @@
         },
         values() {
             const out = {};
-            (this.spec.fields || []).forEach((f) => { out[f.id] = String($("hs-f-" + f.id).value || "").trim(); });
+            (this.spec.fields || []).forEach((f) => {
+                const el = $("hs-f-" + f.id);
+                out[f.id] = f.type === "switches" ? Array.from(el.querySelectorAll("input:checked")).map((i) => i.value)
+                    : String(el.value || "").trim();
+            });
             return out;
         },
         error(text) {
@@ -620,7 +741,7 @@
         },
         close() {
             if (this.running) return;
-            (this.spec && this.spec.fields || []).forEach((f) => { const el = $("hs-f-" + f.id); if (el) el.value = ""; });
+            (this.spec && this.spec.fields || []).forEach((f) => { const el = $("hs-f-" + f.id); if (el && f.type !== "switches") el.value = ""; });
             const el = $("hs-dialog");
             if (typeof el.close === "function") el.close(); else el.removeAttribute("open");
         },
@@ -736,7 +857,49 @@
         "hs-timer-off": () => dlg.open({ title: t("dlg.timerOff.title"), desc: t("dlg.timerOff.desc"), confirm: t("btn.switchOff"),
                                          argv: () => ["remove", "timer"] }),
         "hs-run": () => dlg.open({ title: t("dlg.run.title"), desc: t("dlg.run.desc"), confirm: t("btn.runNow"), argv: () => ["run"] }),
+        "hs-profile-roles": () => rolesForm(),
+        "hs-profile-expect-add": () => dlg.open({
+            title: t("dlg.expect.title"), desc: t("dlg.expect.desc"), confirm: t("btn.add"),
+            fields: [{ id: "item", label: t("dlg.expect.label"), max: 82, mono: true, placeholder: "security/exposure", help: t("dlg.expect.help") }],
+            argv: (v) => (EXPECT_RE.test(v.item) ? ["profile", "expect", "add", v.item] : { error: t("err.expect") }),
+        }),
+        "hs-profile-skip-add": () => dlg.open({
+            title: t("dlg.skip.title"), desc: t("dlg.skip.desc"), confirm: t("btn.leaveOut"),
+            fields: [
+                { id: "check", label: t("dlg.skip.check"), max: 82, mono: true, placeholder: "update-gaps/cve", help: t("dlg.skip.checkHelp") },
+                { id: "until", label: t("dlg.skip.until"), type: "date", max: 10, help: t("dlg.skip.untilHelp") },
+                { id: "reason", label: t("dlg.skip.reason"), max: 200, help: t("dlg.skip.reasonHelp") },
+            ],
+            argv: (v) => {
+                if (!SKIP_RE.test(v.check)) return { error: t("err.skip") };
+                if (v.until && !(DATE_RE.test(v.until) && v.until > today())) return { error: t("err.until") };
+                if (!v.reason) return { error: t("err.reason") };
+                return ["profile", "skip", "add", v.check].concat(v.until ? [v.until] : []);
+            },
+            // The reason is free text: on standard input, never in an argument.
+            input: (v) => v.reason.replace(/[\r\n]+/g, " ") + "\n",
+        }),
+        "hs-profile-remove": () => dlg.open({ title: t("dlg.profileRemove.title"), desc: t("dlg.profileRemove.desc"), confirm: t("btn.remove"),
+                                              argv: () => ["profile", "remove"] }),
     };
+    // The buttons of a row of the profile: data-action and the add-on or check in data-value.
+    const ROW_ACTIONS = {
+        "expect-remove": (item) => dlg.open({ title: t("dlg.expectRemove.title"), desc: t("dlg.expectRemove.desc", { item }),
+                                              confirm: t("btn.remove"), argv: () => ["profile", "expect", "remove", item] }),
+        "skip-remove": (check) => dlg.open({ title: t("dlg.skipRemove.title"), desc: t("dlg.skipRemove.desc", { check }),
+                                             confirm: t("btn.remove"), argv: () => ["profile", "skip", "remove", check] }),
+    };
+    function rolesForm() {
+        const roles = (catalog().roles || []).filter((r) => Array.isArray(r) && ROLE_RE.test(String(r[0])) && Array.isArray(r[1]));
+        const known = roles.map((r) => r[0]);
+        dlg.open({
+            title: profile().set ? t("dlg.roles.changeTitle") : t("dlg.roles.setTitle"), desc: t("dlg.roles.desc"), confirm: t("btn.save"),
+            fields: [{ id: "roles", label: t("dlg.roles.label"), type: "switches", value: profile().roles || [],
+                       options: roles.map((r) => [r[0], I18N.en["role." + r[0]] !== undefined ? t("role." + r[0]) : "",
+                                                  r[1].length ? t("dlg.roles.adds", { list: r[1].map(addonName).join(", ") }) : t("dlg.roles.addsNothing")]) }],
+            argv: (v) => (v.roles.every((r) => known.indexOf(r) >= 0) ? ["profile", "roles"].concat(v.roles) : { error: t("err.role") }),
+        });
+    }
     function ntfyForm(title, url, topic) {
         dlg.open({
             title, desc: t("dlg.ntfy.desc"), confirm: t("btn.save"),
@@ -799,6 +962,9 @@
         const el = target && target.closest("button");
         if (!el || el.closest("dialog")) return;
         if (el.id === "hs-copy") { copyCommands(); return; }
+        const row = el.dataset.action && Object.prototype.hasOwnProperty.call(ROW_ACTIONS, el.dataset.action) ? ROW_ACTIONS[el.dataset.action] : null;
+        const valid = el.dataset.action === "skip-remove" ? SKIP_RE : EXPECT_RE;
+        if (row && !el.disabled && view && valid.test(el.dataset.value || "")) { row(el.dataset.value); return; }
         const action = Object.prototype.hasOwnProperty.call(ACTIONS, el.id) ? ACTIONS[el.id] : null;
         if (action && !el.disabled && view) action();
     });

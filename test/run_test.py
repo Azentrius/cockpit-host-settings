@@ -63,7 +63,8 @@ class Host:
 
     def env(self, **kw):
         out = io.StringIO()
-        e = notify.Env(conf=self.conf, token_file=self.token, state_dir=self.state, root=self.root, now=self.now,
+        e = notify.Env(conf=self.conf, profile=os.path.join(self.dir, "profile.conf"), token_file=self.token,
+                       state_dir=self.state, root=self.root, now=self.now,
                        http=self.http, smtp=self.smtp, host="h", fqdn="h.example.com",
                        runner=Runner({CRON: self.answer("cronjobs"), GAPS: self.answer("update-gaps")}),
                        lstat=lstat_of({CRON: (0o755, 0), GAPS: (0o755, 0)}), out=out)
@@ -252,6 +253,99 @@ class Runs(unittest.TestCase):
         self.assertEqual(host.posts()[-1]["title"], "h: Cronjobs, Status not readable")
         self.assertIn("the command failed (exit 1)", host.posts()[-1]["message"])
         self.assertIn("not readable: cronjobs", e.out.getvalue())
+
+
+class WithProfile(unittest.TestCase):
+    """Whole runs with a target profile: Host Settings, Update Gaps, Security Monitor and Cron Jobs
+    are expected on every host; this host has Cron Jobs and Update Gaps, no Security Monitor."""
+
+    def host(self, profile="roles =\n", **kw):
+        host = Host(**kw)
+        host.profile = os.path.join(host.dir, "profile.conf")
+        if profile is not None:
+            with open(host.profile, "w", encoding="utf-8") as f:
+                f.write(profile)
+        return host
+
+    def run_with(self, host, **kw):
+        return host.run(profile=host.profile, **kw)
+
+    def test_the_first_run_names_the_gaps_in_the_summary_once(self):
+        host = self.host()
+        code, out = self.run_with(host)
+        self.assertEqual(code, 0, out)
+        posts = host.posts()
+        self.assertEqual([p["title"] for p in posts], ["h: messages set up"])
+        self.assertIn("Check no longer possible · Security Monitor\nthe add-on is not installed", posts[0]["message"])
+        last = host.file("last.json")
+        self.assertEqual(last["sent"]["security@"]["level"], "lost")
+        self.assertEqual([(r["id"], r["coverage"]) for r in last["coverage"]],
+                         [("host-settings", "checked"), ("update-gaps", "checked"), ("security", "missing"), ("cronjobs", "checked")])
+        host.now += 300
+        self.run_with(host)
+        self.assertEqual(len(host.posts()), 1, "nothing repeats")
+
+    def test_a_profile_set_up_later_states_the_gaps_once_then_changes(self):
+        host = self.host(profile=None)
+        self.run_with(host)
+        self.assertEqual(len(host.posts()), 1)
+        self.assertIsNone(host.file("last.json")["coverage"])
+        with open(host.profile, "w", encoding="utf-8") as f:
+            f.write("roles = web\n")
+        host.now += 300
+        self.run_with(host)
+        self.assertEqual([p["title"] for p in host.posts()][1:], ["h: 2 changes"])
+        self.assertEqual(host.posts()[-1]["message"].split("\n\n")[:2], [
+            "Check no longer possible · Image Update Monitor\nthe add-on is not installed",
+            "Check no longer possible · Security Monitor\nthe add-on is not installed"])
+        host.now += 300
+        self.run_with(host)
+        self.assertEqual(len(host.posts()), 2, "a run without a change says nothing")
+        # Cron Jobs cannot be read any more, then again
+        e = host.env(profile=host.profile, runner=Runner({CRON: hsproc.Result(77), GAPS: host.answer("update-gaps")}))
+        host.now += 300
+        e.now = host.now
+        notify.main(["run"], e)
+        self.assertEqual((host.posts()[-1]["title"], host.posts()[-1]["message"].split("\n\n")[0]),
+                         ("h: Cronjobs, check no longer possible", "Check no longer possible · Cronjobs\nnothing is readable without root"))
+        host.now += 3600
+        self.run_with(host)
+        self.assertEqual(host.posts()[-1]["title"], "h: Cronjobs, check possible again")
+        self.assertEqual(len(host.posts()), 4)
+
+    def test_nothing_sent_means_the_gaps_come_again(self):
+        host = self.host(profile=None)
+        self.run_with(host)
+        with open(host.profile, "w", encoding="utf-8") as f:
+            f.write("roles = build\n")
+        host.http.answers[("POST", "https://ntfy.example.com/", "auth")] = "network"
+        host.now += 300
+        self.run_with(host)
+        self.assertNotIn("security@", host.file("last.json")["sent"])
+        host.http.answers[("POST", "https://ntfy.example.com/", "auth")] = (200, "{}")
+        host.now += 300
+        self.run_with(host)
+        self.assertEqual(host.posts()[-1]["title"], "h: Security Monitor, check no longer possible")
+
+    def test_an_old_last_json_and_a_broken_profile(self):
+        host = self.host(profile="roles = mail\n")
+        with open(os.path.join(host.state, "last.json"), "w", encoding="utf-8") as f:
+            json.dump({"format": 1, "baseline_at": "2026-10-18T09:00:00Z",
+                       "sent": {"cronjobs#failed": {"level": "warning", "at": NOW - 86400, "last": {}, "label": "Cronjobs",
+                                                    "title": "Failed runs"}}}, f)
+        host.items["cronjobs"][0]["state"] = "warning"
+        self.run_with(host)
+        self.assertEqual(host.posts(), [], "a profile that does not count changes nothing: no message, as before")
+        last = host.file("last.json")
+        self.assertEqual((last["format"], last["coverage"], sorted(last["sent"])), (1, None, ["cronjobs#failed"]))
+        with open(host.profile, "w", encoding="utf-8") as f:
+            f.write("roles = bastion\n")
+        host.now += 300
+        self.run_with(host)
+        self.assertEqual([p["title"] for p in host.posts()], ["h: Security Monitor, check no longer possible"])
+        sent = host.file("last.json")["sent"]
+        self.assertEqual({k: e["level"] for k, e in sent.items()},
+                         {"cronjobs#failed": "warning", "cronjobs@": "ok", "update-gaps@": "ok", "security@": "lost"})
 
 
 class OwnStatus(unittest.TestCase):

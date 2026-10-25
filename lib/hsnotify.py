@@ -10,7 +10,8 @@ arguments, so the tests can stand in for all of them.
   collect()     their status verbs (`COMMAND status --lang xx`), judged as Status Board does
   changes()     what changed since the last message: per item (add-on and id), and per finding
                 (add-on, item and fid) for an item that lists its findings, with an hour against
-                flapping
+                flapping; with a target profile also whether each expected add-on and check can
+                still be checked (profile_coverage())
   message()     the text of a message: only what the add-ons said, their labels and this
                 host's name
   send_ntfy(), send_mail()   the two channels
@@ -48,6 +49,13 @@ MAX_LINES = 20
 PROBLEM = ("warning", "danger")
 UNKNOWN = "unknown"                # a key that cannot be judged now keeps what was told before
 ERROR_KINDS = ("rejected", "untrusted", "manifest", "invalid", "missing", "failed", "timeout", "unsupported")
+# In a key of the memory: what a host's profile expects ("PKG@" an add-on, "PKG@CHECK" a check).
+# Package names and check ids have no "@", so these keys never meet "PKG#", "PKG#ID", "PKG#ID/FID".
+COVERAGE = "@"
+# The coverage of an expected add-on or check that makes it "no longer possible"; back to
+# "checked" it is "possible again". Every other gap (partial, stale, unchecked, unsupported)
+# keeps what was told.
+LOST = ("failed", "noaccess", "unconfigured", "unreadable", "missing")
 PRIORITY = {"danger": 4, "warning": 3, "ok": 2}
 TAGS = {"danger": "rotating_light", "warning": "warning", "ok": "white_check_mark"}
 
@@ -68,6 +76,12 @@ T = {
         "unchecked.why": "the add-on is no longer installed",
         "unchecked.one": "the finding it reported can no longer be checked",
         "unchecked.other": "the {n} findings it reported can no longer be checked",
+        "head.lost": "Check no longer possible", "head.regained": "Check possible again",
+        "title.lost": "{host}: {label}, check no longer possible",
+        "title.regained": "{host}: {label}, check possible again",
+        "cov.failed": "the check failed", "cov.noaccess": "nothing is readable without root",
+        "cov.unconfigured": "the check is not set up (its timer is off, or it never ran)",
+        "cov.unreadable": "the status cannot be read", "cov.missing": "the add-on is not installed",
         "stale": "out of date since {when}",
         "unreadable": "Status not readable", "readable": "status readable",
         "reason.not-json": "the answer is not JSON", "reason.not-object": "the answer is not an object",
@@ -107,6 +121,12 @@ T = {
         "unchecked.why": "das Add-on ist nicht mehr installiert",
         "unchecked.one": "der gemeldete Befund lässt sich nicht mehr prüfen",
         "unchecked.other": "die {n} gemeldeten Befunde lassen sich nicht mehr prüfen",
+        "head.lost": "Prüfung nicht mehr möglich", "head.regained": "Prüfung wieder möglich",
+        "title.lost": "{host}: {label}, Prüfung nicht mehr möglich",
+        "title.regained": "{host}: {label}, Prüfung wieder möglich",
+        "cov.failed": "die Prüfung ist fehlgeschlagen", "cov.noaccess": "ohne root ist nichts lesbar",
+        "cov.unconfigured": "die Prüfung ist nicht eingerichtet (ihr Timer ist aus, oder sie lief nie)",
+        "cov.unreadable": "der Status lässt sich nicht lesen", "cov.missing": "das Add-on ist nicht installiert",
         "stale": "veraltet seit {when}",
         "unreadable": "Status nicht lesbar", "readable": "Status lesbar",
         "reason.not-json": "die Antwort ist kein JSON", "reason.not-object": "die Antwort ist kein Objekt",
@@ -214,17 +234,19 @@ def trusted(path, lstat=os.lstat):
 
 def read_addon(pkg, label, entry, lang, now, run=hsproc.run, lstat=os.lstat):
     """What one add-on says, as the notifier keeps it: {label, kind, reason, code, state,
-    version, summary, items, dropped}. kind is "ok" for a valid answer, "noaccess" for exit 77
-    (nothing can be judged, so it keeps what was told; Status Board shows it as a warning),
-    else one of ERROR_KINDS (a warning). dropped counts
+    version, summary, items, dropped, checks, legacy}. kind is "ok" for a valid answer,
+    "noaccess" for exit 77 (nothing can be judged, so it keeps what was told; Status Board shows
+    it as a warning), else one of ERROR_KINDS (a warning). dropped counts
     the items a valid answer had beyond the 50 that count, or that broke the rules.
 
     An item's state is the one the board shows at the time now (never better than its open
     findings, at least a warning when out of date); its findings are None, or {complete, total,
     list} when the add-on declares the feature and the item lists them, each finding {fid,
-    state, title, accepted, link} with accepted judged at the time now."""
+    state, title, accepted, link} with accepted judged at the time now. checks are the answer's
+    checks (hslib.validate_check) or None; legacy is what its items say about its coverage, as
+    the board judges an answer without checks (checked, unchecked, stale)."""
     out = {"label": label or pkg, "kind": "ok", "reason": None, "code": None, "state": "none",
-           "version": None, "summary": None, "items": [], "dropped": 0}
+           "version": None, "summary": None, "items": [], "dropped": 0, "checks": None, "legacy": None}
 
     def fail(kind, reason=None, code=None):
         out.update(kind=kind, reason=reason, code=code, state="none" if kind == "noaccess" else "warning")
@@ -262,7 +284,9 @@ def read_addon(pkg, label, entry, lang, now, run=hsproc.run, lstat=os.lstat):
                summary=status["summary"], dropped=status["dropped"],
                items=[{"id": i["id"], "title": i["title"], "state": i["state"], "value": i["value"],
                        "detail": i["detail"], "link": i["link"], "stale_at": i["stale_at"],
-                       "findings": _findings_of(i["findings"], owner.get(i["id"]), now)} for i in ev["items"]])
+                       "findings": _findings_of(i["findings"], owner.get(i["id"]), now)} for i in ev["items"]],
+               checks=status["checks"],
+               legacy=hslib.coverage_of(hslib.tile_of({"kind": "ok", "status": dict(status, checks=None)}, now), now))
     return out
 
 
@@ -283,6 +307,151 @@ def collect(lang, now, run=hsproc.run, root="/usr/share/cockpit", lstat=os.lstat
     return {pkg: read_addon(pkg, label, entry, lang, now, run, lstat) for pkg, label, entry in discover(root)}
 
 
+def installed(root="/usr/share/cockpit"):
+    """The package folders with a manifest: an expected add-on that is not among the add-ons with a
+    status entry is installed in a version without one (unsupported) or not at all (missing)."""
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return set()
+    return {p for p in names if hslib.PACKAGE_RE.fullmatch(p) and os.path.isfile(os.path.join(root, p, "manifest.json"))}
+
+
+# ---------------------------------------------------------------------------
+# What a host's profile expects, and how far it can be checked (coverage)
+
+def addon_coverage(a, now, skipped=()):
+    """The coverage of an add-on of a snapshot, as the board judges it (hslib.coverage_of()): from
+    the checks that apply, without those the profile leaves out (skipped: their ids), else from
+    the items."""
+    if a["kind"] == "noaccess":
+        return "noaccess"
+    if a["kind"] != "ok":
+        return "unreadable"
+    from_checks = hslib.checks_coverage({"checks": a.get("checks")}, now, skipped)
+    return from_checks["coverage"] if from_checks else a.get("legacy") or "checked"
+
+
+def profile_coverage(profile, snapshot, now, have=()):
+    """What a host's profile expects and how far it can be checked at the time now, as
+    (report, keys, hold); profile is {expect, skip} (expect resolved, skip [{check, until,
+    reason}]), have the package folders with a manifest (installed()).
+
+      report  [{id, label, coverage, gaps}] in the order of expect, for the page: an add-on's
+              coverage as the board judges it, with the checks the profile leaves out taken as
+              not applicable, and its checks with a gap [{id, title, coverage}]; for a check,
+              its own coverage when the add-on reports it, "notapplicable" when it does not or a
+              running skip leaves it out, the add-on's when the add-on cannot be judged
+      keys    {key: (coverage, label, title, note)}, what the messages compare: "PKG@" for each
+              expected add-on (missing, unsupported, noaccess, unreadable; for a valid answer
+              "checked" while its checks speak for themselves, else what its items say) and
+              "PKG@CHECK" for each check of it that applies; title is the check's title, note its
+              reason (text of the add-on)
+      hold    the add-ons whose checks cannot be judged now (not installed, no access,
+              unreadable): what was told about their checks stays as it was
+
+    As Status Board reads a profile: an entry "PKG/CHECK" makes the add-on PKG expected, and so
+    every check of it, and is no gap of its own when PKG does not report that check; a skip names
+    one check ("PKG/CHECK"; one naming an add-on alone does nothing). This add-on itself counts
+    as checked: it is the one running."""
+    skips = {s["check"] for s in profile["skip"] if "/" in s["check"] and hslib.skip_active(s, now)}
+    keys, hold, judged = {}, set(), {}
+    for pkg in dict.fromkeys(e.partition("/")[0] for e in profile["expect"]):
+        a = snapshot.get(pkg)
+        # the product name; None for an add-on that is gone and not one the roles name, which
+        # coverage_changes() then takes from the memory
+        label = (a or {}).get("label") or hslib.ADDON_LABELS.get(pkg)
+        if pkg == ADDON:
+            judged[pkg] = (label, "checked", None)
+            continue
+        if a is None or a["kind"] != "ok":
+            cov = addon_coverage(a, now) if a else "unsupported" if pkg in have else "missing"
+            judged[pkg] = (label, cov, None)
+            keys[pkg + COVERAGE] = (cov, label, None, None)
+            hold.add(pkg)
+            continue
+        skipped = {s.partition("/")[2] for s in skips if s.startswith(pkg + "/")}
+        from_checks = hslib.checks_coverage({"checks": a.get("checks")}, now, skipped)
+        cov = from_checks["coverage"] if from_checks else a.get("legacy") or "checked"
+        judged[pkg] = (label, cov, from_checks)
+        keys[pkg + COVERAGE] = ("checked" if from_checks else cov, label, None, None)
+        for c in a.get("checks") or []:
+            if c["state"] != "notapplicable" and c["id"] not in skipped:
+                keys[pkg + COVERAGE + c["id"]] = (hslib.check_coverage(c, now)["coverage"], label, c["title"], c["reason"])
+    report = []
+    for item in profile["expect"]:
+        pkg, _, check = item.partition("/")
+        label, cov, from_checks = judged[pkg]
+        row = {"id": item, "label": label or pkg, "coverage": cov, "gaps": []}
+        report.append(row)
+        if not check:
+            row["gaps"] = [{"id": g["id"], "title": g["title"], "coverage": g["coverage"]}
+                           for g in (from_checks or {}).get("gaps", [])]
+        elif pkg != ADDON and pkg not in hold:
+            found = next((c for c in snapshot[pkg].get("checks") or [] if c["id"] == check), None)
+            row["coverage"] = "notapplicable" if found is None or found["state"] == "notapplicable" or item in skips \
+                else hslib.check_coverage(found, now)["coverage"]
+    return report, keys, hold
+
+
+def coverage_changes(told, coverage, now):
+    """(events, entries): what changed in the coverage of what a host's profile expects, and the
+    new entries of the memory for its keys ("PKG@", "PKG@CHECK"). told: the memory's entries of
+    those keys; coverage: profile_coverage(), or None without a profile (then nothing is told and
+    the entries are forgotten).
+
+    A key whose coverage turns to one of LOST is told once, "no longer possible"; back to
+    "checked", once more, "possible again"; any other state keeps what was told. An entry is
+    {level: lost or ok, coverage, at, last, label, title}, kept for every key the profile
+    expects (so an add-on that is gone is still named by its product name); a key that is not
+    there was OK. The same change of the same key waits when it was told less than FLAP seconds
+    ago, as for items.
+    A key the profile no longer expects, or that does not apply now (a skip that runs, a check
+    the add-on reports as not applicable), is forgotten without a message, except the checks of
+    an add-on that cannot be judged now (hold), which stay as they were."""
+    if coverage is None:
+        return [], {}
+    _, keys, hold = coverage
+    events, out = [], {}
+    for key in sorted(set(told) | set(keys)):
+        entry = told.get(key) if isinstance(told.get(key), dict) else {}
+        old = "lost" if entry.get("level") == "lost" else "ok"
+        if key not in keys:
+            pkg, _, check = key.partition(COVERAGE)
+            if check and pkg in hold and entry:
+                out[key] = entry
+            continue
+        cov, label, title, note = keys[key]
+        label = label or entry.get("label") or key.partition(COVERAGE)[0]
+        new = "lost" if cov in LOST else "ok" if cov == "checked" else old
+        last = entry.get("last") if isinstance(entry.get("last"), dict) else {}
+        change = old + ">" + new
+        if new == old or (isinstance(last.get(change), (int, float)) and now - last[change] < FLAP):
+            # unchanged, or a change that waits for the hour against flapping: as told, with what
+            # is known now
+            out[key] = dict({"at": now, "last": {}}, **entry)
+            out[key].update(level=old, coverage=cov, label=label, **({"title": title} if title else {}))
+            continue
+        out[key] = {"level": new, "coverage": cov, "at": now, "last": dict(last, **{change: now}), "label": label}
+        if title or entry.get("title"):
+            out[key]["title"] = title or entry["title"]
+        events.append(_cevent(key, out[key], note))
+    return events, out
+
+
+def _cevent(key, entry, note):
+    """A change of the coverage of an expected add-on or check: "lost" (no longer possible, a
+    warning) or "regained" (possible again)."""
+    pkg, _, check = key.partition(COVERAGE)
+    lost = entry["level"] == "lost"
+    return {
+        "key": key, "pkg": pkg, "id": "", "check": check, "label": entry["label"], "title": entry.get("title") or check or None,
+        "kind": "lost" if lost else "regained", "from": "ok" if lost else "warning", "to": "warning" if lost else "ok",
+        "state": "warning" if lost else "ok", "coverage": entry["coverage"], "note": note if lost else None,
+        "value": None, "detail": None, "stale_at": None, "why": None, "addon_kind": None, "reason": None, "code": None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # What changed
 #
@@ -291,10 +460,13 @@ def collect(lang, now, run=hsproc.run, root="/usr/share/cockpit", lstat=os.lstat
 #   "PKG#"         the add-on itself (a warning while its status cannot be read)
 #   "PKG#ID"       an item; for an item that lists findings only what they do not explain
 #   "PKG#ID/FID"   a finding of an item that lists them
+#   "PKG@"         an add-on the host's profile expects (coverage_changes())
+#   "PKG@CHECK"    a check of it, or a check the profile expects on its own
 # An entry is {level, at, last: {"FROM>TO": time}, label, title}. A finding's entry also has
 # status (open; accepted: told nothing while accepted; resolved: kept KEEP seconds to tell
 # "again") and item (its item's title); the entry of an item that lists findings has
-# findings: true. The keys of 0.1.0 are the first two kinds and are read as before.
+# findings: true. The entry of a coverage key has level "lost" or "ok" and its coverage. The
+# keys of 0.1.0 are the first two kinds and are read as before.
 
 STATUSES = ("open", "accepted", "resolved")
 
@@ -360,10 +532,15 @@ def keys_of(snapshot):
     return cur
 
 
-def changes(sent, snapshot, now):
+def changes(sent, snapshot, now, coverage=None):
     """(events, sent): what to tell, and the new memory of what was told (above). A change that
     was told for the same key less than FLAP seconds ago waits (its key keeps the old level),
-    so a flapping item or finding gives one message an hour at most.
+    so a flapping item or finding gives one message an hour at most. coverage: what the host's
+    profile expects and how far it can be checked (profile_coverage()), or None without a
+    profile: then the coverage keys are forgotten and nothing about them is told
+    (coverage_changes()). A coverage change of an add-on itself ("PKG@") is not told when the
+    same run tells about the add-on already (its status is not readable, or readable again; it
+    is no longer installed), though it is remembered.
 
     What cannot be checked is no reason for OK, so these keys keep what was told before: the
     items and findings of an add-on whose status cannot be read or that answers exit 77, an
@@ -385,6 +562,8 @@ def changes(sent, snapshot, now):
     (any more) is compared per item, from the most severe of the findings it told; once it is
     OK, they are resolved with it."""
     sent = sent if isinstance(sent, dict) else {}
+    told_coverage = {k: v for k, v in sent.items() if COVERAGE in k}
+    sent = {k: v for k, v in sent.items() if COVERAGE not in k}
     events, out, uninstalled = [], {}, {}
     told_findings = {}                 # (pkg, item id) -> {fid: entry}
     for key, entry in sent.items():
@@ -501,7 +680,11 @@ def changes(sent, snapshot, now):
                 out[key] = dict(out[key], level="ok", status="resolved", at=now)
 
     events.extend(_unchecked(pkg, entries) for pkg, entries in sorted(uninstalled.items()))
-    order = {"worse": 0, "again": 0, "expired": 0, "unchecked": 1, "better": 2, "resolved": 3}
+    told_addons = {e["pkg"] for e in events if not e["id"]}
+    cov_events, cov_out = coverage_changes(told_coverage, coverage, now)
+    out.update(cov_out)
+    events.extend(e for e in cov_events if e["check"] or e["pkg"] not in told_addons)
+    order = {"worse": 0, "again": 0, "expired": 0, "unchecked": 1, "lost": 1, "better": 2, "resolved": 3, "regained": 3}
     events.sort(key=lambda e: (order[e["kind"]], -hslib.rank(e["to"]), e["label"].lower(), e["key"]))
     return events, _prune(out, now)
 
@@ -602,7 +785,8 @@ def _prune(out, now):
     if len(kept) > MAX_KEYS:
         def weight(kv):
             k, e = kv
-            return (0 if _told(e) in PROBLEM else 1 if e.get("status") == "accepted" else 2, -at(e), k)
+            told = _told(e) in PROBLEM or e.get("level") == "lost"
+            return (0 if told else 1 if e.get("status") == "accepted" else 2, -at(e), k)
         kept = dict(sorted(kept.items(), key=weight)[:MAX_KEYS])
     return kept
 
@@ -688,6 +872,12 @@ def _line(lang, e):
         first = f"{t(lang, 'head.unchecked')} · {e['label']} · {t(lang, 'unchecked.why')}"
         n = e.get("open") or 0
         return first + ("\n" + t(lang, "unchecked.one" if n == 1 else "unchecked.other", n=n) if n else "")
+    if e["kind"] in ("lost", "regained"):
+        # An expected add-on or check: what happened, the add-on and the check, then why.
+        first = f"{t(lang, 'head.' + e['kind'])} · {e['label']}" + (f" · {e['title']}" if e["title"] else "")
+        if e["kind"] == "regained":
+            return first
+        return first + "\n" + t(lang, "cov." + e["coverage"]) + (f": {e['note']}" if e.get("note") else "")
     resolved = e["kind"] == "resolved"
     head = _head(lang, e)
     if e.get("fid"):
@@ -739,12 +929,13 @@ def problems_of(snapshot):
     return out
 
 
-def message(lang, host, events=None, snapshot=None, summary=False):
+def message(lang, host, events=None, snapshot=None, summary=False, gaps=()):
     """{title, body, priority, tags} of the message for events, or of the summary of a
-    snapshot (the first message after setting up)."""
+    snapshot (the first message after setting up), which names the gaps in what the host's
+    profile expects as well (gaps: events of coverage_changes())."""
     footer = t(lang, "footer", host=host)
     if summary:
-        found = problems_of(snapshot or {})
+        found = problems_of(snapshot or {}) + sorted(gaps, key=lambda e: (e["label"].lower(), e["key"]))
         intro = t(lang, "summary.intro") + "\n\n"
         if found:
             head = intro + t(lang, "summary.problems")
@@ -752,11 +943,13 @@ def message(lang, host, events=None, snapshot=None, summary=False):
             head = intro + t(lang, "summary.clean", n=len(snapshot))
         else:
             head = intro + t(lang, "summary.none")
-        top = found[0]["to"] if found else "ok"
+        top = max((e["to"] for e in found), key=hslib.rank) if found else "ok"
         return {"title": t(lang, "title.summary", host=host), "body": _fit(lang, head, [_line(lang, e) for e in found],
                                                                            footer),
                 "priority": PRIORITY[top] if found else 3, "tags": [TAGS[top]]}
-    if len(events) == 1 and events[0]["kind"] == "unchecked":
+    if len(events) == 1 and events[0]["kind"] in ("lost", "regained"):
+        title = t(lang, "title." + events[0]["kind"], host=host, label=events[0]["label"])
+    elif len(events) == 1 and events[0]["kind"] == "unchecked":
         title = t(lang, "title.unchecked", host=host, label=events[0]["label"])
     elif len(events) == 1:
         e = events[0]

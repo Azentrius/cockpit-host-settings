@@ -5,7 +5,8 @@
     python3 tools/preview/build.py      -> tools/preview/out/host-settings/index.html
     open tools/preview/out/host-settings/index.html?scenario=ready&lang=de
 
-Scenarios: fresh (nothing set up), ready (ntfy and e-mail, the timer on, three add-ons read),
+Scenarios: fresh (nothing set up, no target profile), ready (ntfy and e-mail, the timer on, four
+add-ons read, the target profile of a web server with one check left out),
 open (the topic is open without a login, the last message did not go out everywhere), nomta (only
 a sendmail command, no mail server on localhost:25). admin=0 shows the summary without
 administrative access. Cockpit's base1/cockpit.js is replaced by cockpit-stub.js, which answers
@@ -24,6 +25,7 @@ OUT = os.path.join(HERE, "out")
 NOW = "2026-10-19T19:05:00Z"
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(REPO, "lib"))
+import hslib  # noqa: E402
 import hsstatus  # noqa: E402
 
 PO_STUB = """// Stand-in for Cockpit's base1/po.js: ?lang=de switches the session language.
@@ -31,11 +33,18 @@ const _l = new URLSearchParams(location.search).get("lang");
 if (_l && _l !== "en") cockpit.locale({"": {"language": _l, "language-direction": "ltr"}});
 """
 
+# The target profile as `show` sends it: none on a fresh server, the role web on the others.
+CATALOG = {"base": list(hslib.BASE_EXPECT), "roles": [[r, list(adds)] for r, adds in hslib.ROLES],
+           "labels": dict(hslib.ADDON_LABELS)}
+NO_PROFILE = {"set": False, "unreadable": False, "roles": [], "extra": [], "expect": [], "skip": [], "set_at": None,
+              "bad_lines": [], "catalog": CATALOG}
+WEB_PROFILE = dict(NO_PROFILE, set=True, roles=["web"], expect=hslib.resolve_expect(["web"]), set_at="2026-10-18T09:00:00Z",
+                   skip=[{"check": "update-gaps/cve", "until": None, "reason": "Network data off on purpose", "active": True}])
 FRESH = {
     "root": True, "config": {"ntfy_url": None, "ntfy_topic": None, "mail_to": None, "language": "en"}, "bad_lines": [],
     "token": False, "timer": "inactive", "next": None, "running": False, "host": "web1",
     "smtp": {"listening": True, "sendmail": True}, "last": None, "check": None, "test_mail": None,
-    "docs": "https://docs.ntfy.sh/install/",
+    "docs": "https://docs.ntfy.sh/install/", "profile": NO_PROFILE,
 }
 TARGET = "https://ntfy.example.com/cockpit-web1"
 STEPS = [{"id": "reach", "result": "ok", "code": 200, "reason": "answered"}, {"id": "tls", "result": "ok", "code": None, "reason": "https"},
@@ -67,7 +76,10 @@ READY = dict(FRESH, **{
             "security": {"label": "Security Monitor", "kind": "invalid", "reason": "not-json", "code": None, "state": "warning",
                          "version": None, "summary": None, "items": []},
         },
+        "coverage": [{"id": pkg, "label": hslib.ADDON_LABELS[pkg], "coverage": "unreadable" if pkg == "security" else "checked",
+                      "gaps": []} for pkg in hslib.resolve_expect(["web"])],
     },
+    "profile": WEB_PROFILE,
     "check": {"at": "2026-10-19T09:00:00Z", "channel": "ntfy", "target": TARGET, "token": True, "steps": STEPS,
               "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok"}},
     "test_mail": {"at": "2026-10-18T09:05:00Z", "channel": "mail", "result": {"ok": True, "code": None, "reason": "sent"}},
@@ -87,8 +99,12 @@ def main():
     info = {"channels": ["ntfy", "mail"], "delivery": {"at": "2026-10-19T18:30:00Z", "results": {"ntfy": {"ok": False, "reason": "rejected"}}},
             "access": {"state": "ok"}, "run": {"at": "2026-10-19T19:00:00Z", "addons": 4}}
     status = hsstatus.status_file(info, hsstatus.version())
+    # The status verb adds the profile from profile.conf (host-settings.py, do_status).
+    profile = hslib.profile_answer(hslib.parse_profile("roles = web\nskip = update-gaps/cve: Network data off on purpose\n"
+                                                       "set_at = 2026-10-18T09:00:00Z\n")[0])
     data = {"scenarios": {"fresh": FRESH, "ready": READY, "open": OPEN, "nomta": NOMTA},
-            "status": {lang: hsstatus.localize(status, lang, hsstatus.hslib.parse_time(NOW)) for lang in ("en", "de")},
+            "status": {lang: dict(hsstatus.localize(status, lang, hslib.parse_time(NOW)), features=["profile"], profile=profile)
+                       for lang in ("en", "de")},
             "check": {"at": NOW, "channel": "ntfy", "target": TARGET, "token": True, "steps": STEPS,
                       "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok"}}}
     shutil.rmtree(OUT, ignore_errors=True)

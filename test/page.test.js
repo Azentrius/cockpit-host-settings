@@ -278,6 +278,170 @@ t("a link to the tab follows the location", async () => {
     assert.ok(!page.d.getElementById("hs-tab-notifications").hidden);
 });
 
+// ---------- the target profile ----------
+
+function withProfile(extra) {
+    const view = ready(extra);
+    view.profile = P.webProfile();
+    view.last.coverage = P.COVERAGE;
+    return view;
+}
+
+t("the target profile: roles, what is expected and why, its coverage, the checks left out", async () => {
+    const page = await open({ view: withProfile() });
+    const d = page.d;
+    const card = d.getElementById("hs-profile");
+    assert.ok(card, "a section on the Notifications tab");
+    assert.ok(d.getElementById("hs-tab-notifications").contains(card));
+    const all = text(card);
+    ["Target profile", "Roles web", "Expected", "Every server", "Role web", "Added here", "Security Monitor: exposure",
+     "Image Update Monitor", "Not installed", "Failed", "Container hardening", "Left out on purpose", "network data off on purpose",
+     "Until 31 Dec 2026", "CrowdSec instead", "Ended on 1 Oct 2026, counts again"].forEach((s) => assert.ok(all.includes(s), s + " in: " + all));
+    assert.strictEqual(card.querySelector(".az-card__header .az-label").dataset.state, "warning");
+    assert.ok(text(card.querySelector(".az-card__header")).includes("2 gaps"), "security failed, image-updates not installed");
+    // only the extra expectation can be removed here; every skip can
+    assert.deepStrictEqual(plain([...card.querySelectorAll("[data-action]")].map((b) => [b.dataset.action, b.dataset.value])),
+        [["expect-remove", "security/exposure"], ["skip-remove", "update-gaps/cve"], ["skip-remove", "security/fail2ban"]]);
+    ["hs-profile-roles", "hs-profile-expect-add", "hs-profile-skip-add", "hs-profile-remove"].forEach((id) => assert.ok(d.getElementById(id), id));
+    // before the notifier ran with the profile, nothing is claimed about its coverage
+    const early = withProfile();
+    early.last.coverage = null;
+    const before = await open({ view: early });
+    assert.ok(text(before.d.getElementById("hs-profile")).includes("Not read yet"));
+    assert.strictEqual(before.d.querySelector("#hs-profile .az-card__header .az-label").dataset.state, "ok");
+    // German
+    const de = await open({ view: withProfile(), language: "de" });
+    const deText = text(de.d.getElementById("hs-profile"));
+    ["Sollprofil", "Jeder Server", "Hier hinzugefügt", "Nicht installiert", "Bewusst ausgelassen", "Endete am"].forEach((s) =>
+        assert.ok(deText.includes(s), s + " in: " + deText));
+});
+
+t("no profile yet: what it is, and a dialog with a switch per role", async () => {
+    const page = await open({ view: fresh() });
+    const d = page.d;
+    const card = text(d.getElementById("hs-profile"));
+    assert.ok(card.includes("No profile") && card.includes("Without a profile, every installed add-on counts as expected."), card);
+    click(page, "hs-profile-roles");
+    assert.ok(d.getElementById("hs-dialog").hasAttribute("open"));
+    assert.strictEqual(d.getElementById("hs-dialog-title").textContent, "Set up the target profile");
+    const switches = [...d.querySelectorAll("#hs-f-roles input[type=checkbox]")];
+    assert.deepStrictEqual(plain(switches.map((s) => [s.value, s.checked])), [["web", false], ["database", false], ["build", false], ["bastion", false]]);
+    const fields = text(d.getElementById("hs-dialog-fields"));
+    assert.ok(fields.includes("Adds Image Update Monitor.") && fields.includes("Adds nothing that reports a status."), fields);
+    assert.deepStrictEqual(changes(page), [], "nothing runs before the dialog is confirmed");
+    switches[0].checked = true;
+    switches[3].checked = true;
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(page), [["profile", "roles", "web", "bastion"]]);
+    assert.ok(page.calls.spawn.filter((c) => c.opts.superuser === "require").every((c) => c.opts.err === "out"));
+    // changing the roles starts from those set; none switched on is the add-ons of every server
+    const set = await open({ view: withProfile() });
+    click(set, "hs-profile-roles");
+    assert.strictEqual(set.d.getElementById("hs-dialog-title").textContent, "Change the roles");
+    const on = [...set.d.querySelectorAll("#hs-f-roles input[type=checkbox]")];
+    assert.deepStrictEqual(plain(on.map((s) => s.checked)), [true, false, false, false]);
+    on[0].checked = false;
+    click(set, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(set), [["profile", "roles"]]);
+});
+
+t("every change of the profile goes through the dialog, with its fixed verb", async () => {
+    const page = await open({ view: withProfile() });
+    const d = page.d;
+    click(page, "hs-profile-expect-add");
+    d.getElementById("hs-f-item").value = "Security Monitor";
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.ok(!d.getElementById("hs-dialog-error").hidden);
+    assert.deepStrictEqual(changes(page), [], "a bad name runs nothing");
+    d.getElementById("hs-f-item").value = "update-gaps/held";
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(page), [["profile", "expect", "add", "update-gaps/held"]]);
+
+    const skip = await open({ view: withProfile() });
+    click(skip, "hs-profile-skip-add");
+    const sd = skip.d;
+    assert.ok(text(sd.getElementById("hs-dialog-fields")).includes("An add-on alone cannot be left out."));
+    sd.getElementById("hs-f-check").value = "security";
+    sd.getElementById("hs-f-reason").value = "fail2ban instead";
+    click(skip, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(skip), [], "an add-on alone cannot be left out");
+    assert.ok(text(sd.getElementById("hs-dialog-error")).includes("as add-on/check (update-gaps/cve)"));
+    sd.getElementById("hs-f-check").value = "security/crowdsec";
+    sd.getElementById("hs-f-until").value = "2026-10-19";
+    sd.getElementById("hs-f-reason").value = "fail2ban instead";
+    click(skip, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(skip), [], "an end that is not after today runs nothing");
+    sd.getElementById("hs-f-until").value = "";
+    sd.getElementById("hs-f-reason").value = "";
+    click(skip, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(skip), [], "a skip needs a reason");
+    sd.getElementById("hs-f-until").value = "2026-12-01";
+    sd.getElementById("hs-f-reason").value = "fail2ban instead";
+    click(skip, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(skip), [["profile", "skip", "add", "security/crowdsec", "2026-12-01"]]);
+    assert.deepStrictEqual(skip.calls.inputs, ["fail2ban instead\n"], "the reason on standard input");
+    assert.ok(!JSON.stringify(skip.calls.spawn.map((c) => c.argv)).includes("fail2ban instead"), "never in an argument");
+
+    const rows = { "expect-remove": ["profile", "expect", "remove", "security/exposure"],
+                   "skip-remove": ["profile", "skip", "remove", "update-gaps/cve"] };
+    for (const [action, argv] of Object.entries(rows)) {
+        const row = await open({ view: withProfile() });
+        row.d.querySelector(`#hs-profile [data-action="${action}"]`).dispatchEvent(new row.w.MouseEvent("click", { bubbles: true }));
+        assert.ok(row.d.getElementById("hs-dialog").hasAttribute("open"), action);
+        assert.ok(text(row.d.getElementById("hs-dialog-desc")).includes(argv[3]), action);
+        assert.deepStrictEqual(changes(row), [], action + ": nothing before the dialog is confirmed");
+        click(row, "hs-dialog-confirm");
+        await settle();
+        assert.deepStrictEqual(changes(row), [argv], action);
+    }
+    const remove = await open({ view: withProfile() });
+    click(remove, "hs-profile-remove");
+    assert.ok(text(remove.d.getElementById("hs-dialog-desc")).includes("profile.conf.bak"));
+    click(remove, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(remove), [["profile", "remove"]]);
+    assert.strictEqual(helperCalls(remove).filter(([v]) => v === "show").length, 2, "loaded again after the change");
+});
+
+t("without administrative access: the profile from the status, and no button to change it", async () => {
+    const doc = Object.assign(P.statusDoc("en"), { features: ["profile"], profile: {
+        roles: ["web"], expect: ["host-settings", "update-gaps", "security", "cronjobs", "image-updates"],
+        skip: [{ check: "update-gaps/cve", reason: EVIL }], set_at: "2026-10-19T09:00:00Z" } });
+    const page = await open({ admin: false, onSpawn: (verb) => (verb.startsWith("status") ? P.proc(JSON.stringify(doc)) : null) });
+    const d = page.d;
+    assert.strictEqual(d.getElementById("hs-sum-profile").textContent, "Target profile: web; 5 add-ons and checks expected.");
+    assert.strictEqual(d.getElementById("hs-profile"), null, "the section needs administrative access");
+    assert.strictEqual(d.querySelectorAll("[data-action], [id^=hs-profile-]").length, 0, "no button to change it");
+    assert.deepStrictEqual([...d.querySelectorAll("button")].filter((b) => !b.closest("dialog, [hidden]")).map((b) => b.id), ["hs-refresh"],
+        "only Refresh is shown");
+    const none = await open({ admin: false });
+    assert.strictEqual(none.d.getElementById("hs-sum-profile").textContent, "No target profile.");
+    const de = await open({ admin: false, language: "de", onSpawn: (verb) => (verb.startsWith("status") ? P.proc(JSON.stringify(doc)) : null) });
+    assert.strictEqual(de.d.getElementById("hs-sum-profile").textContent, "Sollprofil: web; 5 Add-ons und Prüfungen erwartet.");
+});
+
+t("the profile's texts stay text, and its bad lines are named", async () => {
+    const view = withProfile();
+    view.profile.skip[0].reason = EVIL;
+    view.profile.bad_lines = [2, 5];
+    const page = await open({ view });
+    assert.strictEqual(page.d.querySelectorAll("#hs-profile img").length, 0);
+    assert.ok(text(page.d.getElementById("hs-profile")).includes(EVIL));
+    assert.strictEqual(page.w.__pwned, undefined);
+    const st = text(page.d.getElementById("hs-status"));
+    assert.ok(st.includes("Lines 2, 5 of /etc/cockpit-host-settings/profile.conf could not be read"), st);
+    const broken = await open({ view: ready({ profile: P.noProfile({ unreadable: true }) }) });
+    assert.ok(text(broken.d.getElementById("hs-status")).includes("The profile could not be read"));
+});
+
 // A test that waits forever fails with its name instead of holding up the run.
 function limit(name, promise, ms = 30000) {
     let timer;

@@ -36,6 +36,7 @@ import hsproc  # noqa: E402
 import hsstatus  # noqa: E402
 
 CONF = "/etc/cockpit-host-settings/notify.conf"
+PROFILE = "/etc/cockpit-host-settings/profile.conf"
 USAGE = "usage: host-settings-notify.py run | test ntfy | test mail"
 
 
@@ -44,6 +45,7 @@ class Env:
 
     def __init__(self, **kw):
         self.conf = CONF
+        self.profile = PROFILE
         self.token_file = os.path.join(os.environ.get("CREDENTIALS_DIRECTORY", "/nonexistent"), "ntfy.token")
         self.state_dir = os.environ.get("STATE_DIRECTORY", "/var/lib/cockpit-host-settings").split(":")[0]
         self.root = "/usr/share/cockpit"
@@ -79,6 +81,20 @@ def read_config(path):
     except OSError:
         text = ""
     return hslib.parse_config(text)
+
+
+def read_profile(path):
+    """The host's target profile as profile_coverage() takes it ({expect, skip}), or None
+    without one (or when the file cannot be read)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read(1 << 16)
+    except (OSError, UnicodeDecodeError):
+        return None
+    prof, _ = hslib.parse_profile(text)
+    if not hslib.profile_set(prof):
+        return None
+    return {"expect": hslib.resolve_expect(prof["roles"], prof["extra"]), "skip": prof["skip"]}
 
 
 def read_token(path):
@@ -171,17 +187,23 @@ def do_run(env):
         last = {}
     lang = cfg["language"]
     snapshot = hsnotify.collect(lang, now, env.runner, env.root, env.lstat)
+    profile = read_profile(env.profile)
+    coverage = hsnotify.profile_coverage(profile, snapshot, now, hsnotify.installed(env.root)) if profile else None
     chans = hslib.channels(cfg)
     sent = last.get("sent") if isinstance(last.get("sent"), dict) else {}
     told = None
     if chans:
         summary = not last.get("baseline_at")
         if summary:
-            msg, new_sent = hsnotify.message(lang, env.host, snapshot=snapshot, summary=True), \
-                hsnotify.baseline(snapshot, now)
-            count = len(hsnotify.problems_of(snapshot))
+            # The first message names the gaps in what the profile expects with the problems, and
+            # takes them as told.
+            gaps, told_gaps = hsnotify.coverage_changes({}, coverage, now)
+            msg = hsnotify.message(lang, env.host, snapshot=snapshot, summary=True, gaps=gaps)
+            new_sent = dict(hsnotify.baseline(snapshot, now), **told_gaps)
+            count = len(hsnotify.problems_of(snapshot)) + len(gaps)
         else:
-            events, new_sent = hsnotify.changes(sent, snapshot, now)
+            # A profile set up since the last run: its gaps are changes from OK, told once.
+            events, new_sent = hsnotify.changes(sent, snapshot, now, coverage)
             msg = hsnotify.message(lang, env.host, events=events) if events else None
             count = len(events)
         if msg:
@@ -208,6 +230,7 @@ def do_run(env):
             access = dict(hsnotify.access_of(steps, access), at=hslib.iso(now), target=target(cfg), full=False,
                           steps=steps)
     last.update(format=hsnotify.FORMAT, sent=sent, seen=seen_of(snapshot), access=access,
+                coverage=coverage[0] if coverage else None,
                 run={"at": hslib.iso(now), "took_ms": int((time.monotonic() - started) * 1000),
                      "addons": len(snapshot), "bad_lines": bad})
     write_atomic(env.path("last.json"), last, 0o600)
