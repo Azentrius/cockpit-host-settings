@@ -38,7 +38,7 @@ t("a fresh server: nothing set up, the way to set it up", async () => {
     assert.deepStrictEqual(helperCalls(page), [["show", "try"]]);
     assert.ok(text(d.getElementById("hs-overview")).includes("No channel is set up yet."));
     assert.ok(d.getElementById("hs-timer-on").disabled, "the timer needs a channel first");
-    assert.ok(text(d.getElementById("hs-overview")).includes("Set up a channel first."));
+    assert.ok(text(d.getElementById("hs-overview")).includes("Set up a channel or a watchdog first."));
     assert.ok(d.getElementById("hs-ntfy-set"));
     assert.ok(d.getElementById("hs-mail-set"));
     assert.ok(text(d.getElementById("hs-mail")).includes("No mail server accepts mail on localhost:25"));
@@ -440,6 +440,122 @@ t("the profile's texts stay text, and its bad lines are named", async () => {
     assert.ok(st.includes("Lines 2, 5 of /etc/cockpit-host-settings/profile.conf could not be read"), st);
     const broken = await open({ view: ready({ profile: P.noProfile({ unreadable: true }) }) });
     assert.ok(text(broken.d.getElementById("hs-status")).includes("The profile could not be read"));
+});
+
+// The watchdog part of `show` (host-settings.py, heartbeat_view): never the address.
+const PUSH_ID = "pushpushpushpush";
+function beatView(extra) {
+    return Object.assign({ configured: true, invalid: false, adapter: "uptime-kuma", encrypted: false, local: false,
+                           last: { at: "2026-10-19T19:00:01Z", adapter: "uptime-kuma", signal: "success", why: null,
+                                   result: { ok: true, code: 200, reason: "accepted", attempts: 1 } }, test: null }, extra || {});
+}
+
+t("the watchdog, not set up: what it is, a dialog with a password field, the address on standard input only", async () => {
+    const page = await open({ view: fresh() });
+    const d = page.d;
+    const card = d.getElementById("hs-beat");
+    assert.ok(card && d.getElementById("hs-tab-notifications").contains(card));
+    assert.ok(text(card).includes("An external watchdog, Healthchecks or Uptime Kuma, gets a signal after every run"), text(card));
+    click(page, "hs-beat-set");
+    assert.strictEqual(d.getElementById("hs-dialog-title").textContent, "Set up a watchdog");
+    assert.ok(text(d.getElementById("hs-dialog-desc")).includes("The address is a secret"));
+    const field = d.getElementById("hs-f-url");
+    assert.strictEqual(field.getAttribute("type"), "password");
+    assert.strictEqual(d.getElementById("hs-f-adapter").value, "healthchecks");
+    field.value = "ftp://kuma.example.net/api/push/" + PUSH_ID;
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(page), []);
+    assert.ok(text(d.getElementById("hs-dialog-error")).includes("Enter the address as https://host/path"));
+    d.getElementById("hs-f-adapter").value = "uptime-kuma";
+    field.value = "http://10.8.0.2:3001/api/push/" + PUSH_ID + "?status=up&msg=OK&ping=";
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(page), [["heartbeat", "set", "uptime-kuma"]]);
+    assert.deepStrictEqual(page.calls.inputs, ["http://10.8.0.2:3001/api/push/" + PUSH_ID + "?status=up&msg=OK&ping=\n"]);
+    assert.ok(!JSON.stringify(page.calls.spawn).includes(PUSH_ID), "never in an argument");
+    assert.strictEqual(field.value, "", "cleared once sent");
+    assert.ok(!d.body.textContent.includes(PUSH_ID));
+});
+
+t("the watchdog, set up: service, stored address, last signal, test and remove", async () => {
+    const result = { at: P.NOW, channel: "heartbeat", adapter: "uptime-kuma", result: { ok: false, code: 404, reason: "not-found", attempts: 1 } };
+    const page = await open({
+        view: ready({ heartbeat: beatView() }),
+        onSpawn: (verb) => (verb === "heartbeat test"
+            ? P.proc("", { chunks: ["Sending a test signal to the watchdog …\nRESULT " + JSON.stringify(result) + "\n"] }) : null),
+    });
+    const d = page.d;
+    const card = d.getElementById("hs-beat");
+    const all = text(card);
+    ["Uptime Kuma", "Stored (readable by root only)", "Not encrypted: private network", "5 minutes ago: success, taken by the watchdog",
+     "heartbeat interval 720 seconds and retries 0", "period 5 minutes and grace 7 minutes", "pause the check at the watchdog first"]
+        .forEach((x) => assert.ok(all.includes(x), x + " in: " + all));
+    assert.strictEqual(card.querySelector(".az-card__header .az-label").dataset.state, "ok");
+    assert.ok(!all.includes(PUSH_ID));
+    click(page, "hs-beat-test");
+    assert.ok(text(d.getElementById("hs-dialog-desc")).includes("status=up"));
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(page), [["heartbeat", "test"]]);
+    assert.ok(!d.getElementById("hs-dialog-log").textContent.includes("RESULT"));
+    assert.ok(text(d.getElementById("hs-dialog-outcome")).includes("Not taken: the watchdog does not know this check."));
+    const rm = await open({ view: ready({ heartbeat: beatView() }) });
+    click(rm, "hs-beat-remove");
+    assert.ok(text(rm.d.getElementById("hs-dialog-desc")).includes("Pause or delete the check at the watchdog first"));
+    click(rm, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(rm), [["heartbeat", "remove"]]);
+    const hc = await open({ view: ready({ heartbeat: beatView({ adapter: "healthchecks", encrypted: true }) }) });
+    assert.ok(!text(hc.d.getElementById("hs-beat")).includes("Not encrypted"));
+    click(hc, "hs-beat-test");
+    assert.ok(text(hc.d.getElementById("hs-dialog-desc")).includes("counts as neither success nor failure"));
+    click(hc, "hs-beat-change");
+});
+
+t("the watchdog not reached, on this server, or not valid: warnings", async () => {
+    const failedView = ready({ heartbeat: beatView({ last: { at: "2026-10-19T19:00:01Z", signal: "success", why: null,
+                                                         result: { ok: false, code: null, reason: "timeout", attempts: 3 } } }) });
+    const page = await open({ view: failedView });
+    const card = page.d.getElementById("hs-beat");
+    assert.strictEqual(card.querySelector(".az-card__header .az-label").dataset.state, "warning");
+    assert.ok(text(card).includes("not taken: no answer"), text(card));
+    assert.ok(text(page.d.getElementById("hs-overview")).includes("The last signal did not reach the watchdog"));
+    const local = await open({ view: ready({ heartbeat: beatView({ local: true }) }) });
+    assert.ok(text(local.d.getElementById("hs-beat")).includes("The watchdog runs on this server itself"));
+    const told = await open({ view: ready({ heartbeat: beatView({ last: { at: "2026-10-19T19:00:01Z", signal: "failure", why: "delivery",
+                                                                     result: { ok: true, code: 200, reason: "accepted", attempts: 1 } } }) }) });
+    assert.ok(text(told.d.getElementById("hs-beat")).includes("failure, taken by the watchdog"));
+    const invalid = await open({ view: ready({ heartbeat: { configured: false, invalid: true, adapter: null, encrypted: null, local: null,
+                                                            last: null, test: null } }) });
+    assert.ok(text(invalid.d.getElementById("hs-beat")).includes("says something that does not hold"));
+    assert.ok(invalid.d.getElementById("hs-beat-remove"));
+});
+
+t("a watchdog alone lets the regular check be set up; switching off says what the watchdog will do", async () => {
+    const alone = await open({ view: fresh({ heartbeat: beatView({ last: null }) }) });
+    const d = alone.d;
+    assert.ok(!d.getElementById("hs-timer-on").disabled, "a watchdog is enough");
+    assert.ok(text(d.getElementById("hs-overview")).includes("Set up: a watchdog. The regular check is off"));
+    click(alone, "hs-timer-on");
+    click(alone, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(alone), [["install", "timer"]]);
+    const on = await open({ view: fresh({ heartbeat: beatView(), timer: "active", next: "2026-10-19T19:10:00Z" }) });
+    assert.ok(text(on.d.getElementById("hs-overview")).includes("No channel is set up, so no messages go out; the watchdog gets a signal"));
+    const page = await open({ view: ready({ heartbeat: beatView() }) });
+    click(page, "hs-timer-off");
+    assert.ok(text(page.d.getElementById("hs-dialog-desc")).includes("raises an alarm once its grace time is over"));
+    const plain = await open();
+    click(plain, "hs-timer-off");
+    assert.ok(!text(plain.d.getElementById("hs-dialog-desc")).includes("alarm"));
+});
+
+t("the watchdog in German", async () => {
+    const page = await open({ language: "de", view: ready({ heartbeat: beatView() }) });
+    const card = text(page.d.getElementById("hs-beat"));
+    ["Wächter", "Gespeichert (nur für root lesbar)", "Unverschlüsselt: privates Netz", "Erfolg, vom Wächter angenommen"]
+        .forEach((x) => assert.ok(card.includes(x), x + " in: " + card));
 });
 
 // A test that waits forever fails with its name instead of holding up the run.

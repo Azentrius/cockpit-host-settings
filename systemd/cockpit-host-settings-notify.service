@@ -1,5 +1,5 @@
 [Unit]
-Description=Host Settings: tell about changes of the Azentrius add-ons on this host (ntfy, e-mail)
+Description=Host Settings: tell about changes of the Azentrius add-ons on this host (ntfy, e-mail, watchdog)
 Documentation=https://github.com/Azentrius/cockpit-host-settings
 After=network-online.target
 Wants=network-online.target
@@ -7,21 +7,25 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 -IB /usr/lib/cockpit-host-settings/host-settings-notify.py run
-# No root: the add-on's own system user (sysusers.d), which gets the ntfy token (and only it) as a
-# credential from /etc/cockpit-host-settings/ntfy.token (root, 0600; empty: no token). The status
-# verbs of the add-ons work without root, as the status contract asks. A fixed user, not
-# DynamicUser=: status.json must be readable for the menu icon and the Status Board, and the state
-# of a dynamic user lives below /var/lib/private (0700).
+# No root: the add-on's own system user (sysusers.d), which gets the ntfy token and the watchdog's
+# URL (and only them) as credentials from /etc/cockpit-host-settings/ntfy.token and heartbeat.conf
+# (root, 0600; empty: none). The status verbs of the add-ons work without root, as the status
+# contract asks. A fixed user, not DynamicUser=: status.json must be readable for the menu icon and
+# the Status Board, and the state of a dynamic user lives below /var/lib/private (0700).
 User=cockpit-host-settings
 Group=cockpit-host-settings
 LoadCredential=ntfy.token:/etc/cockpit-host-settings/ntfy.token
+LoadCredential=heartbeat.conf:/etc/cockpit-host-settings/heartbeat.conf
 StateDirectory=cockpit-host-settings
 StateDirectoryMode=0755
+# A run takes seconds; at worst the status verbs (10 s each), ntfy and SMTP (20 s each), the daily
+# check of the topic and the watchdog's signal (40 s at most) stay well within this, and within the
+# timer's 5 minutes. A run that is killed sends no signal: the watchdog notices the silence.
 TimeoutStartSec=5min
 Nice=10
 
-# Hardening. Network for ntfy and for SMTP to the local MTA on localhost:25; nothing to write but
-# the state directory.
+# Hardening. Network for ntfy, the watchdog and SMTP to the local MTA on localhost:25; nothing to
+# write but the state directory.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 ProtectSystem=strict

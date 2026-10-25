@@ -120,18 +120,26 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/src" -w /src/test python:3.8-slim sh -ec '
             python3 --version
-            for t in notify_test.py run_test.py helper_test.py; do
+            for t in notify_test.py run_test.py helper_test.py heartbeat_test.py; do
               python3 -B "$t" > "/tmp/$t.log" 2>&1 || { cat "/tmp/$t.log"; exit 1; }; echo "PASS $t"; done'
 
   # On this throw-away runner: the package with its real units, a real ntfy server (deny-all, a
   # user with write-only access, a reader) and postfix for local mail (test/e2e/run.sh). The
   # commands the page shows run on the server as shown; "Check connection" against a closed and an
   # open topic; the first run's summary, a change, no message without one; the status verb as
-  # nobody; the token in no file but its own and in no log. The steps and the raw answers are in
-  # the artifact e2e-session.
+  # nobody; the watchdog against a stand-in for both protocols and against a real Uptime Kuma
+  # (below); the token and the watchdog's address in no file but their own and in no log. The
+  # steps and the raw answers are in the artifact e2e-session.
   e2e:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
+    env:
+      # The watchdog's real counterpart: Uptime Kuma, pinned by digest (the multi-arch index of
+      # louislam/uptime-kuma:2.5.7-slim, released 2026-10-23). Its first user, its password and
+      # the push monitor are made in the container through Uptime Kuma's own API (test/e2e/kuma.py)
+      # and never leave the runner. Raise it together with the Uptime Kuma that watches the servers.
+      KUMA_VERSION: "2.5.7"
+      KUMA_IMAGE: docker.io/louislam/uptime-kuma:2.5.7-slim@sha256:4837e2b531b118d2fad24430fabed1488b14542f03b2bebf035497271b3a1ee8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -141,8 +149,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends rpm > /dev/null
           make packages
-      - name: ntfy, postfix and the add-on (test/e2e/run.sh)
-        run: sudo env OUT="$PWD/e2e-session" sh test/e2e/run.sh dist/*.deb
+      - name: ntfy, postfix, the add-on and the watchdog (test/e2e/run.sh)
+        run: sudo env OUT="$PWD/e2e-session" KUMA_IMAGE="$KUMA_IMAGE" KUMA_VERSION="$KUMA_VERSION" sh test/e2e/run.sh dist/*.deb
       - name: Report and logs
         if: always()
         run: |
@@ -166,7 +174,7 @@ jobs:
   e2e-el:
     name: e2e (${{ matrix.os }}, SELinux enforcing)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -206,7 +214,7 @@ jobs:
         run: |
           sh tools/vm.sh root dnf install -y -q podman podman-docker openssl
           sh tools/vm.sh root touch /etc/containers/nodocker
-          sh tools/vm.sh copy /root/e2e dist/*.rpm test/e2e/run.sh
+          sh tools/vm.sh copy /root/e2e dist/*.rpm test/e2e/run.sh test/e2e/watchdog.py
       - name: The SELinux check catches a denial on purpose; then the mark in the audit log
         run: |
           sh tools/vm.sh avc-selftest

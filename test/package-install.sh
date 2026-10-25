@@ -6,8 +6,8 @@
 #   sh test/package-install.sh deb|rpm
 #
 # This build's package is in /dist. Installs it with the distribution's own dependencies (the
-# versions it took are printed) and checks: the files and their modes, the token file, the
-# notifier's own user and state folder, a run of the notifier as that user without a channel, the
+# versions it took are printed) and checks: the files and their modes, the token file and the
+# watchdog's (empty: no watchdog), the notifier's own user and state folder, a run of the notifier as that user without a channel, the
 # status verb as nobody; then removes the package: its files and state go, the token file stays.
 # No Cockpit or systemd runs there.
 set -eu
@@ -31,6 +31,8 @@ test -f "/usr/lib/systemd/system/cockpit-host-settings-test@.service"
 test -f /usr/share/cockpit/host-settings/manifest.json
 test "$(stat -c %a /usr/lib/cockpit-host-settings/hslib.py)" = 644
 test "$(stat -c "%a %U" /etc/cockpit-host-settings/ntfy.token)" = "600 root"
+test "$(stat -c "%a %U %s" /etc/cockpit-host-settings/heartbeat.conf)" = "600 root 0"
+test "$(stat -c %a /usr/lib/cockpit-host-settings/hsheartbeat.py)" = 644
 uid=$(getent passwd cockpit-host-settings | cut -d: -f3)
 test -n "$uid"
 test "$(stat -c %U /var/lib/cockpit-host-settings)" = cockpit-host-settings
@@ -50,4 +52,5 @@ esac
 test ! -e /usr/lib/cockpit-host-settings
 test ! -e /var/lib/cockpit-host-settings
 test -e /etc/cockpit-host-settings/ntfy.token
+test -e /etc/cockpit-host-settings/heartbeat.conf
 echo "ok: $name installed, checked and removed"

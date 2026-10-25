@@ -18,7 +18,14 @@
 #     although its item stays a danger; a target profile states its gaps in one message, and the
 #     stand-in it expects going away sends one more; the status verb answers as nobody, with the
 #     profile; switching off says so;
-#   - the token is in no file but its own and in no log.
+#   - the watchdog (test/e2e/watchdog.py, a stand-in for Healthchecks and Uptime Kuma): a success
+#     after a run, a failure when a message did not reach every channel although the run ends with
+#     0 and when the settings cannot be read, no signal from a run that loses the lock, answers
+#     that say no (an unknown check, a redirect); the timer stopped, the signals stay away, the
+#     timer started again, exactly one recovery, for both protocols; with KUMA_IMAGE (job e2e) the
+#     same against a real Uptime Kuma in a container, its monitor made through its own API;
+#   - the token and the watchdog's address are in no file but their own, in no log and in no
+#     process's arguments.
 # Writes OUT/report.md and the raw answers. Exit 1 at the first step that fails.
 set -eu
 pkg=${1:?usage: run.sh PACKAGE.deb|PACKAGE.rpm}
@@ -29,12 +36,20 @@ case $pkg in
 esac
 out=${OUT:-e2e-session}
 mkdir -p "$out"
+here=$(cd "$(dirname "$0")" && pwd)
 report=$out/report.md
 helper=/usr/lib/cockpit-host-settings/host-settings.py
 # The version the Azentrius servers run (public-host); raise both together. With the registry,
 # as Podman takes no short names without asking.
 ntfy_image=docker.io/binwiederhier/ntfy:v2.32.0
 base=http://127.0.0.1:8090
+# The stand-in watchdog (test/e2e/watchdog.py) and its folder; the IDs of its checks are secrets
+# of the test.
+dog=http://127.0.0.1:8091
+beat_dir=/tmp/hs-e2e-watchdog
+hc_id=
+kuma_id=
+kuma_token=
 step=0
 echo "# Host Settings: end-to-end" > "$report"
 
@@ -45,6 +60,46 @@ next() { step=$((step + 1)); printf '\n## %s. %s\n\n' "$step" "$*" | tee -a "$re
 result() { sed -n 's/^RESULT //p'; }
 field() { python3 -c "import json, sys; d = json.load(sys.stdin); print(eval(sys.argv[1], {}, {'d': d}))" "$1"; }
 ntfy() { docker exec "$@"; }
+# What the stand-in watchdog saw of a check (check-1: Healthchecks, check-2: Uptime Kuma): a count
+# of success, failure, log, missed or recoveries.
+seen() { curl -fsS "$dog/_status" | python3 -c "import json, sys; print(json.load(sys.stdin)[sys.argv[1]][sys.argv[2]])" "$1" "$2"; }
+# No process holds a watchdog address in its arguments (the IDs reach python3 in the environment).
+args_clean() {
+    HS_IDS="$hc_id $kuma_id $kuma_token" python3 -c '
+import os
+ids = os.environ["HS_IDS"].split()
+for pid in filter(str.isdigit, os.listdir("/proc")):
+    try:
+        with open("/proc/%s/cmdline" % pid, "rb") as f:
+            args = f.read().decode("utf-8", "replace")
+    except OSError:
+        continue
+    if any(i in args for i in ids):
+        raise SystemExit("a watchdog address in the arguments of process " + pid)'
+}
+# Waits up to SECONDS until seen CHECK KEY is at least WANT; looks at the processes meanwhile.
+wait_seen() {
+    i=0
+    while :; do
+        n=$(seen "$1" "$2") || return 1
+        [ "$n" -lt "$4" ] || return 0
+        i=$((i + 1))
+        [ "$i" -le "$3" ] || return 1
+        args_clean || fail "a watchdog address in the arguments of a process"
+        sleep 1
+    done
+}
+# The watchdog's last answer as the notifier saved it (heartbeat.json, root only).
+last_beat() { python3 -c "import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2], {}, {'d': d}))" /var/lib/cockpit-host-settings/heartbeat.json "$1"; }
+# A test signal through the page's helper to the watchdog set up now: its answer.
+beat_test() {
+    "$helper" heartbeat test > "$out/beat-test.txt" 2>&1 || { cat "$out/beat-test.txt"; fail "heartbeat test"; }
+    result < "$out/beat-test.txt" | field "d['result']['reason']"
+}
+# The watchdog set to ADAPTER and URL, the URL on standard input as the page sends it.
+beat_set() {
+    printf '%s\n' "$2" | "$helper" heartbeat set "$1" > "$out/beat-set.txt" 2>&1 || { cat "$out/beat-set.txt"; fail "heartbeat set $1"; }
+}
 # Every message the reader can see on a topic, one JSON per line.
 messages() { curl -fsS -H "Authorization: Bearer $reader" "$base/$1/json?poll=1"; }
 # What a step checks, before it checks it.
@@ -262,12 +317,202 @@ result < "$out/check-open.txt" > "$out/check-open.json"
     fail "the open topic is not judged open: $(cat "$out/check-open.json")"
 ok "open: readable and writable without a login, both warnings"
 
-next "the token stays where it belongs; switching off says so"
+next "the watchdog: a stand-in for Healthchecks and Uptime Kuma; the address a secret on standard input"
+# The regular run every 5 seconds instead of every 5 minutes, for this test only: a drop-in that
+# the end of the test removes. Stopped until the helper starts it.
+systemctl stop cockpit-host-settings-notify.timer
+mkdir -p /etc/systemd/system/cockpit-host-settings-notify.timer.d
+printf '[Timer]\nOnCalendar=\nOnCalendar=*:*:0/5\nRandomizedDelaySec=0\nAccuracySec=1s\n' \
+    > /etc/systemd/system/cockpit-host-settings-notify.timer.d/e2e.conf
+systemctl daemon-reload
+mkdir -p "$beat_dir"
+hc_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+kuma_id=$(openssl rand -hex 16)
+printf '%s\n%s\n' "$hc_id" "$kuma_id" > "$beat_dir/ids"
+# A check is missed after 15 seconds without a success: three runs of the test's timer.
+python3 "$here/watchdog.py" 8091 "$beat_dir" 15 > "$beat_dir/stub.log" 2>&1 &
+stub=$!
+trap 'kill "$stub" 2> /dev/null || true' EXIT
+for _ in $(seq 1 30); do curl -fsS "$dog/_status" > /dev/null 2>&1 && break; sleep 1; done
+curl -fsS "$dog/_status" > /dev/null || { cat "$beat_dir/stub.log"; fail "the stand-in watchdog did not start"; }
+beat_set healthchecks "$dog/ping/$hc_id"
+test "$(stat -c '%a %U' /etc/cockpit-host-settings/heartbeat.conf)" = "600 root" || fail "mode of heartbeat.conf"
+if grep -qs -e "$hc_id" "$out/beat-set.txt" /etc/cockpit-host-settings/notify.conf; then fail "the address in the output or in notify.conf"; fi
+got=$(beat_test)
+note "test signal: $got (expected accepted); log entries: $(seen check-1 log) (expected 1), successes: $(seen check-1 success) (expected 0)"
+[ "$got" = accepted ] || fail "the test signal was not taken"
+[ "$(seen check-1 log)" = 1 ] && [ "$(seen check-1 success)" = 0 ] || fail "the test signal is not Healthchecks' log entry"
+run_notifier beat-1
+note "after a run: successes $(seen check-1 success) (expected 1); $(grep 'watchdog:' "$out/beat-1.txt" || true)"
+[ "$(seen check-1 success)" = 1 ] || fail "no success signal after a run"
+args_clean || fail "a watchdog address in the arguments of a process"
+ok "the address only on standard input and in heartbeat.conf (0600 root); a test is a log entry; a run gives one success"
+
+next "the watchdog: failures, although the run ends with 0; no signal from a run that loses the lock"
+# ntfy unreachable and a change to tell (the stand-in add-on back): the message reaches e-mail
+# only. The run ends with 0, as before; the watchdog is told of the failure.
+"$helper" set ntfy http://127.0.0.1:9 cockpit-open > /dev/null
+mv /var/lib/e2e-addon/off/manifest.json /usr/share/cockpit/e2e-addon/
+run_notifier beat-2
+journalctl --no-pager -o cat -u cockpit-host-settings-notify.service | grep -E 'message:|watchdog:' | tail -n 2 > "$out/beat-2-journal.txt"
+note "$(tr '\n' ' ' < "$out/beat-2-journal.txt")"
+[ "$(seen check-1 failure)" = 1 ] || fail "no failure signal for the message that did not reach ntfy"
+grep -q 'message: mail sent, ntfy network' "$out/beat-2-journal.txt" || fail "the message did not go out by e-mail only"
+grep -q 'watchdog: failure, accepted' "$out/beat-2-journal.txt" || fail "the run does not say it told the failure"
+"$helper" set ntfy "$base" cockpit-open > /dev/null
+run_notifier beat-3
+[ "$(seen check-1 recoveries)" = 1 ] || fail "the next good run is no recovery"
+# The settings cannot be read by the notifier's user: the run fails, the watchdog is told.
+chmod 600 /etc/cockpit-host-settings/notify.conf
+systemctl reset-failed cockpit-host-settings-notify.service 2> /dev/null || true
+if systemctl start cockpit-host-settings-notify.service 2> /dev/null; then fail "a run without readable settings succeeded"; fi
+chmod 644 /etc/cockpit-host-settings/notify.conf
+note "settings not readable: failures $(seen check-1 failure) (expected 2), the reason: $(last_beat "d['why']")"
+[ "$(seen check-1 failure)" = 2 ] && [ "$(last_beat "d['why']")" = config ] || fail "no failure signal when the settings cannot be read"
+# Another run holds the lock: the run that loses it gives no signal at all.
+before="$(seen check-1 success) $(seen check-1 failure)"
+flock /var/lib/cockpit-host-settings/.lock sleep 6 &
+locker=$!
+sleep 1
+systemctl reset-failed cockpit-host-settings-notify.service 2> /dev/null || true
+if systemctl start cockpit-host-settings-notify.service 2> /dev/null; then fail "a run took the lock another one holds"; fi
+wait "$locker"
+note "signals before and after the run that lost the lock: $before, $(seen check-1 success) $(seen check-1 failure)"
+[ "$(seen check-1 success) $(seen check-1 failure)" = "$before" ] || fail "a run that lost the lock gave a signal"
+run_notifier beat-4
+[ "$(seen check-1 recoveries)" = 2 ] || fail "no recovery after the settings were readable again"
+ok "a message that reached e-mail only and settings that cannot be read are failures; a run without the lock says nothing"
+
+next "the watchdog: Uptime Kuma's protocol; answers that say no"
+beat_set uptime-kuma "$dog/api/push/$kuma_id?status=up&msg=OK&ping="
+grep -qx "url = $dog/api/push/$kuma_id" /etc/cockpit-host-settings/heartbeat.conf || fail "the push URL was not stored without its query"
+[ "$(beat_test)" = accepted ] && [ "$(seen check-2 success)" = 1 ] || fail "Uptime Kuma's test signal (status=up)"
+run_notifier beat-5
+[ "$(seen check-2 success)" = 2 ] || fail "no push after a run"
+beat_set uptime-kuma "$dog/api/push/unknownToken0"
+got=$(beat_test)
+note "an unknown push token: $got (expected not-found)"
+[ "$got" = not-found ] || fail "an unknown push token was taken for a success"
+beat_set healthchecks "$dog/ping/00000000-0000-4000-8000-000000000000"
+run_notifier beat-6
+note "a check Healthchecks does not know (200 \"OK (not found)\"): $(last_beat "(d['result']['code'], d['result']['reason'])") (expected (200, 'not-found'))"
+[ "$(last_beat "(d['result']['code'], d['result']['reason'])")" = "(200, 'not-found')" ] || fail "a 200 that says not found was taken"
+[ "$(runuser -u nobody -- "$helper" status | field "[i['state'] for i in d['items'] if i['id'] == 'heartbeat']")" = "['warning']" ] ||
+    fail "the status does not show the signal that did not get through"
+logs=$(seen check-1 log)
+beat_set healthchecks "$dog/redirect/ping/$hc_id"
+got=$(beat_test)
+note "a redirect to a real check: $got (expected redirect); log entries of that check: $(seen check-1 log) (expected $logs)"
+[ "$got" = redirect ] && [ "$(seen check-1 log)" = "$logs" ] || fail "a redirect was followed"
+ok "push URL stored without its query, status=up and down; an unknown push token, a 200 that says not found and a redirect are no success"
+
+next "the watchdog: the timer stops, the signals stay away, it starts again, exactly one recovery"
+cycle() {
+    beat_set "$1" "$2"
+    "$helper" install timer > "$out/cycle-$3-on.txt" 2>&1 || { cat "$out/cycle-$3-on.txt"; fail "install timer"; }
+    grep -q 'The watchdog gets a signal after every run.' "$out/cycle-$3-on.txt" || fail "install timer does not name the watchdog"
+    wait_seen "$3" success 30 $(($(seen "$3" success) + 3)) || fail "$1: no regular signals"
+    "$helper" remove timer > "$out/cycle-$3-off.txt" 2>&1
+    grep -q 'raises an alarm once its grace time is over' "$out/cycle-$3-off.txt" || fail "switching off does not say what the watchdog does"
+    missed=$(seen "$3" missed)
+    back=$(seen "$3" recoveries)
+    wait_seen "$3" missed 40 $((missed + 1)) || fail "$1: the stand-in did not see the signals stay away"
+    "$helper" install timer > /dev/null 2>&1
+    wait_seen "$3" recoveries 30 $((back + 1)) || fail "$1: no recovery after the timer started again"
+    wait_seen "$3" success 30 $(($(seen "$3" success) + 3)) || fail "$1: the signals did not come regularly again"
+    note "$1: missed $(seen "$3" missed) (expected $((missed + 1))), recoveries $(seen "$3" recoveries) (expected $((back + 1)))"
+    [ "$(seen "$3" recoveries)" = $((back + 1)) ] || fail "$1: not exactly one recovery"
+    [ "$(seen "$3" missed)" = $((missed + 1)) ] || fail "$1: signals stayed away after the recovery"
+    "$helper" remove timer > /dev/null
+}
+cycle healthchecks "$dog/ping/$hc_id" check-1
+cycle uptime-kuma "$dog/api/push/$kuma_id" check-2
+ok "for both protocols: missed once while the timer was off, one recovery when it ran again"
+
+if [ -n "${KUMA_IMAGE:-}" ]; then
+    next "a real Uptime Kuma ${KUMA_VERSION:?} (image pinned by digest) as the watchdog"
+    kuma=http://127.0.0.1:3001
+    # The made-up user, its password and the push URL stay in this file of root's, never in OUT.
+    session=/tmp/kuma-e2e-session.json
+    mkdir -p /tmp/kuma-e2e
+    docker run -d --name kuma -p 127.0.0.1:3001:3001 -e UPTIME_KUMA_DB_TYPE=sqlite -v /tmp/kuma-e2e:/app/data:Z \
+        "$KUMA_IMAGE" > /dev/null
+    python3 "$here/kuma.py" wait "$kuma" 240 > /dev/null || { docker logs kuma 2>&1 | tail -n 30; fail "Uptime Kuma did not start"; }
+    python3 "$here/kuma.py" setup "$kuma" "$session" > "$out/kuma-setup.txt" || { docker logs kuma 2>&1 | tail -n 30; fail "the user and the push monitor"; }
+    note "$(cat "$out/kuma-setup.txt")"
+    grep -qx "Uptime Kuma $KUMA_VERSION, push monitor [0-9]*" "$out/kuma-setup.txt" || fail "not Uptime Kuma $KUMA_VERSION"
+    push=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["push_url"])' "$session")
+    kuma_token=${push##*/}
+    beat_set uptime-kuma "$push?status=up&msg=OK&ping="
+    "$helper" install timer > /dev/null
+    got=$(beat_test)
+    note "test signal: $got (expected accepted)"
+    [ "$got" = accepted ] || fail "Uptime Kuma did not take the test signal"
+    python3 "$here/kuma.py" wait-beat "$kuma" "$session" 0 1 30 > /dev/null || fail "Uptime Kuma recorded no heartbeat"
+    mark=$(python3 "$here/kuma.py" last "$kuma" "$session")
+    # Longer than the monitor's heartbeat interval (20 seconds): Uptime Kuma checks and stays up.
+    sleep 30
+    python3 "$here/kuma.py" beats "$kuma" "$session" "$mark" > "$out/kuma-beats-on.jsonl"
+    note "pushes while the timer ran: $(grep -c '"status": 1' "$out/kuma-beats-on.jsonl" || true)"
+    if grep -q '"status": 0' "$out/kuma-beats-on.jsonl"; then fail "Uptime Kuma saw the monitor down while the timer ran"; fi
+    "$helper" remove timer > /dev/null
+    stopped=$(python3 "$here/kuma.py" last "$kuma" "$session")
+    down=$(python3 "$here/kuma.py" wait-beat "$kuma" "$session" "$stopped" 0 60) || fail "Uptime Kuma did not see the heartbeats stay away"
+    note "timer off, Uptime Kuma: $(printf '%s' "$down" | field "d['msg']")"
+    down_id=$(printf '%s' "$down" | field "d['id']")
+    "$helper" install timer > /dev/null
+    up=$(python3 "$here/kuma.py" wait-beat "$kuma" "$session" "$down_id" 1 30) || fail "no recovery in Uptime Kuma"
+    [ "$(printf '%s' "$up" | field "d['important']")" = True ] || fail "the recovery is no change of state in Uptime Kuma"
+    sleep 15
+    python3 "$here/kuma.py" beats "$kuma" "$session" "$down_id" > "$out/kuma-beats-back.jsonl"
+    # The recoveries (up, a change of state) after the down beat, and the down beats after the first.
+    counts=$(python3 -c '
+import json, sys
+b = [json.loads(x) for x in open(sys.argv[1])]
+up = [x["id"] for x in b if x["status"] == 1 and x["important"]]
+print(len(up), sum(1 for x in b if x["status"] == 0 and up and x["id"] > up[0]))' "$out/kuma-beats-back.jsonl")
+    note "after the timer started again: recoveries, down beats after it: $counts (expected 1 0)"
+    [ "$counts" = "1 0" ] || fail "not exactly one recovery in Uptime Kuma"
+    # A failure signal: the settings cannot be read.
+    "$helper" remove timer > /dev/null
+    before=$(python3 "$here/kuma.py" last "$kuma" "$session")
+    chmod 600 /etc/cockpit-host-settings/notify.conf
+    systemctl reset-failed cockpit-host-settings-notify.service 2> /dev/null || true
+    if systemctl start cockpit-host-settings-notify.service 2> /dev/null; then fail "a run without readable settings succeeded"; fi
+    chmod 644 /etc/cockpit-host-settings/notify.conf
+    down=$(python3 "$here/kuma.py" wait-beat "$kuma" "$session" "$before" 0 20) || fail "Uptime Kuma got no failure"
+    note "failure signal, Uptime Kuma: $(printf '%s' "$down" | field "d['msg']")"
+    [ "$(printf '%s' "$down" | field "d['msg']")" = "Host Settings: the settings could not be read" ] || fail "the failure is not the one sent"
+    run_notifier kuma-back
+    python3 "$here/kuma.py" wait-beat "$kuma" "$session" "$(printf '%s' "$down" | field "d['id']")" 1 20 > /dev/null || fail "no recovery after the failure"
+    docker rm -f kuma > /dev/null
+    ok "Uptime Kuma $KUMA_VERSION: heartbeats while the timer runs, down when it stops, one recovery, a failure with its reason"
+else
+    next "a real Uptime Kuma"
+    note "not in this run: the real Uptime Kuma runs in job e2e (the runner's Docker), the stand-in above here"
+fi
+
+next "the watchdog removed; the timer as it was"
+"$helper" heartbeat remove > "$out/beat-remove.txt" 2>&1
+grep -q 'Pause or delete the check at the watchdog' "$out/beat-remove.txt" || fail "removing does not say what the watchdog does"
+[ ! -s /etc/cockpit-host-settings/heartbeat.conf ] || fail "heartbeat.conf is not empty"
+rm -f /etc/systemd/system/cockpit-host-settings-notify.timer.d/e2e.conf "${session:-/nonexistent}"
+systemctl daemon-reload
+kill "$stub" 2> /dev/null || true
+cp "$beat_dir/status.json" "$out/watchdog-status.json"
+cp "$beat_dir/requests.log" "$out/watchdog-requests.log"
+ok "heartbeat.conf empty, the stand-in stopped; its log names the checks only by number"
+
+next "the token and the watchdog's address stay where they belong; switching off says so"
 if grep -rqs "$token" /var/lib/cockpit-host-settings /etc/cockpit-host-settings/notify.conf "$out"; then fail "the token is in a file"; fi
 if journalctl --no-pager -u 'cockpit-host-settings*' | grep -q "$token"; then fail "the token is in the journal"; fi
+for secret in "$hc_id" "$kuma_id" "${kuma_token:-$hc_id}"; do
+    if grep -rqs -e "$secret" /var/lib/cockpit-host-settings /etc/cockpit-host-settings "$out"; then fail "a watchdog address is in a file"; fi
+    if journalctl --no-pager -u 'cockpit-host-settings*' | grep -q -e "$secret"; then fail "a watchdog address is in the journal"; fi
+done
 "$helper" remove timer > /dev/null
 [ "$(runuser -u nobody -- "$helper" status | field "d['summary']")" = "The regular check is off." ] || fail "switched off"
-ok "the token only in /etc/cockpit-host-settings/ntfy.token; the status says the check is off"
+ok "the token only in /etc/cockpit-host-settings/ntfy.token, the watchdog's address only in heartbeat.conf while set; the status says the check is off"
 
 next "remove the package"
 if [ "$kind" = deb ]; then

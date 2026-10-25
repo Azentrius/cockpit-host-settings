@@ -4,7 +4,7 @@
  *
  *   show    -> cockpit.spawn(host-settings.py show), superuser "try"   settings, timer, last run, profile (root)
  *   status  -> cockpit.spawn(host-settings.py status --lang xx)        the summary without root
- *   changes -> host-settings.py set|unset|token|check|test|run|install|remove|profile …, through the dialog
+ *   changes -> host-settings.py set|unset|token|check|test|run|install|remove|heartbeat|profile …, through the dialog
  *   watch   -> cockpit.file(/var/lib/cockpit-host-settings/status.json) written by every run
  *
  * menu-status.js runs first: it sets the status icon in Cockpit's menu, also while
@@ -13,7 +13,8 @@
  *
  * Every change goes through the dialog: it says what happens, then runs the helper
  * with administrative access and shows its output and the result. The ntfy token
- * goes to the helper on standard input, never in an argument, and is never shown.
+ * and the watchdog's address go to the helper on standard input, never in an
+ * argument, and are never shown.
  * Texts: plugin/i18n.js. Everything from the system reaches the page as text (h(),
  * textContent), never as markup. No build step, no framework, no external requests.
  */
@@ -56,6 +57,14 @@
     const COVERAGES = ["checked", "partial", "stale", "failed", "unconfigured", "noaccess", "unreadable", "missing",
                        "unsupported", "unchecked", "notapplicable"];
     const COVERAGE_STATE = { checked: "ok", notapplicable: "none" };
+    // The watchdog (lib/hsheartbeat.py): its adapters, a first look at its address (the helper
+    // checks it fully: private networks only for http, the path each adapter needs), the words of
+    // its answers.
+    const ADAPTERS = ["healthchecks", "uptime-kuma"];
+    const ADAPTER_LABEL = { healthchecks: "Healthchecks", "uptime-kuma": "Uptime Kuma" };
+    const BEAT_URL_RE = /^https?:\/\/[^\s/?#@]+\/[^\s#]{1,490}$/;
+    const BEAT_REASONS = ["accepted", "not-found", "rate-limited", "ambiguous", "invalid-url", "refused", "unexpected",
+                          "redirect", "tls", "timeout", "network", "invalid"];
 
     // --- i18n --------------------------------------------------------------
     const I18N = window.HostSettingsI18n;
@@ -294,15 +303,20 @@
     }
     function overviewState() {
         const chans = channels();
-        if (!chans.length) return ["none", t("ov.none")];
-        if (view.timer !== "active") return ["warning", t("ov.off", { channels: channelText(chans) })];
+        if (!chans.length && !beatOn()) return ["none", t("ov.none")];
+        if (view.timer !== "active") {
+            return ["warning", chans.length ? t("ov.off", { channels: channelText(chans) }) : t("ov.offWatchdog")];
+        }
         const bad = failed(delivery());
         if (bad.length) return ["warning", t("ov.failed")];
+        if (beatState() === "warning") return ["warning", t("ov.watchdogFailed")];
         if (chans.indexOf("ntfy") >= 0 && accessState() === "warning") return ["warning", t("ov.open")];
+        if (!chans.length) return ["none", t("ov.watchdogOnly")];
         return ["ok", t("ov.ok", { channels: channelText(chans) })];
     }
     function timerCell() {
-        const chans = channels();
+        // A channel or a watchdog: the notifier also runs for the watchdog alone.
+        const chans = channels().concat(beatOn() ? ["watchdog"] : []);
         if (view.timer === "active") {
             return [h("span", { text: view.next ? t("timer.on", { time: fmtTime(view.next) }) : t("timer.onNoNext") }),
                     btn("az-btn--link", null, t("btn.switchOff"), { id: "hs-timer-off" })];
@@ -462,6 +476,66 @@
         return card("hs-mail", t("mail.title"), label("ok", t("mail.on")), parts);
     }
 
+    // --- The watchdog ----------------------------------------------------------------
+    // What `show` says about /etc/cockpit-host-settings/heartbeat.conf: set up or not, the adapter,
+    // whether the address is encrypted or this server itself, the last signal and the last test.
+    // Never the address: it is a secret, and the page cannot read it.
+    function beat() { return (view && view.heartbeat) || {}; }
+    function beatOn() { return !!beat().configured; }
+    function beatReason(r) {
+        const reason = (r && r.reason) || "network";
+        if (/^http-\d{3}$/.test(reason)) return t("reason.http", { code: reason.slice(5) });
+        return BEAT_REASONS.indexOf(reason) >= 0 ? t("beat.reason." + reason) : reason;
+    }
+    function beatState() {
+        const b = beat();
+        if (b.invalid) return "warning";
+        if (!b.configured) return "none";
+        const r = b.last && b.last.result;
+        return !r ? "none" : r.ok ? "ok" : "warning";
+    }
+    function lastSignal(b) {
+        const last = b.last && b.last.result ? b.last : null;
+        if (!last) return h("span", { text: t("beat.noSignal") });
+        const r = last.result;
+        const text = !r.ok ? t("beat.notAccepted", { ago: ago(last.at), why: beatReason(r) })
+            : last.signal === "failure" ? t("beat.toldFailure", { ago: ago(last.at) }) : t("beat.accepted", { ago: ago(last.at) });
+        return [label(r.ok ? "ok" : "warning"), h("span", { text })];
+    }
+    function renderHeartbeat() {
+        const b = beat();
+        if (!b.configured) {
+            return card("hs-beat", t("beat.title"), b.invalid ? label("warning", t("beat.invalidLabel")) : null, [
+                h("p", { class: "hs-intro" }, rich(t("beat.intro"))),
+                b.invalid ? h("p", { class: "hs-line" }, label("warning"), rich(t("beat.invalid"))) : null,
+                h("div", { class: "hs-actions" }, btn("az-btn--secondary", "plus", t("btn.setupBeat"), { id: "hs-beat-set" }),
+                    b.invalid ? btn("az-btn--link", null, t("btn.removeBeat"), { id: "hs-beat-remove" }) : null),
+            ]);
+        }
+        const test = b.test && b.test.channel === "heartbeat" && b.test.result ? b.test : null;
+        const parts = [
+            kv([
+                [t("beat.service"), [h("span", { text: ADAPTER_LABEL[b.adapter] || String(b.adapter || "") })]],
+                [t("beat.address"), [h("span", { text: t("beat.stored") }), b.encrypted === false ? label("info", t("beat.plain")) : null]],
+                [t("beat.last"), lastSignal(b)],
+            ]),
+            b.local ? h("p", { class: "hs-line" }, label("warning"), t("beat.local")) : null,
+            h("div", { class: "hs-actions" },
+                btn("az-btn--secondary", "check", t("btn.testBeat"), { id: "hs-beat-test" }),
+                btn("az-btn--link", null, t("btn.change"), { id: "hs-beat-change" }),
+                btn("az-btn--link", null, t("btn.removeBeat"), { id: "hs-beat-remove" })),
+        ];
+        if (test) {
+            parts.push(h("p", { class: "hs-line" }, label(test.result.ok ? "ok" : "warning"),
+                t(test.result.ok ? "beat.testOk" : "beat.testFailed", { when: fmtDate(test.at), why: beatReason(test.result) })));
+        }
+        parts.push(h("h3", { class: "hs-sub-title", text: t("beat.setupTitle") }),
+            h("ul", { class: "hs-plain-list" }, ["beat.period", "beat.outside", "beat.off"].map((k) => h("li", null, rich(t(k))))));
+        const state = beatState();
+        return card("hs-beat", t("beat.title"),
+            label(state, state === "ok" ? t("beat.on") : state === "warning" ? t("beat.failedLabel") : t("beat.waiting")), parts);
+    }
+
     // --- The add-ons ---------------------------------------------------------------
     const ERROR_KINDS = ["rejected", "untrusted", "manifest", "invalid", "missing", "failed", "timeout", "unsupported"];
     function addonFindings(a) {
@@ -581,7 +655,7 @@
     function renderNotifications() {
         const panel = $("hs-tab-notifications");
         if (!view) { fill(panel); return; }
-        fill(panel, renderOverview(), renderNtfy(), renderMail(), renderAddons(), renderProfile(), renderLimits());
+        fill(panel, renderOverview(), renderNtfy(), renderMail(), renderHeartbeat(), renderAddons(), renderProfile(), renderLimits());
     }
 
     function render() {
@@ -854,8 +928,23 @@
         }),
         "hs-timer-on": () => dlg.open({ title: t("dlg.timerOn.title"), desc: t("dlg.timerOn.desc"), confirm: t("btn.setupTimer"),
                                         argv: () => ["install", "timer"] }),
-        "hs-timer-off": () => dlg.open({ title: t("dlg.timerOff.title"), desc: t("dlg.timerOff.desc"), confirm: t("btn.switchOff"),
-                                         argv: () => ["remove", "timer"] }),
+        // With a watchdog, switching off makes the signals stop: say so before.
+        "hs-timer-off": () => dlg.open({ title: t("dlg.timerOff.title"),
+                                         desc: t("dlg.timerOff.desc") + (beatOn() ? " " + t("dlg.timerOff.beat") : ""),
+                                         confirm: t("btn.switchOff"), argv: () => ["remove", "timer"] }),
+        "hs-beat-set": () => beatForm(t("dlg.beat.setTitle"), "healthchecks"),
+        "hs-beat-change": () => beatForm(t("dlg.beat.changeTitle"), beat().adapter),
+        "hs-beat-remove": () => dlg.open({ title: t("dlg.beat.removeTitle"), desc: t("dlg.beat.removeDesc"), confirm: t("btn.remove"),
+                                           argv: () => ["heartbeat", "remove"] }),
+        "hs-beat-test": () => dlg.open({
+            title: t("dlg.beat.testTitle"),
+            desc: beat().adapter === "uptime-kuma" ? t("dlg.beat.testDescKuma") : t("dlg.beat.testDescHc"),
+            confirm: t("btn.send"),
+            argv: () => ["heartbeat", "test"],
+            outcome: (r) => (r && r.result ? h("p", { class: "hs-line" }, label(r.result.ok ? "ok" : "warning"),
+                r.result.ok ? t("beat.testOkNow") : t("beat.testFailedNow", { why: beatReason(r.result) }))
+                : r && r.error ? h("p", { class: "hs-line" }, label("warning"), t("beat.testNotSetUp")) : null),
+        }),
         "hs-run": () => dlg.open({ title: t("dlg.run.title"), desc: t("dlg.run.desc"), confirm: t("btn.runNow"), argv: () => ["run"] }),
         "hs-profile-roles": () => rolesForm(),
         "hs-profile-expect-add": () => dlg.open({
@@ -911,6 +1000,22 @@
                 const bad = checkUrl(v.url) || (TOPIC_RE.test(v.topic) ? null : t("err.topic"));
                 return bad ? { error: bad } : ["set", "ntfy", v.url.replace(/\/+$/, ""), v.topic];
             },
+        });
+    }
+    // The address is a secret: a password field, on standard input, never in an argument.
+    function beatForm(title, adapter) {
+        dlg.open({
+            title, desc: t("dlg.beat.desc"), confirm: t("btn.save"),
+            fields: [
+                { id: "adapter", label: t("dlg.beat.adapter"), type: "select", value: ADAPTERS.indexOf(adapter) >= 0 ? adapter : "healthchecks",
+                  options: ADAPTERS.map((a) => [a, ADAPTER_LABEL[a]]) },
+                { id: "url", label: t("dlg.beat.url"), type: "password", max: 500, mono: true, help: t("dlg.beat.urlHelp") },
+            ],
+            argv: (v) => {
+                if (ADAPTERS.indexOf(v.adapter) < 0) return { error: t("err.adapter") };
+                return BEAT_URL_RE.test(v.url) && v.url.length <= 500 ? ["heartbeat", "set", v.adapter] : { error: t("err.beatUrl") };
+            },
+            input: (v) => v.url + "\n",
         });
     }
     function mailForm(title, to) {

@@ -4,7 +4,8 @@
 systemctl and ss: every argument is checked before anything is written; the settings file keeps
 its format; the token comes from standard input only, lands with mode 0600 and is never printed;
 the status verb answers without root, also without a status.json; switching the timer off says
-so in the status; "install timer" needs a channel."""
+so in the status; "install timer" needs a channel or a watchdog; the watchdog's URL comes from
+standard input only, lands with mode 0600 and is never printed, also not by "show"."""
 
 import importlib.util
 import io
@@ -20,6 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, "..", "lib")
 sys.dont_write_bytecode = True
 sys.path.insert(0, LIB)
+import hsheartbeat  # noqa: E402
 import hslib  # noqa: E402
 import hsproc  # noqa: E402
 import hsstatus  # noqa: E402
@@ -70,8 +72,9 @@ class Base(unittest.TestCase):
         self.state = os.path.join(self.dir, "state")
         os.makedirs(self.state)
         self.saved = {k: getattr(hs, k, None) for k in ("need_root", "systemctl", "unit_exists", "journal_tail", "STATE_DIR",
-                                                         "PROFILE")}
+                                                         "PROFILE", "HEARTBEAT")}
         hs.PROFILE = os.path.join(self.dir, "etc", "profile.conf")
+        hs.HEARTBEAT = self.heartbeat = os.path.join(self.dir, "etc", "heartbeat.conf")
         hs.need_root = lambda: None
         self.sc = Systemctl()
         hs.systemctl = self.sc
@@ -191,7 +194,7 @@ class Services(Base):
     def test_install_timer_needs_a_channel(self):
         code, _, err = call(hs.do_timer, "install", ["timer"], self.conf, self.state)
         self.assertEqual(code, 1)
-        self.assertIn("Set up ntfy or e-mail first.", err)
+        self.assertIn("Set up ntfy, e-mail or a watchdog first.", err)
         self.assertEqual(self.sc.calls, [])
         call(hs.do_set, ["mail", "ops@example.com"], self.conf, self.lock)
         code, out, _ = call(hs.do_timer, "install", ["timer"], self.conf, self.state)
@@ -261,6 +264,115 @@ class Show(Base):
         for out, want in cases:
             self.assertEqual(hs.smtp_listening(ss(out)), want, out)
         self.assertIsNone(hs.smtp_listening(ss("", 1)))
+
+
+KUMA = "http://10.8.0.2:3001/api/push/pushpushpushpush"
+KUMA_ID = "pushpushpushpush"
+HC = "https://hc.example.net/ping/11111111-2222-4333-8444-555555555555"
+
+
+class Heartbeat(Base):
+    """The watchdog: heartbeat.conf through the fixed verbs, a secret like the token."""
+
+    def set(self, adapter, data, *extra):
+        stdin = io.BytesIO(data if isinstance(data, bytes) else data.encode())
+        return call(hs.do_heartbeat, ["set", adapter, *extra], self.heartbeat, self.lock, stdin)
+
+    def text(self):
+        with open(self.heartbeat, encoding="utf-8") as f:
+            return f.read()
+
+    def test_from_standard_input_only(self):
+        code, out, err = self.set("uptime-kuma", KUMA + "?status=up&msg=OK&ping=\n")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn(KUMA_ID, out + err)
+        self.assertIn("Watchdog set up: Uptime Kuma.", out)
+        self.assertIn("The address is not encrypted (http): allowed because it is in a private network.", out)
+        self.assertEqual(hsheartbeat.parse_conf(self.text()), {"adapter": "uptime-kuma", "url": KUMA})
+        self.assertEqual(stat.S_IMODE(os.stat(self.heartbeat).st_mode), 0o600)
+        code, out, _ = self.set("healthchecks", HC)
+        self.assertEqual(code, 0)
+        self.assertNotIn("not encrypted", out)
+        self.assertEqual(hsheartbeat.parse_conf(self.text())["adapter"], "healthchecks")
+        code, out, _ = self.set("uptime-kuma", "http://127.0.0.1:3001/api/push/abc")
+        self.assertIn("The watchdog is this server itself", out)
+
+    def test_refusals_change_nothing(self):
+        self.set("healthchecks", HC)
+        before = self.text()
+        cases = [("healthchecks", "http://hc-ping.com/abc", "Plain http:// is allowed only to an IP address of a private network"),
+                 ("uptime-kuma", "https://kuma.example.net/dashboard/1", "ends in /api/push/TOKEN"),
+                 ("healthchecks", HC + "/fail", "without /fail"),
+                 ("healthchecks", HC + "?create=1", "This query"),
+                 ("healthchecks", "https://u:p@hc-ping.com/abc", "The address is not valid"),
+                 ("healthchecks", "", "missing"), ("healthchecks", HC + "\n" + HC, "missing"),
+                 ("healthchecks", b"\xff\xfe", "missing"), ("healthchecks", "x" * 5000, "missing")]
+        for adapter, data, why in cases:
+            with self.subTest(data[:40]):
+                code, out, err = self.set(adapter, data)
+                self.assertEqual(code, 64)
+                self.assertIn(why, err)
+                self.assertEqual(self.text(), before)
+        self.assertEqual(self.set("healthchecks", "", HC)[0], 64, "never as an argument")
+        self.assertEqual(self.set("pushover", HC)[0], 64)
+        for rest in ([], ["set"], ["remove", "x"], ["test", "x"], ["show"]):
+            self.assertEqual(call(hs.do_heartbeat, rest, self.heartbeat, self.lock)[0], 64, rest)
+
+    def test_remove_says_what_the_watchdog_will_do(self):
+        self.set("healthchecks", HC)
+        code, out, _ = call(hs.do_heartbeat, ["remove"], self.heartbeat, self.lock)
+        self.assertEqual(code, 0)
+        self.assertIn("Pause or delete the check at the watchdog", out)
+        self.assertEqual(os.path.getsize(self.heartbeat), 0)
+        self.assertEqual(stat.S_IMODE(os.stat(self.heartbeat).st_mode), 0o600)
+        self.assertEqual(call(hs.do_heartbeat, ["remove"], self.heartbeat, self.lock)[1], "Nothing changed.\n")
+
+    def test_the_test_signal_runs_in_its_unit(self):
+        with open(os.path.join(self.state, "test-heartbeat.json"), "w", encoding="utf-8") as f:
+            json.dump({"at": hslib.iso(__import__("time").time()), "channel": "heartbeat", "adapter": "healthchecks",
+                       "result": {"ok": True, "code": 200, "reason": "accepted", "attempts": 1}}, f)
+        code, out, _ = call(hs.do_heartbeat, ["test"], self.heartbeat, self.lock)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.sc.calls, [["start", "cockpit-host-settings-test@heartbeat.service"]])
+        self.assertEqual(json.loads([x for x in out.splitlines() if x.startswith("RESULT ")][0][7:])["adapter"], "healthchecks")
+
+    def test_show_never_the_address(self):
+        self.set("uptime-kuma", KUMA)
+        with open(os.path.join(self.state, "heartbeat.json"), "w", encoding="utf-8") as f:
+            json.dump({"at": "2026-10-19T19:00:01Z", "adapter": "uptime-kuma", "signal": "success", "why": None,
+                       "result": {"ok": True, "code": 200, "reason": "accepted", "attempts": 1}}, f)
+        ss = lambda argv, limit=60, max_output=0: hsproc.Result(0, "")  # noqa: E731
+        code, out, _ = call(hs.do_show, [], self.conf, self.token, self.state, ss)
+        self.assertEqual(code, 0)
+        self.assertNotIn(KUMA_ID, out)
+        view = json.loads(out)["heartbeat"]
+        self.assertEqual({k: view[k] for k in ("configured", "invalid", "adapter", "encrypted", "local", "test")},
+                         {"configured": True, "invalid": False, "adapter": "uptime-kuma", "encrypted": False, "local": False,
+                          "test": None})
+        self.assertEqual(view["last"]["signal"], "success")
+        with open(self.heartbeat, "w", encoding="utf-8") as f:
+            f.write("adapter = uptime-kuma\nurl = http://kuma.example.net/api/push/" + KUMA_ID + "\n")
+        out = call(hs.do_show, [], self.conf, self.token, self.state, ss)[1]
+        self.assertNotIn(KUMA_ID, out)
+        self.assertEqual({k: json.loads(out)["heartbeat"][k] for k in ("configured", "invalid", "adapter")},
+                         {"configured": False, "invalid": True, "adapter": None})
+
+    def test_the_timer_with_a_watchdog_alone(self):
+        self.set("healthchecks", HC)
+        code, out, _ = call(hs.do_timer, "install", ["timer"], self.conf, self.state)
+        self.assertEqual(code, 0)
+        self.assertIn("The watchdog gets a signal after every run.", out)
+        self.assertEqual(self.sc.calls, [["enable", "--now", hs.TIMER], ["start", hs.SERVICE]])
+        code, out, _ = call(hs.do_timer, "remove", ["timer"], self.conf, self.state)
+        self.assertIn("raises an alarm once its grace time is over", out)
+        call(hs.do_heartbeat, ["remove"], self.heartbeat, self.lock)
+        self.assertNotIn("alarm", call(hs.do_timer, "remove", ["timer"], self.conf, self.state)[1])
+        self.assertEqual(call(hs.do_timer, "install", ["timer"], self.conf, self.state)[0], 1)
+
+    def test_main_routes(self):
+        for argv in (["heartbeat"], ["heartbeat", "set"], ["heartbeat", "set", "sms"], ["heartbeat", "list"]):
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(hs.main(argv), 64, argv)
 
 
 NOW = hslib.parse_time("2026-10-19T19:00:00Z")

@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # The notifier's own user (sysusers.d; useradd where systemd-sysusers is missing), its state
-# directory, and /etc/cockpit-host-settings with an empty token file: the services hand the token
-# over with LoadCredential=, which needs the file to exist. The timer stays as it was: off on a new
-# install (it is set up from the page), on after an upgrade if it was on.
+# directory, and /etc/cockpit-host-settings with an empty token file and an empty watchdog file:
+# the services hand both over with LoadCredential=, which needs the files to exist. The timer stays
+# as it was: off on a new install (it is set up from the page), on after an upgrade if it was on.
 if command -v systemd-sysusers > /dev/null 2>&1; then
     systemd-sysusers /usr/lib/sysusers.d/cockpit-host-settings.conf || true
 elif ! getent passwd cockpit-host-settings > /dev/null 2>&1; then
@@ -15,6 +15,9 @@ fi
 install -d -m 755 -o root -g root /etc/cockpit-host-settings
 if [ ! -e /etc/cockpit-host-settings/ntfy.token ]; then
     install -m 600 -o root -g root /dev/null /etc/cockpit-host-settings/ntfy.token
+fi
+if [ ! -e /etc/cockpit-host-settings/heartbeat.conf ]; then
+    install -m 600 -o root -g root /dev/null /etc/cockpit-host-settings/heartbeat.conf
 fi
 if getent passwd cockpit-host-settings > /dev/null 2>&1; then
     install -d -m 755 -o cockpit-host-settings -g cockpit-host-settings /var/lib/cockpit-host-settings

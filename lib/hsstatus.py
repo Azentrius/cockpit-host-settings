@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """The status contract of the Azentrius add-ons (schema 1) for Host Settings
 itself: whether messages are set up, whether the last one went out, whether
-the ntfy topic is closed to anyone without a login, and when the notifier
-last ran. Status Board reads it through `host-settings.py status --lang xx`.
+the ntfy topic is closed to anyone without a login, whether the watchdog took
+the last signal, and when the notifier last ran. Status Board reads it through
+`host-settings.py status --lang xx`.
 
 Lives in /usr/lib/cockpit-host-settings (root-owned). Standard library only,
 no side effects on import, nothing here runs a command.
@@ -47,6 +48,13 @@ T = {
         "access.read": "Anyone who knows the topic can read the messages.",
         "access.write": "Anyone who knows the topic can send messages to it.",
         "access.both": "Anyone who knows the topic can read the messages and send messages to it.",
+        "heartbeat.title": "Watchdog",
+        "heartbeat.none": "Set up; no signal sent yet.",
+        "heartbeat.ok": "The watchdog took the last signal on {when}.",
+        "heartbeat.told": "The watchdog was told on {when} that a run failed.",
+        "heartbeat.failed": "The last signal did not reach the watchdog: {why}.",
+        "heartbeat.invalid": "The watchdog's settings do not hold: set it up again in Host Settings.",
+        "summary.watchdog": "No channel: only a watchdog gets a signal after every run.",
         "run.title": "Notifier",
         "run.ok": {"one": "{n} add-on read every 5 minutes.", "other": "{n} add-ons read every 5 minutes."},
         "run.old": "The last run is older than 15 minutes.",
@@ -60,6 +68,9 @@ T = {
         "reason.rate-limited": "too many messages", "reason.too-large": "too large", "reason.tls": "certificate",
         "reason.timeout": "no answer", "reason.network": "not reachable", "reason.no-mta": "no mail server on localhost:25",
         "reason.refused": "refused", "reason.smtp": "mail server error", "reason.http": "HTTP {code}",
+        "reason.not-found": "unknown check", "reason.redirect": "a redirect, not followed",
+        "reason.unexpected": "an unexpected answer", "reason.ambiguous": "more than one check matches",
+        "reason.invalid-url": "the address is not valid", "reason.invalid": "the settings are not valid",
     },
     "de": {
         "channel.ntfy": "ntfy", "channel.mail": "E-Mail", "and": " und ",
@@ -81,6 +92,13 @@ T = {
         "access.read": "Wer das Thema kennt, kann die Nachrichten lesen.",
         "access.write": "Wer das Thema kennt, kann Nachrichten hineinschicken.",
         "access.both": "Wer das Thema kennt, kann die Nachrichten lesen und Nachrichten hineinschicken.",
+        "heartbeat.title": "Wächter",
+        "heartbeat.none": "Eingerichtet; noch kein Signal verschickt.",
+        "heartbeat.ok": "Der Wächter hat das letzte Signal am {when} angenommen.",
+        "heartbeat.told": "Der Wächter erfuhr am {when}, dass ein Lauf fehlschlug.",
+        "heartbeat.failed": "Das letzte Signal erreichte den Wächter nicht: {why}.",
+        "heartbeat.invalid": "Die Einstellungen des Wächters stimmen nicht: Richten Sie ihn in Host Settings neu ein.",
+        "summary.watchdog": "Kein Kanal: Nur ein Wächter bekommt nach jedem Lauf ein Signal.",
         "run.title": "Notifier",
         "run.ok": {"one": "{n} Add-on alle 5 Minuten gelesen.", "other": "{n} Add-ons alle 5 Minuten gelesen."},
         "run.old": "Der letzte Lauf ist älter als 15 Minuten.",
@@ -95,6 +113,9 @@ T = {
         "reason.timeout": "keine Antwort", "reason.network": "nicht erreichbar",
         "reason.no-mta": "kein Mailserver auf localhost:25", "reason.refused": "abgelehnt",
         "reason.smtp": "Fehler des Mailservers", "reason.http": "HTTP {code}",
+        "reason.not-found": "unbekannte Prüfung", "reason.redirect": "eine Weiterleitung, der nicht gefolgt wird",
+        "reason.unexpected": "eine unerwartete Antwort", "reason.ambiguous": "mehr als eine Prüfung passt",
+        "reason.invalid-url": "die Adresse ist ungültig", "reason.invalid": "die Einstellungen sind ungültig",
     },
 }
 MONTHS_EN = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -141,7 +162,8 @@ def channels_text(lang, chans):
 
 def items_of(info, lang):
     """The items for what the notifier knows (`info`): channels, delivery {at, results},
-    access {state, anon_read, anon_write} or None, run {at, addons}."""
+    access {state, anon_read, anon_write} or None, run {at, addons}, heartbeat {invalid, at,
+    signal, result} or None (no watchdog)."""
     at = info["run"]["at"]
     chans = info.get("channels") or []
     out = []
@@ -180,6 +202,23 @@ def items_of(info, lang):
         else:
             out.append(item("access", "none", t(lang, "access.none")))
 
+    # The watchdog, only when one is set up: whether the last signal reached it (its answer, not
+    # the address). A failed run it was told of is its own business there; the run's problem
+    # shows in the other items.
+    hb = info.get("heartbeat")
+    if hb is not None:
+        r = hb.get("result") or {}
+        sent_at = hslib.parse_time(hb.get("at"))
+        if hb.get("invalid"):
+            out.append(item("heartbeat", "warning", t(lang, "heartbeat.invalid")))
+        elif not r or sent_at is None:
+            out.append(item("heartbeat", "none", t(lang, "heartbeat.none")))
+        elif r.get("ok"):
+            out.append(item("heartbeat", "ok", t(lang, "heartbeat.told" if hb.get("signal") == "failure" else "heartbeat.ok",
+                                                 when=when(lang, sent_at))))
+        else:
+            out.append(item("heartbeat", "warning", t(lang, "heartbeat.failed", why=reason_text(lang, r))))
+
     # Without a channel the notifier reads, but tells nobody: not "OK" for the board.
     n = info["run"].get("addons", 0)
     out.append(item("run", "ok" if chans else "none", t(lang, "run.ok", n=n), n))
@@ -201,7 +240,7 @@ def document(info, lang, ver):
     if found:
         summary = t(lang, "summary.found", list=", ".join(i["title"] for i in found))
     elif not chans:
-        summary = t(lang, "summary.missing")
+        summary = t(lang, "summary.watchdog" if info.get("heartbeat") else "summary.missing")
     else:
         summary = t(lang, "summary.ok", channels=channels_text(lang, chans))
     return {"schema": SCHEMA, "addon": ADDON, "label": LABEL, "version": ver, "checked_at": info["run"]["at"],
