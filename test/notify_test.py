@@ -51,8 +51,8 @@ EXPECT = {
                                     link="#/updates/update"),
     "real-image-updates.de.json": dict(state="info", reported="info", items=5, key="updates", value="2",
                                        link="#/updates/update"),
-    "real-update-gaps.json": dict(state="warning", reported="warning", items=6, key="held", value="6", link="#/held"),
-    "real-update-gaps.de.json": dict(state="warning", reported="warning", items=6, key="held", value="6", link="#/held"),
+    "real-update-gaps.json": dict(state="warning", reported="warning", items=7, key="held", value="6", link="#/held"),
+    "real-update-gaps.de.json": dict(state="warning", reported="warning", items=7, key="held", value="6", link="#/held"),
     "real-security.json": dict(state="danger", reported="danger", items=5, key="containers", value="1",
                                link="#/containers"),
     "real-security.de.json": dict(state="danger", reported="danger", items=5, key="containers", value="1",
@@ -101,6 +101,22 @@ EXPECT = {
     "ext-hostile.json": dict(state="danger", reported="warning", items=2, key="exposure", value="120"),
     "ext-hostile-profile.json": dict(state="ok", reported="ok", items=1, key="run"),
     "ext-incompatible-schema-2.json": dict(pkg="security", reason="schema", detail="2"),
+    # when a list of findings is complete, shared with the board (the tests Complete); what the
+    # item says counts either way
+    "ext-complete-total-1-empty.json": dict(state="danger", reported="danger", items=1, key="exposure", value="1",
+                                            link="#/exposure"),
+    "ext-complete-total-2-one.json": dict(state="danger", reported="danger", items=1, key="exposure", value="2",
+                                          link="#/exposure"),
+    "ext-complete-total-0-checked.json": dict(state="ok", reported="ok", items=1, key="exposure", value="0",
+                                              link="#/exposure"),
+    "ext-complete-no-total.json": dict(state="danger", reported="danger", items=1, key="exposure", value="2",
+                                       link="#/exposure"),
+    "ext-complete-invalid-entry.json": dict(state="danger", reported="danger", items=1, key="exposure", value="2",
+                                            link="#/exposure"),
+    "ext-complete-duplicate-fid.json": dict(state="danger", reported="danger", items=1, key="exposure", value="2",
+                                            link="#/exposure"),
+    "ext-complete-over-100.json": dict(state="danger", reported="danger", items=1, key="exposure", value="101",
+                                       link="#/exposure"),
 }
 INVISIBLE = [chr(c) for c in list(range(0, 0x20)) + [0x7F] + list(range(0x200B, 0x2010)) + list(range(0x202A, 0x202F)) +
              list(range(0x2066, 0x206A)) + [0xFEFF]]
@@ -185,6 +201,10 @@ class BoardFixtures(unittest.TestCase):
         for bad in ("hostile-sh", "hostile-dotdot", "hostile-shapes"):
             self.assertEqual(hslib.status_entry(m(bad)), ("rejected", None), bad)
         self.assertEqual(hslib.status_entry(m("hostile-args")), ("command", "/usr/lib/cockpit-extra/status-helper"))
+        self.assertEqual(hslib.status_entry(m("host-settings")), ("command", "/usr/lib/cockpit-host-settings/host-settings.py"))
+        # the add-ons of the board's page tests at the edges (labels, answers of 64 KiB and more)
+        for edge in ("aaa", "constructor", "exact", "flood", "over"):
+            self.assertEqual(hslib.status_entry(m("edge-" + edge)), ("command", f"/usr/lib/cockpit-edge-{edge}/status"))
         self.assertIsNone(hslib.status_entry(m("system")))
         self.assertEqual(hslib.menu_label(m("cronjobs")), "Cron Jobs")
         self.assertEqual(hslib.menu_label(m("hostile-shapes")), "Shapes")
