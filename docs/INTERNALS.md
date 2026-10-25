@@ -194,9 +194,10 @@ ntfy is set up when both `ntfy_url` and `ntfy_topic` are there, e-mail when `mai
    complete only when the add-on says so, nothing was left out of it, a check of state
    `checked` names the item and a whole-number `total` counts no more findings than it holds),
    an acceptance (`accepted_until`) only up to 90 days after the check, and `profile` only from
-   `host-settings`. What breaks their rules is left out and
-   counted, never makes the answer unreadable. An item is never better than its open findings:
-   those not accepted, or whose acceptance has ended (the board's `itemState()`).
+   `host-settings`. What breaks their rules is left out and counted, never makes the answer
+   unreadable; an item that sends `findings` the rules leave out is told from one that sends
+   none (below, "Findings"). An item is never better than its open findings: those not
+   accepted, or whose acceptance has ended (the board's `itemState()`).
 4. **Compare** with what was told last (`sent` in `last.json`), per key: `PKG#` for the add-on
    (warning while it cannot be read), `PKG#ID` for each item, and `PKG#ID/FID` for each finding
    of an item that lists them (below). Only warning and danger count as
@@ -252,6 +253,7 @@ another order changes nothing. Each finding's entry has a status:
 | acceptance ended, the finding still there | open | `expired` ("acceptance ended") |
 | missing, the list is complete, the check that names the item and the item are in time, the answer left no items out | resolved | `resolved` ("no longer found by a complete check"); none for an accepted one |
 | missing, anything else (a check `partial` or `failed`, a list the add-on calls incomplete, a finding left out of it, a `total` the list does not reach, out of date, items left out, status unreadable, exit 77) | as it was (unconfirmed) | none |
+| the item's `findings` break the rules, or the item sends none any more (an older version of the add-on) | as it was | none |
 | resolved before, here again | open | `again` |
 
 Resolved findings are kept for 30 days, so that one coming back is told as `again`; after that it
@@ -265,9 +267,33 @@ with an empty list that is not complete, for example); usually it is OK and not 
 entry has `"findings": true`. When an item that was compared per item (by 0.1.0, or while its
 add-on sent no findings) lists findings for the first time, findings no more severe than what
 was told for the item are taken as told without a message, so an update of the add-on or of Host
-Settings does not repeat what was told; a more severe one is told. An item that stops listing
-findings (an older add-on, a broken `findings` object) is compared per item again, starting from
-the most severe of the findings it told; when it is OK, they are resolved with it.
+Settings does not repeat what was told; a more severe one is told.
+
+**Findings that cannot be read prove nothing.** The rules of `lib/hslib.py` say for every item
+why it has the findings it has (`listing`, for the notifier only): it lists them (`listed`), it
+sends `findings` the rules leave out (`broken`: the add-on does not declare the feature, or the
+object, its `complete` or its `list` has the wrong shape), or it sends none (`none`: an add-on
+that never lists findings, an older version of one, or an item without findings). `changes()`
+decides per item:
+
+- An item that never told findings is compared per item, as before: add-ons without findings
+  work unchanged.
+- An item whose findings were told and that lists none now (`broken` or `none`) keeps them as
+  they are, open, accepted or resolved, without a message. While they are open or accepted they
+  explain the item's level, so the item itself is told only for what they do not explain (a
+  danger where they were warnings). They change again only with a list that can be read: a
+  complete one resolves what it leaves out, and tells it; any other keeps it.
+- A `broken` item is told nothing better, its own key neither: it may get worse (told), never
+  better, until a list that can be read comes.
+- A broken list in one item holds back nothing of the other items: their findings are compared,
+  and resolved by a complete list, as usual.
+
+Going back to a version of an add-on that sends no findings, or one that loses the extension, is
+such a case. What it says of the item (OK, for example) resolves none of the findings told
+before, an acceptance stays accepted (its end is told with the next answer that lists the finding
+again), and a danger of the item that the open findings explain is not told again. The findings
+stay in `last.json` until a version that lists findings sends a complete list, or until the
+add-on is removed (one `unchecked` message, as above).
 
 ### Coverage
 
@@ -480,15 +506,17 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   reading an add-on (trust, exit codes); changes, flapping, unreadable add-ons, removed ones;
   findings as sequences of answers (a second finding while the item is a danger, the same answer
   in the other language or order, lists that cannot say a finding is gone, resolved, again,
-  accepted and ended, thirty at once, the memory of 0.1.0); the coverage twins against the board's
+  accepted and ended, thirty at once, the memory of 0.1.0, findings that break the rules or are
+  no longer sent, an older version of the add-on); the coverage twins against the board's
   own cases, and the coverage of a target profile run after run (an expected add-on gone and
   back, an optional one gone, a skip that runs and ends, no access, not set up, the hour against
   flapping, a run without a change, the memory of 0.1.0); the texts of messages; ntfy and SMTP
   with stand-ins; every step of "Check connection" against recorded answers of a closed and an
   open server.
 - `test/run_test.py`: whole runs of `host-settings-notify.py` with stand-ins for the add-ons, the
-  network, SMTP and the clock (also with a `last.json` of 0.1.0, and with a target profile set up
-  first or later); the own status against the board's rules.
+  network, SMTP and the clock (also with a `last.json` of 0.1.0, with a target profile set up
+  first or later, and with a list of findings that breaks the rules); the own status against the
+  board's rules.
 - `test/helper_test.py`: the verbs of `host-settings.py`, the profile's among them (refusals,
   unknown roles, the file line by line, atomic write and backup, the limits, the status field).
 - `test/page.test.js`, `test/files.test.js`, `test/i18n.test.js`: the page under jsdom, its files,

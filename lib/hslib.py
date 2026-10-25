@@ -153,6 +153,7 @@ def validate_item(raw):
         "checked_at": parse_time(raw.get("checked_at")),
         "stale_after": _stale_after_of(stale),
         "findings": None,
+        "listing": "none",
     }
 
 
@@ -270,10 +271,23 @@ def validate_profile(raw, drop):
             "set_at": parse_time(raw.get("set_at"))}
 
 
+LISTINGS = ("listed", "broken", "none")
+
+
 def validate_extension(data, status, raws):
     """The optional parts of a valid answer, set on status: features, checks, profile,
-    ext_dropped, and each item's findings ({complete, total, list} or None). raws are the
-    answer's items in the order of status["items"]."""
+    ext_dropped, and each item's findings ({complete, total, list} or None) and listing. raws
+    are the answer's items in the order of status["items"].
+
+    listing says why an item's findings are what they are (Host Settings only; the board does
+    not need it): "listed" for a findings object that can be read, "broken" for an item that
+    sends `findings` the rules leave out (the add-on does not declare the feature, or it is no
+    object, `complete` is no boolean, `list` is no list), "none" for an item that sends none (an
+    add-on that never lists findings, an older version of one, or an item without findings).
+    The notifier keeps what it told about the findings of an item that lists none and tells a
+    broken one nothing better (hsnotify.changes())."""
+    for item, raw_item in zip(status["items"], raws):
+        item["listing"] = "broken" if "findings" in raw_item else "none"
     declared = data.get("features")
     features = [f for f in FEATURES if f in declared] if isinstance(declared, list) else []
     drop = {"n": 0}
@@ -324,6 +338,7 @@ def validate_extension(data, status, raws):
                 complete = False
             total = int(total) if _is_int(total) and len(found) <= total <= MAX_TOTAL else len(found)
             item["findings"] = {"complete": complete, "total": total, "list": found}
+            item["listing"] = "listed"
     profile = None
     if "profile" in features and data.get("addon") == "host-settings":
         profile = validate_profile(data.get("profile"), drop)

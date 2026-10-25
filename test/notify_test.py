@@ -7,7 +7,8 @@
   test/status.test.js, EXPECT), and so are its manifests;
 - a status command must belong to root; exit codes and broken answers become warnings;
 - changes per item, an hour against flapping; what cannot be checked (unreadable, exit 77, state
-  none, items left out, an add-on removed) is no reason for OK;
+  none, items left out, an add-on removed, findings that break the rules or are no longer sent,
+  a list that counts more than it holds) is no reason for OK;
 - the texts of the messages, in English and German, cut to what ntfy takes;
 - ntfy as JSON to the server's root URL, the token only as a header; SMTP to localhost:25;
 - "Check connection": every step against recorded answers of an ntfy server.
@@ -294,6 +295,30 @@ class OptionalParts(unittest.TestCase):
         st = ext("ext-broken-shapes.json")
         self.assertEqual([st["checks"], st["profile"], st["ext_dropped"]], [None, None, 4])
         self.assertTrue(all(i["findings"] is None for i in st["items"]))
+
+    def test_findings_that_break_the_rules_are_told_from_none_sent(self):
+        # Host Settings only (listing): the board shows both as an item without findings, the
+        # notifier keeps what it told about the findings of either (KeptFindings)
+        self.assertEqual([i["listing"] for i in ext("ext-good-security.json")["items"]], ["listed", "listed", "none"])
+        self.assertEqual([i["listing"] for i in ext("ext-broken-shapes.json")["items"]], ["broken"] * 3)
+        self.assertEqual({i["listing"] for i in ext("real-security.json")["items"]}, {"none"}, "an add-on without the feature")
+        doc = json.loads(board("status/ext-good-security.json"))
+        without = {k: v for k, v in doc.items() if k != "features"}
+        for d in [without] + [dict(doc, features=f) for f in (None, "checks,findings", ["checks"], {"findings": True})]:
+            st = hslib.validate_status(json.dumps(d), "security")[1]
+            self.assertEqual([(i["findings"], i["listing"]) for i in st["items"]],
+                             [(None, "broken"), (None, "broken"), (None, "none")], d.get("features"))
+        for broken in ("all", [], {"complete": "yes", "list": []}, {"complete": True, "list": {"a": 1}}, {"list": []}):
+            d = json.loads(json.dumps(doc))
+            d["items"][0]["findings"] = broken
+            st = hslib.validate_status(json.dumps(d), "security")[1]
+            self.assertEqual([st["items"][0]["findings"], st["items"][0]["listing"], st["items"][1]["listing"]],
+                             [None, "broken", "listed"], broken)
+        d = json.loads(json.dumps(doc))
+        d["items"][0]["findings"]["list"] = ["unreadable", 7]
+        st = hslib.validate_status(json.dumps(d), "security")[1]
+        self.assertEqual([st["items"][0]["findings"], st["items"][0]["listing"]],
+                         [{"complete": False, "total": 2, "list": []}, "listed"], "a list whose entries break the rules")
 
     def test_hostile_checks_and_findings(self):
         st = ext("ext-hostile.json")
@@ -734,13 +759,14 @@ def fkey(n):
     return f"security#exposure/port.{n}-tcp"
 
 
-def sec_doc(findings, at, lang="en", check="checked", check_at=None, complete=True, state=None, items=()):
+def sec_doc(findings, at, lang="en", check="checked", check_at=None, complete=True, state=None, items=(), total=None):
     """An answer with the item `exposure` and its findings, a check of it, and more items."""
     worst = state or hslib.STATES[max([hslib.rank(f["state"]) for f in findings if isinstance(f, dict) and
                                        hslib.is_state(f.get("state"))] + [1])]
     exposure = {"id": "exposure", "state": worst, "value": str(len(findings)), "checked_at": at, "stale_after": 3600,
                 "title": "Reachable from the internet" if lang == "en" else "Aus dem Internet erreichbar",
-                "findings": {"complete": complete, "total": len(findings), "list": findings}}
+                "findings": {"complete": complete, "total": len(findings) if total is None else total,
+                             "list": findings}}
     every = [exposure] + [dict({"checked_at": at, "stale_after": 3600}, **i) for i in items]
     return json.dumps({"schema": 1, "addon": "security", "label": "Security Monitor", "version": "0.4.0",
                        "checked_at": at, "summary": "s", "features": ["checks", "findings"],
@@ -756,6 +782,35 @@ def read_sec(result, now):
                                lstat_of({SEC: (0o755, 0)}))
 
 
+def sec_broken(how, findings=None, check="partial", state="ok"):
+    """An answer of the Security Monitor (a function of its time, for Timeline) whose item
+    `exposure` sends findings that break the rules, or none: "list" (a text instead of a list),
+    "object" (a list instead of the object), "complete" (no boolean), "undeclared" (features
+    without findings), "features" (features no list), "lost" (findings declared, the item sends
+    none), "older" (an older version: no features, no checks, no findings)."""
+    def answer(at):
+        doc = json.loads(sec_doc(findings or [port(5432)], at, check=check, state=state))
+        exposure = doc["items"][0]
+        if how == "list":
+            exposure["findings"]["list"] = "unreadable"
+        elif how == "object":
+            exposure["findings"] = ["port.5432-tcp"]
+        elif how == "complete":
+            exposure["findings"]["complete"] = "yes"
+        elif how == "undeclared":
+            doc["features"] = ["checks"]
+        elif how == "features":
+            doc["features"] = "checks,findings"
+        elif how == "lost":
+            del exposure["findings"]
+        elif how == "older":
+            for k in ("features", "checks"):
+                del doc[k]
+            del exposure["findings"]
+        return ok(json.dumps(doc))
+    return answer
+
+
 class Timeline:
     """changes() run after run, the memory carried from one to the next: each step is an answer
     of the Security Monitor (or another result of its status verb) some seconds later."""
@@ -767,6 +822,8 @@ class Timeline:
         return Timeline(self.sent, self.now)
 
     def snapshot(self, findings=None, result=None, age=60, also=None, **kw):
+        if callable(result):
+            result = result(hslib.iso(self.now - age))
         result = result or ok(sec_doc(findings, hslib.iso(self.now - age), **kw))
         return dict({"security": read_sec(result, self.now)}, **(also or {}))
 
@@ -980,21 +1037,34 @@ class Findings(unittest.TestCase):
         tl = Timeline({"security#exposure": dict(old["security#exposure"], level="warning")})
         self.assertEqual(told(tl.step([port(3306, "warning"), port(5432)])), [(fkey(5432), "worse", "ok", "danger")])
 
-    def test_an_item_that_stops_listing_findings_is_compared_per_item_again(self):
-        def without_features(state, after):
-            doc = json.loads(sec_doc([port(5432), port(6379)], hslib.iso(tl.now + after - 60), state=state))
-            del doc["features"]
-            doc["state"] = state
-            return ok(json.dumps(doc))
+    def test_an_older_version_without_findings_keeps_the_known_ones(self):
+        # Back to a version of the add-on that sends no findings (no features, no checks), or one
+        # whose item stops listing them: what it says of the item proves nothing about them.
+        until = hslib.iso(NOW + 30 * 86400)
+        for how in ("older", "lost"):
+            with self.subTest(how):
+                tl = Timeline()
+                tl.step([port(5432), port(6379), port(3306, "warning", accepted_until=until)])
+                self.assertEqual(tl.step(result=sec_broken(how, state="danger")), [], "danger as its findings are")
+                self.assertEqual(tl.step(result=sec_broken(how, state="ok"), after=hsnotify.FLAP), [],
+                                 "OK from the item alone resolves nothing, and says nothing")
+                self.assertEqual({n: tl.sent[fkey(n)]["status"] for n in (5432, 6379, 3306)},
+                                 {5432: "open", 6379: "open", 3306: "accepted"})
+                self.assertEqual(tl.step(result=sec_broken(how, state="danger"), after=hsnotify.FLAP), [],
+                                 "danger again: the open findings explain it, nothing is new")
+                self.assertEqual(tl.step(result=sec_broken(how, state="ok"), after=86400), [])
+                # a version that lists findings again: what a complete list leaves out is resolved
+                # now, and told (an accepted one without a word)
+                events = tl.step([port(5432)], after=hsnotify.FLAP)
+                self.assertEqual([(e["key"], e["kind"], e["why"]) for e in events], [(fkey(6379), "resolved", "fixed")])
+                self.assertEqual({n: tl.sent[fkey(n)]["status"] for n in (5432, 6379, 3306)},
+                                 {5432: "open", 6379: "resolved", 3306: "resolved"})
+        # what the known findings do not explain is told as the item
         tl = Timeline()
-        tl.step([port(5432), port(6379)])
-        self.assertEqual(tl.step(result=without_features("danger", 300)), [], "danger as its findings were")
-        self.assertEqual(tl.sent["security#exposure"]["level"], "danger")
-        self.assertEqual(tl.sent[fkey(6379)]["status"], "open")
-        events = tl.step(result=without_features("ok", hsnotify.FLAP), after=hsnotify.FLAP)
-        self.assertEqual(told(events), [("security#exposure", "resolved", "danger", "ok")])
-        self.assertEqual({tl.sent[fkey(n)]["status"] for n in (5432, 6379)}, {"resolved"}, "resolved with their item")
-        self.assertEqual(told(tl.step([port(6379)], after=hsnotify.FLAP)), [(fkey(6379), "again", "ok", "danger")])
+        tl.step([port(3306, "warning")])
+        self.assertEqual(told(tl.step(result=sec_broken("older", state="danger"))),
+                         [("security#exposure", "worse", "ok", "danger")])
+        self.assertEqual(tl.sent[fkey(3306)]["status"], "open")
 
     def test_the_first_summary_lists_open_findings_instead_of_their_item(self):
         until = hslib.iso(NOW + 86400)
@@ -1044,6 +1114,141 @@ class Findings(unittest.TestCase):
         self.assertIn("cronjobs#failed", out, "what was told as a problem stays")
         self.assertIn("security#exposure/port.1-tcp", out, "the newest resolved ones stay")
         self.assertNotIn("security#exposure/port.2100-tcp", out)
+
+
+def sock(name, state="danger"):
+    return {"fid": f"socket.{name}", "state": state, "title": f"{name} has the Docker socket"}
+
+
+class KeptFindings(unittest.TestCase):
+    """Findings that break the rules, or that an answer no longer sends, are no proof that a
+    finding is gone: sequences through read_addon() and hslib's rules, the clock set by Timeline."""
+
+    def open_two(self):
+        tl = Timeline()
+        self.assertEqual(told(tl.step([port(5432), port(6379)])),
+                         [(fkey(5432), "worse", "ok", "danger"), (fkey(6379), "worse", "ok", "danger")])
+        return tl
+
+    def assertOpen(self, tl, *ports):
+        for n in ports:
+            self.assertEqual((tl.sent[fkey(n)]["status"], tl.sent[fkey(n)]["level"]), ("open", "danger"), n)
+
+    def test_the_reviews_sequence(self):
+        # 1. a valid answer with port 5432 open at danger
+        tl = Timeline()
+        self.assertEqual(told(tl.step([port(5432)])), [(fkey(5432), "worse", "ok", "danger")])
+        # 2. the item ok, its check partial, findings declared, but the list is a text
+        snap = tl.snapshot(result=sec_broken("list", check="partial", state="ok"))
+        self.assertEqual([(i["id"], i["state"], i["findings"], i["listing"]) for i in snap["security"]["items"]],
+                         [("exposure", "ok", None, "broken")])
+        self.assertEqual(tl.step(result=sec_broken("list", check="partial", state="ok")), [],
+                         "no aggregate resolved, no finding closed")
+        self.assertOpen(tl, 5432)
+        self.assertNotIn("security#exposure", tl.sent)
+        # 3. valid and unchanged again: nothing, not a second new
+        self.assertEqual(tl.step([port(5432)]), [])
+        self.assertOpen(tl, 5432)
+        # 4. valid, complete and gone: only now resolved
+        self.assertEqual([(e["key"], e["kind"], e["why"]) for e in tl.step([])], [(fkey(5432), "resolved", "fixed")])
+
+    def test_findings_that_break_the_rules_resolve_nothing_and_are_not_told_twice(self):
+        base = self.open_two()
+        for how in ("list", "object", "complete", "undeclared", "features"):
+            for check, state in (("partial", "ok"), ("checked", "ok"), ("checked", "danger"), ("checked", "warning")):
+                with self.subTest(how=how, check=check, state=state):
+                    tl = base.copy()
+                    self.assertEqual(tl.snapshot(result=sec_broken(how, check=check, state=state))
+                                     ["security"]["items"][0]["listing"], "broken")
+                    self.assertEqual(tl.step(result=sec_broken(how, check=check, state=state)), [])
+                    self.assertOpen(tl, 5432, 6379)
+                    self.assertEqual(tl.step(result=sec_broken(how, check=check, state=state), after=hsnotify.FLAP), [])
+                    self.assertEqual(tl.step([port(5432), port(6379)]), [], "valid and unchanged: not a second new")
+                    self.assertOpen(tl, 5432, 6379)
+                    self.assertEqual(told(tl.step([port(5432)])), [(fkey(6379), "resolved", "danger", "ok")])
+
+    def test_only_a_complete_list_in_time_resolves_after_a_gap(self):
+        tl = self.open_two()
+        gaps = [("the check ran in part", dict(findings=[port(5432)], check="partial")),
+                ("the check failed", dict(findings=[port(5432)], check="failed")),
+                ("no access", dict(findings=[port(5432)], check="noaccess")),
+                ("exit 77", dict(result=hsproc.Result(77))),
+                ("the item is out of date", dict(findings=[port(5432)], age=7200)),
+                ("the check is out of date", dict(findings=[port(5432)], check_at=lambda: hslib.iso(tl.now + 300 - 7200))),
+                ("not complete", dict(findings=[port(5432)], complete=False)),
+                ("counts more than it lists", dict(findings=[port(5432)], total=2)),
+                ("an empty list that counts one", dict(findings=[], total=1)),
+                ("a broken list", dict(result=sec_broken("list", check="checked"))),
+                ("no findings sent", dict(result=sec_broken("lost", check="checked"))),
+                ("an older version", dict(result=sec_broken("older")))]
+        for name, kw in gaps:
+            if callable(kw.get("check_at")):
+                kw["check_at"] = kw["check_at"]()
+            self.assertEqual(tl.step(**kw), [], name)
+            self.assertOpen(tl, 6379)
+        self.assertEqual(told(tl.step([port(5432)])), [(fkey(6379), "resolved", "danger", "ok")])
+        self.assertEqual(tl.step([port(5432)]), [])
+
+    def test_a_broken_item_does_not_hold_back_another(self):
+        def answer(exposure, containers, broken=False):
+            def at_time(at):
+                doc = json.loads(sec_doc(exposure, at, items=[{
+                    "id": "containers", "state": "danger" if containers else "ok", "title": "Containers",
+                    "findings": {"complete": True, "total": len(containers), "list": containers}}]))
+                doc["checks"].append({"id": "containers", "state": "checked", "title": "Containers", "item": "containers",
+                                      "checked_at": at, "stale_after": 3600})
+                if broken:
+                    doc["items"][0]["findings"]["list"] = "unreadable"
+                return ok(json.dumps(doc))
+            return at_time
+        tl = Timeline()
+        tl.step(result=answer([port(5432)], [sock("a")]))
+        self.assertEqual(sorted(tl.sent), ["security#containers/socket.a", fkey(5432)])
+        events = tl.step(result=answer([], [sock("b")], broken=True))
+        self.assertEqual(told(events), [("security#containers/socket.b", "worse", "ok", "danger"),
+                                        ("security#containers/socket.a", "resolved", "danger", "ok")])
+        self.assertOpen(tl, 5432)
+
+    def test_an_acceptance_stays_through_broken_data_and_its_end_is_told_with_valid_data(self):
+        tl = Timeline()
+        until = hslib.iso(NOW + 2 * 86400)
+        self.assertEqual(told(tl.step([port(5432), port(6379, accepted_until=until)])),
+                         [(fkey(5432), "worse", "ok", "danger")])
+        self.assertEqual(tl.step(result=sec_broken("list", state="ok")), [])
+        self.assertEqual(tl.sent[fkey(6379)]["status"], "accepted")
+        self.assertEqual(tl.step([port(5432), port(6379, accepted_until=until)]), [], "still accepted")
+        self.assertEqual(tl.step(result=sec_broken("complete", state="danger"), after=3 * 86400), [],
+                         "ended while nothing can be read: told with the next valid answer")
+        self.assertEqual(tl.sent[fkey(6379)]["status"], "accepted")
+        self.assertEqual(told(tl.step([port(5432), port(6379, accepted_until=until)])),
+                         [(fkey(6379), "expired", "danger", "danger")])
+        self.assertEqual(tl.step([port(5432), port(6379, accepted_until=until)]), [])
+        self.assertOpen(tl, 5432, 6379)
+
+    def test_a_broken_item_is_told_worse_never_better(self):
+        # danger with no finding listed (the list is not complete): the item itself is told
+        tl = Timeline()
+        self.assertEqual(told(tl.step([], state="danger", complete=False)), [("security#exposure", "worse", "ok", "danger")])
+        for state in ("warning", "ok"):
+            self.assertEqual(tl.step(result=sec_broken("list", state=state)), [], state)
+            self.assertEqual(tl.sent["security#exposure"]["level"], "danger")
+        self.assertEqual(told(tl.step([], state="ok")), [("security#exposure", "resolved", "danger", "ok")],
+                         "a list that can be read")
+        tl = Timeline()
+        tl.step([], state="warning", complete=False)
+        self.assertEqual(told(tl.step(result=sec_broken("object", state="danger"))),
+                         [("security#exposure", "worse", "warning", "danger")])
+
+    def test_an_addon_that_never_listed_findings_is_compared_per_item_as_before(self):
+        def answer(state):
+            return lambda at: ok(status_doc("security", [{"id": "exposure", "state": state, "title": "Exposure"}], at=at))
+        tl = Timeline()
+        self.assertEqual(tl.snapshot(result=answer("danger"))["security"]["items"][0]["listing"], "none")
+        self.assertEqual(told(tl.step(result=answer("danger"))), [("security#exposure", "worse", "ok", "danger")])
+        self.assertEqual(tl.step(result=answer("danger")), [])
+        self.assertEqual(told(tl.step(result=answer("ok"))), [("security#exposure", "resolved", "danger", "ok")])
+        self.assertEqual(told(tl.step(result=answer("warning"), after=hsnotify.FLAP)),
+                         [("security#exposure", "worse", "ok", "warning")])
 
 
 # ---------------------------------------------------------------------------
