@@ -4,3 +4,9 @@
 847ee8d2f6b1c8a023693f3baff2758bc8a21696:test/helper_test.py:generic-api-key:30
 847ee8d2f6b1c8a023693f3baff2758bc8a21696:test/page.js:generic-api-key:16
 847ee8d2f6b1c8a023693f3baff2758bc8a21696:test/notify_test.py:generic-api-key:470
+# The watchdog's tests had made-up ping and push addresses in variables named like secrets; they
+# use plain made-up values since.
+eb92ecf4e593d46bfb5bd5589fe83b5bd9e8d09b:test/page.test.js:generic-api-key:446
+eb92ecf4e593d46bfb5bd5589fe83b5bd9e8d09b:test/helper_test.py:generic-api-key:270
+eb92ecf4e593d46bfb5bd5589fe83b5bd9e8d09b:test/heartbeat_test.py:generic-api-key:38
+eb92ecf4e593d46bfb5bd5589fe83b5bd9e8d09b:test/heartbeat_test.py:generic-api-key:39

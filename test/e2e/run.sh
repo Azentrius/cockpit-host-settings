@@ -343,7 +343,7 @@ note "test signal: $got (expected accepted); log entries: $(seen check-1 log) (e
 [ "$got" = accepted ] || fail "the test signal was not taken"
 [ "$(seen check-1 log)" = 1 ] && [ "$(seen check-1 success)" = 0 ] || fail "the test signal is not Healthchecks' log entry"
 run_notifier beat-1
-note "after a run: successes $(seen check-1 success) (expected 1); $(grep watchdog "$out/beat-1.txt" || true)"
+note "after a run: successes $(seen check-1 success) (expected 1); $(grep 'watchdog:' "$out/beat-1.txt" || true)"
 [ "$(seen check-1 success)" = 1 ] || fail "no success signal after a run"
 args_clean || fail "a watchdog address in the arguments of a process"
 ok "the address only on standard input and in heartbeat.conf (0600 root); a test is a log entry; a run gives one success"

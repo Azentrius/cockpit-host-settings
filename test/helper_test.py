@@ -266,9 +266,9 @@ class Show(Base):
         self.assertIsNone(hs.smtp_listening(ss("", 1)))
 
 
-KUMA = "http://10.8.0.2:3001/api/push/Xq3vT8pLmN2bR7sK"
-KUMA_SECRET = "Xq3vT8pLmN2bR7sK"
-HC = "https://hc.example.net/ping/2f9a2c51-7a1b-4c0e-9d2e-5b8d3c1a9e77"
+KUMA = "http://10.8.0.2:3001/api/push/pushpushpushpush"
+KUMA_ID = "pushpushpushpush"
+HC = "https://hc.example.net/ping/11111111-2222-4333-8444-555555555555"
 
 
 class Heartbeat(Base):
@@ -285,7 +285,7 @@ class Heartbeat(Base):
     def test_from_standard_input_only(self):
         code, out, err = self.set("uptime-kuma", KUMA + "?status=up&msg=OK&ping=\n")
         self.assertEqual(code, 0, err)
-        self.assertNotIn(KUMA_SECRET, out + err)
+        self.assertNotIn(KUMA_ID, out + err)
         self.assertIn("Watchdog set up: Uptime Kuma.", out)
         self.assertIn("The address is not encrypted (http): allowed because it is in a private network.", out)
         self.assertEqual(hsheartbeat.parse_conf(self.text()), {"adapter": "uptime-kuma", "url": KUMA})
@@ -344,16 +344,16 @@ class Heartbeat(Base):
         ss = lambda argv, limit=60, max_output=0: hsproc.Result(0, "")  # noqa: E731
         code, out, _ = call(hs.do_show, [], self.conf, self.token, self.state, ss)
         self.assertEqual(code, 0)
-        self.assertNotIn(KUMA_SECRET, out)
+        self.assertNotIn(KUMA_ID, out)
         view = json.loads(out)["heartbeat"]
         self.assertEqual({k: view[k] for k in ("configured", "invalid", "adapter", "encrypted", "local", "test")},
                          {"configured": True, "invalid": False, "adapter": "uptime-kuma", "encrypted": False, "local": False,
                           "test": None})
         self.assertEqual(view["last"]["signal"], "success")
         with open(self.heartbeat, "w", encoding="utf-8") as f:
-            f.write("adapter = uptime-kuma\nurl = http://kuma.example.net/api/push/" + KUMA_SECRET + "\n")
+            f.write("adapter = uptime-kuma\nurl = http://kuma.example.net/api/push/" + KUMA_ID + "\n")
         out = call(hs.do_show, [], self.conf, self.token, self.state, ss)[1]
-        self.assertNotIn(KUMA_SECRET, out)
+        self.assertNotIn(KUMA_ID, out)
         self.assertEqual({k: json.loads(out)["heartbeat"][k] for k in ("configured", "invalid", "adapter")},
                          {"configured": False, "invalid": True, "adapter": None})
 

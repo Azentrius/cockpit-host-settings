@@ -443,7 +443,7 @@ t("the profile's texts stay text, and its bad lines are named", async () => {
 });
 
 // The watchdog part of `show` (host-settings.py, heartbeat_view): never the address.
-const SECRET = "Xq3vT8pLmN2bR7sK";
+const PUSH_ID = "pushpushpushpush";
 function beatView(extra) {
     return Object.assign({ configured: true, invalid: false, adapter: "uptime-kuma", encrypted: false, local: false,
                            last: { at: "2026-10-19T19:00:01Z", adapter: "uptime-kuma", signal: "success", why: null,
@@ -462,20 +462,20 @@ t("the watchdog, not set up: what it is, a dialog with a password field, the add
     const field = d.getElementById("hs-f-url");
     assert.strictEqual(field.getAttribute("type"), "password");
     assert.strictEqual(d.getElementById("hs-f-adapter").value, "healthchecks");
-    field.value = "ftp://kuma.example.net/api/push/" + SECRET;
+    field.value = "ftp://kuma.example.net/api/push/" + PUSH_ID;
     click(page, "hs-dialog-confirm");
     await settle();
     assert.deepStrictEqual(changes(page), []);
     assert.ok(text(d.getElementById("hs-dialog-error")).includes("Enter the address as https://host/path"));
     d.getElementById("hs-f-adapter").value = "uptime-kuma";
-    field.value = "http://10.8.0.2:3001/api/push/" + SECRET + "?status=up&msg=OK&ping=";
+    field.value = "http://10.8.0.2:3001/api/push/" + PUSH_ID + "?status=up&msg=OK&ping=";
     click(page, "hs-dialog-confirm");
     await settle();
     assert.deepStrictEqual(changes(page), [["heartbeat", "set", "uptime-kuma"]]);
-    assert.deepStrictEqual(page.calls.inputs, ["http://10.8.0.2:3001/api/push/" + SECRET + "?status=up&msg=OK&ping=\n"]);
-    assert.ok(!JSON.stringify(page.calls.spawn).includes(SECRET), "never in an argument");
+    assert.deepStrictEqual(page.calls.inputs, ["http://10.8.0.2:3001/api/push/" + PUSH_ID + "?status=up&msg=OK&ping=\n"]);
+    assert.ok(!JSON.stringify(page.calls.spawn).includes(PUSH_ID), "never in an argument");
     assert.strictEqual(field.value, "", "cleared once sent");
-    assert.ok(!d.body.textContent.includes(SECRET));
+    assert.ok(!d.body.textContent.includes(PUSH_ID));
 });
 
 t("the watchdog, set up: service, stored address, last signal, test and remove", async () => {
@@ -492,7 +492,7 @@ t("the watchdog, set up: service, stored address, last signal, test and remove",
      "heartbeat interval 720 seconds and retries 0", "period 5 minutes and grace 7 minutes", "pause the check at the watchdog first"]
         .forEach((x) => assert.ok(all.includes(x), x + " in: " + all));
     assert.strictEqual(card.querySelector(".az-card__header .az-label").dataset.state, "ok");
-    assert.ok(!all.includes(SECRET));
+    assert.ok(!all.includes(PUSH_ID));
     click(page, "hs-beat-test");
     assert.ok(text(d.getElementById("hs-dialog-desc")).includes("status=up"));
     click(page, "hs-dialog-confirm");

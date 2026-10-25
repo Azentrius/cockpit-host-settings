@@ -7,7 +7,7 @@ protocols Host Settings knows, on 127.0.0.1:
                  200 "OK (not found)" (404 for /log), as Healthchecks does
   Uptime Kuma    /api/push/ID?status=up|down&msg=...; an unknown ID is answered 404
                  {"ok": false, "msg": "Monitor not found or not active."}
-  /redirect/...  302 to the same path without /redirect: whoever follows it reaches a real check
+  /redirect/ping/ID  302 to /ping/ID: whoever follows it reaches a real check
   /_status       what the stand-in saw, as JSON (also in DIR/status.json)
 
   watchdog.py PORT DIR PERIOD
@@ -96,8 +96,10 @@ def main(argv):
                     f.write(f"{time.strftime('%H:%M:%S')} {self.command} /{shown}\n")
                 if parts[:1] == ["_status"]:
                     return self.answer(200, json.dumps(save()))
-                if parts[:1] == ["redirect"]:
-                    return self.answer(302, "", "/" + "/".join(parts[1:]))
+                if parts[:2] == ["redirect", "ping"] and len(parts) == 3:
+                    # To the check itself, named from the stand-in's own list, never from the request.
+                    known = next((i for i in checks if i == parts[2]), None)
+                    return self.answer(302, "", "/ping/" + known) if known else self.answer(404, "not found")
                 if len(parts) in (2, 3) and parts[0] == "ping":
                     kind = {2: "success"}.get(len(parts)) or {"fail": "failure", "log": "log"}.get(parts[2])
                     if parts[1] not in checks:

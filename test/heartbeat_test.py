@@ -33,10 +33,10 @@ import hsproc  # noqa: E402
 from notify_test import Runner, Smtp  # noqa: E402
 from run_test import CRON, GAPS, NOW, Host, notify  # noqa: E402
 
-HC = "https://hc.example.net/ping/2f9a2c51-7a1b-4c0e-9d2e-5b8d3c1a9e77"
-KUMA = "http://10.8.0.2:3001/api/push/Xq3vT8pLmN2bR7sK"
-SECRET_HC = "2f9a2c51-7a1b-4c0e-9d2e-5b8d3c1a9e77"
-SECRET_KUMA = "Xq3vT8pLmN2bR7sK"
+HC = "https://hc.example.net/ping/11111111-2222-4333-8444-555555555555"
+KUMA = "http://10.8.0.2:3001/api/push/pushpushpushpush"
+HC_ID = "11111111-2222-4333-8444-555555555555"
+KUMA_ID = "pushpushpushpush"
 
 
 class Normalize(unittest.TestCase):
@@ -44,7 +44,7 @@ class Normalize(unittest.TestCase):
         good = [
             ("healthchecks", HC, HC),
             ("healthchecks", HC + "/", HC),
-            ("healthchecks", "https://hc-ping.com/2f9a2c51-7a1b-4c0e-9d2e-5b8d3c1a9e77", "https://hc-ping.com/2f9a2c51-7a1b-4c0e-9d2e-5b8d3c1a9e77"),
+            ("healthchecks", "https://hc-ping.com/11111111-2222-4333-8444-555555555555", "https://hc-ping.com/11111111-2222-4333-8444-555555555555"),
             ("healthchecks", "https://hc-ping.com/pingkeyAbC123/backup-db", "https://hc-ping.com/pingkeyAbC123/backup-db"),
             ("healthchecks", "http://192.168.1.20:8000/ping/abc", "http://192.168.1.20:8000/ping/abc"),
             # Uptime Kuma's page shows the push URL with this query: taken, and dropped.
@@ -563,7 +563,7 @@ class Runs(unittest.TestCase):
         self.assertEqual(none.dog.calls, [])
 
     def test_the_secret_stays_in_its_own_file(self):
-        for adapter, url, secret in (("healthchecks", HC, SECRET_HC), ("uptime-kuma", KUMA, SECRET_KUMA)):
+        for adapter, url, secret in (("healthchecks", HC, HC_ID), ("uptime-kuma", KUMA, KUMA_ID)):
             with self.subTest(adapter):
                 host = self.host(adapter, url, answers=["network"])
                 outputs = []
