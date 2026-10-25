@@ -130,7 +130,8 @@ out on any channel is sent again on the next run.
 
 - Cockpit 264 or newer, Python 3.8 or newer, systemd 247 or newer (`LoadCredential=`), `ss`
   (iproute2).
-- For e-mail: a mail server listening on `localhost:25`.
+- For e-mail: a mail server listening on `localhost:25`. The RHEL rebuilds do not install one as
+  they come: `sudo dnf install postfix && sudo systemctl enable --now postfix` delivers locally.
 - For ntfy: an ntfy server the server can reach. With `auth-default-access: deny-all` on that
   server and a token for this server's user, nobody else can read or send to its topic.
 
@@ -141,7 +142,8 @@ system by itself.
 
 | | Systems | What is checked |
 |---|---|---|
-| **Tested** | Ubuntu 24.04 (GitHub runner) with systemd, ntfy 2.32 in Docker and postfix | the package with its real units (job `e2e`): the page's commands on the ntfy server as shown, "Check connection" against a topic closed without a login and an open one, the first run's summary through ntfy and e-mail, a change told once, a run without a change silent, the status as `nobody`, switching off, the token in no file but its own and in no log, removing the package |
+| **Tested** | Ubuntu 24.04 (GitHub runner) with systemd, ntfy 2.32 in Docker and postfix | the package with its real units, listed by Cockpit (job `e2e`): the page's commands on the ntfy server as shown, "Check connection" against a topic closed without a login and an open one, the first run's summary through ntfy and e-mail, a change told once, a run without a change silent, the status as `nobody`, switching off, the token in no file but its own and in no log, removing the package |
+| **Tested** | Rocky Linux 9.8 and 10.2 (for RHEL 9 and 10) in a VM with SELinux enforcing, ntfy 2.32 in Podman and postfix | the same as job `e2e`, with the `.rpm` and the distribution's Cockpit, and no SELinux denial from before the install to after the removal (job `e2e-el`, `tools/vm.sh`) |
 | **Tested** | Python 3.8 and 3.12 | the notifier, the helper and the status against Status Board's own test answers (job `python-min` and `make check`) |
 | **Checked** | four Ubuntu servers (24.04 and 26.04) | the status verbs of Cron Jobs, Image Update Monitor, Update Gaps and Security Monitor answer as an unprivileged user without network |
 | **Package installs** | Debian 13 (`.deb`), Fedora 43 (`.rpm`) (job `test`); Rocky Linux and AlmaLinux 9 and 10 (`.rpm`, for RHEL 9 and 10; job `install`) | the package installs with the distribution's own dependencies, creates its user, runs the notifier as that user, answers the status as `nobody` and removes cleanly. No Cockpit or systemd runs there. |
@@ -149,12 +151,33 @@ system by itself.
 
 ## Install, update, uninstall
 
-The Azentrius package repository ([packages.azentrius.com](https://packages.azentrius.com)) does
-not carry Host Settings yet; it will later, and then updates come with the system's updates. Until
-then, install it from the files of a
-[release](https://github.com/Azentrius/cockpit-host-settings/releases): download the package for
-your system and `SHA256SUMS`, check that the download is complete and that this repository's
-release workflow built it, then install it:
+Install it on every server that should send messages.
+
+**From the Azentrius package repository** (Debian, Ubuntu, Fedora, RHEL). Set up
+[packages.azentrius.com](https://packages.azentrius.com) once:
+
+```bash
+# Debian and Ubuntu
+curl -fsSLO https://packages.azentrius.com/azentrius-repository.deb
+sudo apt install ./azentrius-repository.deb
+sudo apt update
+
+# Fedora and RHEL
+sudo rpm --import https://packages.azentrius.com/azentrius.asc
+sudo dnf install https://packages.azentrius.com/azentrius-repository.rpm
+```
+
+Then install **Host Settings** in Cockpit under **Applications** (with administrative access), or
+on the console with `sudo apt install cockpit-host-settings` or
+`sudo dnf install cockpit-host-settings`. The system's updates keep it current. The repository
+takes a package only after checking that this repository's release workflow built it, and signs
+it. Which systems are tested how: [Supported systems](#supported-systems).
+
+**From the files of a release.** Every
+[release](https://github.com/Azentrius/cockpit-host-settings/releases) has the `.deb` and the
+`.rpm`, `SHA256SUMS` and a signed build provenance. Download the package for your system and
+`SHA256SUMS`, check that the download is complete and that this repository's release workflow
+built it, then install it:
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS
@@ -162,13 +185,16 @@ gh attestation verify cockpit-host-settings_X.Y.Z-1_all.deb --repo Azentrius/coc
 sudo apt install ./cockpit-host-settings_X.Y.Z-1_all.deb    # or: sudo dnf install ./cockpit-host-settings-X.Y.Z-1.noarch.rpm
 ```
 
-Or build the packages yourself with `make packages` (needs dpkg-deb and rpmbuild) and install the
-one for your system from `dist/`.
+To update, install the package of a newer release the same way.
 
-Install it on every server that should send messages. To update, install the package of a newer
-release the same way. The package creates the user `cockpit-host-settings`, an
-empty token file and the state folder; the regular check stays off until it is set up on the
-page. Removing the package removes its state and keeps the settings, the token and the user.
+**From the source.** Build the packages yourself with `make packages` (needs dpkg-deb and rpmbuild)
+and install the one for your system from `dist/`.
+
+The package creates the user `cockpit-host-settings`, an empty token file and the state folder;
+the regular check stays off until it is set up on the page.
+
+**Uninstall:** `sudo apt remove cockpit-host-settings` or `sudo dnf remove cockpit-host-settings`.
+Removing the package removes its state and keeps the settings, the token and the user.
 
 ## Setting up
 
@@ -233,7 +259,7 @@ The screenshots in `docs/img` come from the CI artifact `screenshots` of the tes
    and the source archive `cockpit-host-settings-X.Y.Z.tar.gz` with `SHA256SUMS` and a signed build
    provenance, and creates the tag `vX.Y.Z` with a release whose notes come from `CHANGELOG.md`.
 4. packages.azentrius.com takes the packages from the release within an hour
-   ([Azentrius/packages](https://github.com/Azentrius/packages)), once Host Settings is listed there.
+   ([Azentrius/packages](https://github.com/Azentrius/packages)); it leaves pre-releases out.
 
 ## Known limits
 
