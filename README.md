@@ -237,18 +237,18 @@ Removing the package removes its state and keeps the settings, the token and the
 
    | Server | Role | Expected |
    |---|---|---|
-   | public-host | `web` | Host Settings, Update Gaps, Security Monitor, Cron Jobs, Image Update Monitor |
-   | claw-host | `web` | the same |
-   | vpn-host | `bastion` | Host Settings, Update Gaps, Security Monitor, Cron Jobs |
-   | build-host | `build` | the same |
+   | web1 | `web` | Host Settings, Update Gaps, Security Monitor, Cron Jobs, Image Update Monitor |
+   | web2 | `web` | the same |
+   | bastion | `bastion` | Host Settings, Update Gaps, Security Monitor, Cron Jobs |
+   | ci1 | `build` | the same |
 
    The same on the console, with administrative access (each change keeps the file as it was in
    `profile.conf.bak`):
 
    ```bash
-   sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles web       # public-host, claw-host
-   sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles bastion   # vpn-host
-   sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles build     # build-host
+   sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles web       # web1, web2
+   sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles bastion   # bastion
+   sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles build     # ci1
    # more than the roles expect: an add-on, or one check of an add-on
    sudo /usr/lib/cockpit-host-settings/host-settings.py profile expect add security/exposure
    # a check left out on purpose (always add-on/check, never an add-on alone), until a day if
