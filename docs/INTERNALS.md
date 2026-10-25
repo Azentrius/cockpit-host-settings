@@ -217,7 +217,8 @@ ntfy is set up when both `ntfy_url` and `ntfy_topic` are there, e-mail when `mai
    of changes and takes them as told. Where an item lists findings, the summary names its open
    findings instead of the item; accepted findings are taken as accepted and not named. With a
    target profile, the summary names the expected add-ons and checks that cannot be checked as
-   well, and takes them as told.
+   well (an add-on whose status cannot be read only once, as "Status not readable"), and takes
+   them as told.
 6. **Send** one message for all changes of the run, to every channel set up. Only when at least
    one channel took it, the new `sent` is kept (and `baseline_at` set); otherwise the same
    changes are sent again on the next run.

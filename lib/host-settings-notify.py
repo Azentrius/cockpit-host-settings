@@ -196,11 +196,14 @@ def do_run(env):
         summary = not last.get("baseline_at")
         if summary:
             # The first message names the gaps in what the profile expects with the problems, and
-            # takes them as told.
+            # takes them as told; an add-on whose status cannot be read is named once.
+            problems = hsnotify.problems_of(snapshot)
+            unreadable = {e["pkg"] for e in problems if not e["id"]}
             gaps, told_gaps = hsnotify.coverage_changes({}, coverage, now)
+            gaps = [g for g in gaps if g["check"] or g["pkg"] not in unreadable]
             msg = hsnotify.message(lang, env.host, snapshot=snapshot, summary=True, gaps=gaps)
             new_sent = dict(hsnotify.baseline(snapshot, now), **told_gaps)
-            count = len(hsnotify.problems_of(snapshot)) + len(gaps)
+            count = len(problems) + len(gaps)
         else:
             # A profile set up since the last run: its gaps are changes from OK, told once.
             events, new_sent = hsnotify.changes(sent, snapshot, now, coverage)

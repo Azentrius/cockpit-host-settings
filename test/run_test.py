@@ -285,6 +285,16 @@ class WithProfile(unittest.TestCase):
         self.run_with(host)
         self.assertEqual(len(host.posts()), 1, "nothing repeats")
 
+    def test_the_first_summary_names_an_unreadable_addon_once(self):
+        host = self.host()
+        e = host.env(profile=host.profile, runner=Runner({CRON: hsproc.Result(1, "", "boom"), GAPS: host.answer("update-gaps")}))
+        notify.main(["run"], e)
+        body = host.posts()[0]["message"]
+        self.assertIn("Warning · Cronjobs · Status not readable", body)
+        self.assertNotIn("Check no longer possible · Cronjobs", body)
+        self.assertIn("Check no longer possible · Security Monitor", body)
+        self.assertEqual(host.file("last.json")["sent"]["cronjobs@"]["level"], "lost", "remembered all the same")
+
     def test_a_profile_set_up_later_states_the_gaps_once_then_changes(self):
         host = self.host(profile=None)
         self.run_with(host)
