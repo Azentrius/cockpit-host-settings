@@ -339,6 +339,115 @@ class OptionalParts(unittest.TestCase):
                                     len(x) <= hslib.LIMITS["detail"], (name, x))
 
 
+# The board's tests "complete" (test/status.test.js): the shared answers ext-complete-*.json, each
+# the Security Monitor's check "exposure", checked and in time at NOW, and its item. A and B are the
+# two findings ext-good-security.json lists completely, so each answer can follow that one. Only a
+# complete list says that a finding missing from it is gone.
+FID_A, FID_B = "port.5432-tcp", "port.6379-tcp"
+COMPLETE = {
+    # counts one, lists none: A and B stay as they were
+    "ext-complete-total-1-empty.json": dict(complete=False, total=1, fids=[], dropped=0),
+    # counts two, lists A: B stays as it was
+    "ext-complete-total-2-one.json": dict(complete=False, total=2, fids=[FID_A], dropped=0),
+    # counts none, lists none, its check checked and in time: A and B are gone
+    "ext-complete-total-0-checked.json": dict(complete=True, total=0, fids=[], dropped=0),
+    # no total: as before, the length of the list
+    "ext-complete-no-total.json": dict(complete=True, total=2, fids=[FID_A, FID_B], dropped=0),
+    # B breaks the rules, a duplicate of A, B past the limit of 100: never complete
+    "ext-complete-invalid-entry.json": dict(complete=False, total=1, fids=[FID_A], dropped=1),
+    "ext-complete-duplicate-fid.json": dict(complete=False, total=1, fids=[FID_A], dropped=1),
+    "ext-complete-over-100.json": dict(complete=False, total=100, fids=None, dropped=1),
+}
+
+
+class Complete(unittest.TestCase):
+    def raw(self, name):
+        return json.loads(board("status/" + name))
+
+    def findings_of(self, doc):
+        return hslib.validate_status(json.dumps(doc), "security")[1]["items"][0]["findings"]
+
+    def test_every_shared_fixture_has_its_expectation(self):
+        self.assertEqual(sorted(f for f in os.listdir(os.path.join(BOARD, "status")) if f.startswith("ext-complete-")),
+                         sorted(COMPLETE))
+
+    def test_each_shared_fixture(self):
+        for name, want in sorted(COMPLETE.items()):
+            with self.subTest(name):
+                st = ext(name)
+                f = st["items"][0]["findings"]
+                self.assertEqual([f["complete"], f["total"], st["ext_dropped"]], [want["complete"], want["total"], want["dropped"]])
+                if want["fids"] is not None:
+                    self.assertEqual([x["fid"] for x in f["list"]], want["fids"])
+                self.assertEqual([[c["id"], c["state"], c["item"]] for c in st["checks"]], [["exposure", "checked", "exposure"]])
+                self.assertEqual(hslib.checks_coverage(st, NOW)["coverage"], "checked", "the check is in time: only the list decides")
+                self.assertIs(self.raw(name)["items"][0]["findings"]["complete"], True, "every one of them says complete")
+
+    def test_past_the_limit_of_100_the_rest_is_left_out_b_with_it(self):
+        f = ext("ext-complete-over-100.json")["items"][0]["findings"]
+        self.assertEqual([len(f["list"]), f["list"][0]["fid"], any(x["fid"] == FID_B for x in f["list"])],
+                         [hslib.MAX_FINDINGS, FID_A, False])
+        sent = self.raw("ext-complete-over-100.json")["items"][0]["findings"]["list"]
+        self.assertEqual([len(sent), sent[-1]["fid"]], [hslib.MAX_FINDINGS + 1, FID_B])
+
+    def test_each_fixture_is_complete_without_the_one_thing_it_tests(self):
+        def fix(name, change):
+            doc = self.raw(name)
+            change(doc["items"][0]["findings"], doc)
+            return self.findings_of(doc)
+        self.assertEqual(fix("ext-complete-total-1-empty.json", lambda f, d: f.pop("total")),
+                         {"complete": True, "total": 0, "list": []})
+        self.assertTrue(fix("ext-complete-total-2-one.json", lambda f, d: f.update(total=1))["complete"])
+        for name in ("ext-complete-invalid-entry.json", "ext-complete-duplicate-fid.json", "ext-complete-over-100.json"):
+            self.assertTrue(fix(name, lambda f, d: f["list"].pop())["complete"], name)
+        self.assertTrue(fix("ext-complete-no-total.json", lambda f, d: f.update(total=2))["complete"], "a total that agrees")
+        # and the rules that were there before still hold
+        self.assertFalse(fix("ext-complete-total-0-checked.json", lambda f, d: d["checks"][0].update(state="partial"))["complete"],
+                         "a check done in part")
+        self.assertFalse(fix("ext-complete-total-0-checked.json", lambda f, d: d["checks"][0].update(item="elsewhere"))["complete"],
+                         "no check that owns the item")
+        self.assertFalse(fix("ext-complete-total-0-checked.json", lambda f, d: f.update(complete=False))["complete"],
+                         "the add-on does not say so")
+
+    def test_a_whole_number_total_past_the_findings_taken_over_whatever_its_size(self):
+        def with_total(total):
+            doc = self.raw("ext-complete-no-total.json")
+            doc["items"][0]["findings"]["total"] = total
+            f = self.findings_of(doc)
+            return [f["complete"], f["total"], len(f["list"])]
+        self.assertEqual(with_total(3), [False, 3, 2])
+        self.assertEqual(with_total(hslib.MAX_TOTAL), [False, hslib.MAX_TOTAL, 2])
+        self.assertEqual(with_total(hslib.MAX_TOTAL + 1), [False, 2, 2],
+                         "past the limit the total is not kept, and the list still is not complete")
+        # a total that is no whole number is left out, as before: the length of the list
+        for odd in ("3", -1, 2.5, None, True, [3], {"n": 3}):
+            self.assertEqual(with_total(odd), [True, 2, 2], odd)
+        self.assertEqual(with_total(1), [True, 2, 2], "fewer than listed: the length of the list")
+        self.assertEqual(with_total(0), [True, 2, 2])
+        # JSON has no integers of its own: 3.0 is the whole number 3 (JavaScript reads it as 3)
+        text = board("status/ext-complete-no-total.json").replace('"complete": true,', '"complete": true, "total": 3.0,')
+        self.assertIn('"total": 3.0,', text)
+        f = hslib.validate_status(text, "security")[1]["items"][0]["findings"]
+        self.assertEqual([f["complete"], f["total"]], [False, 3])
+
+    def test_through_the_notifier(self):
+        # A and B open after ext-good-security.json, then each shared answer: only a complete list
+        # resolves what it leaves out
+        def read(name, now):
+            return hsnotify.read_addon("security", None, ("command", SEC), "en", now, Runner({SEC: ok(board("status/" + name))}),
+                                       lstat_of({SEC: (0o755, 0)}))
+        for name, want in sorted(COMPLETE.items()):
+            with self.subTest(name):
+                events, sent = hsnotify.changes({}, {"security": read("ext-good-security.json", NOW)}, NOW)
+                self.assertEqual([(e["fid"], e["kind"]) for e in events], [(FID_A, "worse"), (FID_B, "worse")])
+                events, sent = hsnotify.changes(sent, {"security": read(name, NOW + 60)}, NOW + 60)
+                gone = sorted({FID_A, FID_B} - set(want["fids"])) if want["complete"] else []
+                self.assertEqual(sorted(e["fid"] for e in events if e["kind"] == "resolved"), gone)
+                self.assertEqual([e for e in events if e["kind"] != "resolved"], [])
+                for fid in (FID_A, FID_B):
+                    self.assertEqual(sent["security#exposure/" + fid]["status"], "resolved" if fid in gone else "open", fid)
+
+
 # ---------------------------------------------------------------------------
 # Reading the add-ons
 

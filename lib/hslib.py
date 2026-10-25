@@ -318,6 +318,10 @@ def validate_extension(data, status, raws):
             if not check or check["state"] != "checked":
                 complete = False
             total = raw.get("total")
+            # the answer itself counts findings that are not in the list ("complete": true,
+            # "total": 1, "list": []); so does a total past MAX_TOTAL, which is not kept
+            if _is_int(total) and total > len(found):
+                complete = False
             total = int(total) if _is_int(total) and len(found) <= total <= MAX_TOTAL else len(found)
             item["findings"] = {"complete": complete, "total": total, "list": found}
     profile = None

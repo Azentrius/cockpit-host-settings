@@ -191,9 +191,10 @@ ntfy is set up when both `ntfy_url` and `ntfy_topic` are there, e-mail when `mai
    itself a warning. The optional parts of the contract are read as the board's
    `validateExtension()` reads them, and only those the add-on names in `features`: `checks` (at
    most 50), each item's `findings` (at most 100 over the answer, each `fid` once; a list is
-   complete only when the add-on says so, nothing was left out of it and a check of state
-   `checked` names the item), an acceptance (`accepted_until`) only up to 90 days after the
-   check, and `profile` only from `host-settings`. What breaks their rules is left out and
+   complete only when the add-on says so, nothing was left out of it, a check of state
+   `checked` names the item and a whole-number `total` counts no more findings than it holds),
+   an acceptance (`accepted_until`) only up to 90 days after the check, and `profile` only from
+   `host-settings`. What breaks their rules is left out and
    counted, never makes the answer unreadable. An item is never better than its open findings:
    those not accepted, or whose acceptance has ended (the board's `itemState()`).
 4. **Compare** with what was told last (`sent` in `last.json`), per key: `PKG#` for the add-on
@@ -250,7 +251,7 @@ another order changes nothing. Each finding's entry has a status:
 | `accepted_until` in the future | accepted | none |
 | acceptance ended, the finding still there | open | `expired` ("acceptance ended") |
 | missing, the list is complete, the check that names the item and the item are in time, the answer left no items out | resolved | `resolved` ("no longer found by a complete check"); none for an accepted one |
-| missing, anything else (a check `partial` or `failed`, a list the add-on calls incomplete, a finding left out of it, out of date, items left out, status unreadable, exit 77) | as it was (unconfirmed) | none |
+| missing, anything else (a check `partial` or `failed`, a list the add-on calls incomplete, a finding left out of it, a `total` the list does not reach, out of date, items left out, status unreadable, exit 77) | as it was (unconfirmed) | none |
 | resolved before, here again | open | `again` |
 
 Resolved findings are kept for 30 days, so that one coming back is told as `again`; after that it
@@ -474,7 +475,8 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
 ## Tests
 
 - `test/notify_test.py`: every answer in `test/fixtures/board/status` with the expectations of the
-  board's own `test/status.test.js` and the board's tests of the optional parts, its manifests;
+  board's own `test/status.test.js` and the board's tests of the optional parts and of a complete
+  list (the shared answers `ext-complete-*.json`), its manifests;
   reading an add-on (trust, exit codes); changes, flapping, unreadable add-ons, removed ones;
   findings as sequences of answers (a second finding while the item is a danger, the same answer
   in the other language or order, lists that cannot say a finding is gone, resolved, again,
