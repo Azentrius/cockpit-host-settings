@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "addon": "cronjobs",
+  "label": "Cron Jobs",
+  "checked_at": "2026-10-19T18:50:00Z",
+  "state": "warning",
+  "features": [
+    "checks",
+    "findings",
+    "profile"
+  ],
+  "checks": {"exposure": {"state": "checked"}},
+  "profile": {"roles": ["web"]},
+  "items": [
+    {"id": "x", "state": "ok", "title": "X", "findings": "all"},
+    {"id": "y", "state": "warning", "title": "Y", "value": "1", "findings": {"complete": "yes", "list": []}},
+    {"id": "z", "state": "ok", "title": "Z", "findings": {"complete": true, "list": {"a": 1}}}
+  ]
+}

@@ -8,8 +8,9 @@ arguments, so the tests can stand in for all of them.
 
   discover()    the add-ons with a status entry in /usr/share/cockpit/*/manifest.json
   collect()     their status verbs (`COMMAND status --lang xx`), judged as Status Board does
-  changes()     what changed since the last message, per item (add-on and id), with an hour
-                against flapping
+  changes()     what changed since the last message: per item (add-on and id), and per finding
+                (add-on, item and fid) for an item that lists its findings, with an hour against
+                flapping
   message()     the text of a message: only what the add-ons said, their labels and this
                 host's name
   send_ntfy(), send_mail()   the two channels
@@ -35,8 +36,10 @@ import hslib
 import hsproc
 
 ADDON = "host-settings"            # this add-on's own folder: never read by itself
-FORMAT = 1
-FLAP = 3600                        # the same change of the same item again only after an hour
+FORMAT = 1                         # of last.json; another one starts the memory anew (and a summary)
+FLAP = 3600                        # the same change of the same key again only after an hour
+KEEP = 30 * 86400                  # a resolved finding is remembered this long, to tell "again"
+MAX_KEYS = 2000                    # keys in the memory (sent) at most
 CHECK_EVERY = 86400                # the topic's protection without a login: read once a day
 VERB_LIMIT = 10                    # seconds per status verb (the contract asks for 2 at most)
 HTTP_TIMEOUT = 20
@@ -58,8 +61,9 @@ T = {
         "title.test": "{host}: test message",
         "title.probe": "{host}: this topic is open",
         "head.worse": "{state}", "head.better": "{state} instead of {before}", "head.resolved": "OK again",
+        "head.again": "{state}, again", "head.expired": "{state}, acceptance ended",
         "head.unchecked": "No longer checked",
-        "why.gone": "no longer reported",
+        "why.gone": "no longer reported", "why.fixed": "no longer found by a complete check",
         "title.unchecked": "{host}: {label}, no longer checked",
         "unchecked.why": "the add-on is no longer installed",
         "unchecked.one": "the finding it reported can no longer be checked",
@@ -96,8 +100,9 @@ T = {
         "title.test": "{host}: Testnachricht",
         "title.probe": "{host}: dieses Thema ist offen",
         "head.worse": "{state}", "head.better": "{state} statt {before}", "head.resolved": "Wieder in Ordnung",
+        "head.again": "{state}, wieder aufgetreten", "head.expired": "{state}, Akzeptanz abgelaufen",
         "head.unchecked": "Nicht mehr geprüft",
-        "why.gone": "wird nicht mehr gemeldet",
+        "why.gone": "wird nicht mehr gemeldet", "why.fixed": "bei einer vollständigen Prüfung nicht mehr gefunden",
         "title.unchecked": "{host}: {label}, nicht mehr geprüft",
         "unchecked.why": "das Add-on ist nicht mehr installiert",
         "unchecked.one": "der gemeldete Befund lässt sich nicht mehr prüfen",
@@ -212,7 +217,12 @@ def read_addon(pkg, label, entry, lang, now, run=hsproc.run, lstat=os.lstat):
     version, summary, items, dropped}. kind is "ok" for a valid answer, "noaccess" for exit 77
     (nothing can be judged, so it keeps what was told; Status Board shows it as a warning),
     else one of ERROR_KINDS (a warning). dropped counts
-    the items a valid answer had beyond the 50 that count, or that broke the rules."""
+    the items a valid answer had beyond the 50 that count, or that broke the rules.
+
+    An item's state is the one the board shows at the time now (never better than its open
+    findings, at least a warning when out of date); its findings are None, or {complete, total,
+    list} when the add-on declares the feature and the item lists them, each finding {fid,
+    state, title, accepted, link} with accepted judged at the time now."""
     out = {"label": label or pkg, "kind": "ok", "reason": None, "code": None, "state": "none",
            "version": None, "summary": None, "items": [], "dropped": 0}
 
@@ -245,11 +255,27 @@ def read_addon(pkg, label, entry, lang, now, run=hsproc.run, lstat=os.lstat):
     if not good:
         return fail("invalid", status[0])
     ev = hslib.evaluate(status, now)
+    # The check that shows each item's result (the board's rule for complete lists), and whether
+    # it is in time: a check out of date says nothing about a finding missing from the list.
+    owner = {c["item"]: c for c in (status["checks"] or []) if c["item"] is not None}
     out.update(label=status["label"] or out["label"], state=ev["state"], version=status["version"],
                summary=status["summary"], dropped=status["dropped"],
                items=[{"id": i["id"], "title": i["title"], "state": i["state"], "value": i["value"],
-                       "detail": i["detail"], "link": i["link"], "stale_at": i["stale_at"]} for i in ev["items"]])
+                       "detail": i["detail"], "link": i["link"], "stale_at": i["stale_at"],
+                       "findings": _findings_of(i["findings"], owner.get(i["id"]), now)} for i in ev["items"]])
     return out
+
+
+def _findings_of(found, check, now):
+    """An item's findings as the notifier keeps them: complete as the board judges it, fresh
+    while the check that shows them is in time, each finding accepted or not at the time now."""
+    if found is None:
+        return None
+    stale = check is not None and check["checked_at"] is not None and check["stale_after"] is not None and \
+        now > check["checked_at"] + check["stale_after"]
+    return {"complete": found["complete"], "fresh": not stale, "total": found["total"],
+            "list": [{"fid": f["fid"], "state": f["state"], "title": f["title"], "accepted": hslib.accepted(f, now),
+                      "link": f["link"]} for f in found["list"]]}
 
 
 def collect(lang, now, run=hsproc.run, root="/usr/share/cockpit", lstat=os.lstat):
@@ -259,38 +285,169 @@ def collect(lang, now, run=hsproc.run, root="/usr/share/cockpit", lstat=os.lstat
 
 # ---------------------------------------------------------------------------
 # What changed
+#
+# The memory of what was told (`sent` in last.json) is {key: entry}; a key that is not there
+# was OK:
+#   "PKG#"         the add-on itself (a warning while its status cannot be read)
+#   "PKG#ID"       an item; for an item that lists findings only what they do not explain
+#   "PKG#ID/FID"   a finding of an item that lists them
+# An entry is {level, at, last: {"FROM>TO": time}, label, title}. A finding's entry also has
+# status (open; accepted: told nothing while accepted; resolved: kept KEEP seconds to tell
+# "again") and item (its item's title); the entry of an item that lists findings has
+# findings: true. The keys of 0.1.0 are the first two kinds and are read as before.
+
+STATUSES = ("open", "accepted", "resolved")
+
+
+def _parts(key):
+    """(pkg, item id, fid) of a key; item id and fid are "" where the key has none. Package
+    names have no "#", item ids and fids no "/"."""
+    pkg, _, rest = key.partition("#")
+    iid, _, fid = rest.partition("/")
+    return pkg, iid, fid
+
+
+def _told(entry):
+    """The level a key was told at: warning or danger, else ok. An accepted or a resolved
+    finding is not told as a problem."""
+    if not isinstance(entry, dict) or entry.get("level") not in PROBLEM:
+        return "ok"
+    return entry["level"] if entry.get("status", "open") == "open" else "ok"
+
+
+def _known(entry):
+    """The level of a finding that is open or accepted: what explains its item's level."""
+    if not isinstance(entry, dict) or entry.get("level") not in PROBLEM:
+        return "ok"
+    return entry["level"] if entry.get("status", "open") in ("open", "accepted") else "ok"
+
+
+def _worst(levels):
+    return max(levels, key=hslib.rank, default="ok")
+
+
+def _level_of(thing):
+    """The level of an item or a finding; UNKNOWN while the add-on cannot judge it (none)."""
+    return UNKNOWN if thing["state"] == "none" else level(thing["state"])
+
+
+def _addon_level(a):
+    return "warning" if a["kind"] in ERROR_KINDS else UNKNOWN if a["kind"] == "noaccess" else "ok"
+
 
 def keys_of(snapshot):
-    """{key: (level, what)} of a snapshot. An add-on is "PKG#" (a warning while its status
-    cannot be read, UNKNOWN while nothing is readable without root), each of its items "PKG#ID"
-    (UNKNOWN while the add-on cannot judge it: state none)."""
+    """{key: (level, item, finding)} of a snapshot, as a first message tells it. An add-on is
+    "PKG#" (a warning while its status cannot be read, UNKNOWN while nothing is readable without
+    root), each of its items "PKG#ID" (UNKNOWN while the add-on cannot judge it: state none),
+    each finding of an item that lists them "PKG#ID/FID" (UNKNOWN for state none). Such an item
+    is only what its findings do not explain: OK while an open or accepted finding is at least
+    as severe."""
     cur = {}
     for pkg, a in snapshot.items():
-        lvl = "warning" if a["kind"] in ERROR_KINDS else UNKNOWN if a["kind"] == "noaccess" else "ok"
-        cur[pkg + "#"] = (lvl, None)
-        if a["kind"] == "ok":
-            for it in a["items"]:
-                cur[pkg + "#" + it["id"]] = (UNKNOWN if it["state"] == "none" else level(it["state"]), it)
+        cur[pkg + "#"] = (_addon_level(a), None, None)
+        if a["kind"] != "ok":
+            continue
+        for it in a["items"]:
+            key = pkg + "#" + it["id"]
+            new = _level_of(it)
+            if it.get("findings") is not None:
+                for f in it["findings"]["list"]:
+                    cur[key + "/" + f["fid"]] = (_level_of(f), it, f)
+                cover = _worst(x for x in (_level_of(f) for f in it["findings"]["list"]) if x in PROBLEM)
+                if new != UNKNOWN and hslib.rank(new) <= hslib.rank(cover):
+                    new = "ok"
+            cur[key] = (new, it, None)
     return cur
 
 
 def changes(sent, snapshot, now):
-    """(events, sent): what to tell, and the new memory of what was told. `sent` is
-    {key: {level, at, last: {"FROM>TO": time}}}; a key that is not there was OK. A change
-    that was told for the same key less than FLAP seconds ago waits (its key keeps the old
-    level), so a flapping item gives one message an hour at most.
+    """(events, sent): what to tell, and the new memory of what was told (above). A change that
+    was told for the same key less than FLAP seconds ago waits (its key keeps the old level),
+    so a flapping item or finding gives one message an hour at most.
 
     What cannot be checked is no reason for OK, so these keys keep what was told before: the
-    items of an add-on whose status cannot be read or that answers exit 77, an item the add-on
-    cannot judge (state none), and an item missing from an answer that left items out (more
-    than 50, or broken ones). An add-on that is no longer installed while it had told problems
-    gives one event "unchecked", and its keys are forgotten."""
-    cur = keys_of(snapshot)
+    items and findings of an add-on whose status cannot be read or that answers exit 77, an
+    item or a finding the add-on cannot judge (state none), an item missing from an answer
+    that left items out (more than 50, or broken ones), and a finding missing from a list that
+    cannot say it is gone (below). An add-on that is no longer installed while it had told
+    problems gives one event "unchecked", and its keys are forgotten.
+
+    An item that lists findings is compared finding by finding. A new finding at warning or
+    danger, or a higher state, is told as worse, danger to warning as better. An accepted
+    finding is told nothing and remembered as accepted; when its acceptance ends while it is
+    still there, that is told once ("expired"). A finding missing from the list is resolved
+    only when the list is complete (as the board judges it: the add-on says so and a check of
+    state "checked" names the item), that check and the item are in time and the answer left
+    no items out; otherwise it keeps what was told. A resolved finding that comes back within
+    KEEP seconds is told as "again". When an item that was compared per item (0.1.0 or an
+    add-on without findings) lists findings for the first time, those no more severe than what
+    was told for the item are taken as told, without a message. An item that lists no findings
+    (any more) is compared per item, from the most severe of the findings it told; once it is
+    OK, they are resolved with it."""
+    sent = sent if isinstance(sent, dict) else {}
     events, out, uninstalled = [], {}, {}
-    for key in sorted(set(cur) | set(sent)):
-        pkg = key.partition("#")[0]
+    told_findings = {}                 # (pkg, item id) -> {fid: entry}
+    for key, entry in sent.items():
+        pkg, iid, fid = _parts(key)
+        if fid and isinstance(entry, dict):
+            told_findings.setdefault((pkg, iid), {})[fid] = entry
+    present = {(pkg, it["id"]): it for pkg, a in snapshot.items() if a["kind"] == "ok" for it in a["items"]}
+    cover, fold = {}, {}
+
+    # 1. The findings of the items that list them.
+    for (pkg, iid), it in sorted(present.items()):
+        if it.get("findings") is None:
+            continue
+        told = told_findings.pop((pkg, iid), {})
+        item_key = pkg + "#" + iid
+        item_entry = sent.get(item_key) if isinstance(sent.get(item_key), dict) else {}
+        adopt = "ok" if told or item_entry.get("findings") else _told(item_entry)
+        found = it["findings"]
+        complete = found["complete"] and found.get("fresh", True) and it.get("stale_at") is None and \
+            not snapshot[pkg].get("dropped")
+        listed = {f["fid"]: f for f in found["list"]}
+        fids = sorted(set(listed) | set(told))
+        for fid in fids:
+            entry, event = _finding(item_key + "/" + fid, told.get(fid), listed.get(fid), complete, adopt,
+                                    snapshot[pkg], it, now)
+            if entry:
+                out[item_key + "/" + fid] = entry
+            if event:
+                events.append(event)
+        # What explains the item's level: the findings it lists (also one whose change waits for
+        # the hour against flapping) and those still remembered as open or accepted.
+        cover[(pkg, iid)] = _worst([_known(out.get(item_key + "/" + fid)) for fid in fids] +
+                                   [x for x in (_level_of(f) for f in found["list"]) if x in PROBLEM])
+
+    # 2. Findings told for an item that lists none now: kept as they are; an add-on that is gone
+    #    takes them along. Such an item, compared per item again, starts from the most severe.
+    for (pkg, iid), told in sorted(told_findings.items()):
+        if pkg not in snapshot:
+            for fid, entry in sorted(told.items()):
+                if _told(entry) in PROBLEM:
+                    uninstalled.setdefault(pkg, []).append((iid + "/" + fid, entry))
+            continue
+        for fid, entry in told.items():
+            out[pkg + "#" + iid + "/" + fid] = entry
+        if (pkg, iid) in present:
+            fold[(pkg, iid)] = _worst(_known(e) for e in told.values())
+
+    # 3. The add-ons and their items.
+    cur = {}
+    for pkg, a in snapshot.items():
+        cur[pkg + "#"] = (_addon_level(a), None)
+        if a["kind"] == "ok":
+            for it in a["items"]:
+                cur[pkg + "#" + it["id"]] = (_level_of(it), it)
+    for key in sorted(set(cur) | {k for k in sent if not _parts(k)[2]}):
+        pkg, iid, _ = _parts(key)
         old_entry = sent.get(key) if isinstance(sent.get(key), dict) else {}
-        old = old_entry.get("level") if old_entry.get("level") in PROBLEM else "ok"
+        old = _told(old_entry)
+        if hslib.rank(fold.get((pkg, iid), "ok")) > hslib.rank(old):
+            old = fold[(pkg, iid)]
+            old_entry = dict({"at": now, "last": {}, "label": snapshot[pkg]["label"],
+                              "title": present[(pkg, iid)]["title"]}, **old_entry)
+            old_entry["level"] = old
         why = None
         if key in cur:
             new, item = cur[key]
@@ -306,11 +463,16 @@ def changes(sent, snapshot, now):
             new, item, why = "ok", None, "gone"
         else:
             if old in PROBLEM:
-                uninstalled.setdefault(pkg, []).append((key.partition("#")[2], old_entry))
+                uninstalled.setdefault(pkg, []).append((iid, old_entry))
             continue
-        if old == new:
-            if old != "ok" or _recent(old_entry, now):
-                out[key] = old_entry
+        # What is kept: an item that lists findings keeps only what they do not explain.
+        store = new
+        if (pkg, iid) in cover and hslib.rank(new) <= hslib.rank(cover[(pkg, iid)]):
+            store = "ok"
+        if store == old or hslib.rank(store) < hslib.rank(old) <= hslib.rank(new):
+            # unchanged, or what was told for the item is explained by its findings now
+            if store in PROBLEM or _recent(old_entry, now):
+                out[key] = dict(old_entry, level=store)
             continue
         change = old + ">" + new
         last = old_entry.get("last") if isinstance(old_entry.get("last"), dict) else {}
@@ -318,15 +480,131 @@ def changes(sent, snapshot, now):
             if old_entry:
                 out[key] = old_entry
             continue
-        out[key] = {"level": new, "at": now, "last": dict(last, **{change: now})}
+        out[key] = {"level": store, "at": now, "last": dict(last, **{change: now})}
         events.append(_event(key, snapshot.get(pkg) or {}, item, old, new, why, old_entry))
         out[key]["label"] = events[-1]["label"]
         if events[-1]["title"]:
             out[key]["title"] = events[-1]["title"]
-    events.extend(_unchecked(pkg, entries) for pkg, entries in uninstalled.items())
-    order = {"worse": 0, "unchecked": 1, "better": 2, "resolved": 3}
+
+    # An item's entry says whether it was compared finding by finding.
+    for (pkg, iid) in present:
+        key = pkg + "#" + iid
+        if key in out and bool(out[key].get("findings")) != ((pkg, iid) in cover):
+            out[key] = dict(out[key], findings=True) if (pkg, iid) in cover else \
+                {k: v for k, v in out[key].items() if k != "findings"}
+
+    # An item compared per item that is OK now resolves the findings it told, without a message.
+    for (pkg, iid) in fold:
+        if _level_of(present[(pkg, iid)]) == "ok" and _told(out.get(pkg + "#" + iid)) == "ok":
+            prefix = pkg + "#" + iid + "/"
+            for key in [k for k in out if k.startswith(prefix) and out[k].get("status") in ("open", "accepted")]:
+                out[key] = dict(out[key], level="ok", status="resolved", at=now)
+
+    events.extend(_unchecked(pkg, entries) for pkg, entries in sorted(uninstalled.items()))
+    order = {"worse": 0, "again": 0, "expired": 0, "unchecked": 1, "better": 2, "resolved": 3}
     events.sort(key=lambda e: (order[e["kind"]], -hslib.rank(e["to"]), e["label"].lower(), e["key"]))
-    return events, out
+    return events, _prune(out, now)
+
+
+def _finding(key, told, f, complete, adopt, a, item, now):
+    """One finding of an item that lists findings: (its entry in the memory or None, its event or
+    None). told: its entry so far (None when never told); f: the finding in the answer (None
+    when it is missing from the list); complete: whether a missing finding is gone; adopt: what
+    was told for the item while it was compared per item (findings no more severe are taken as
+    told), else ok; a: the add-on; item: the item."""
+    told = told if isinstance(told, dict) and told.get("status") in STATUSES else {}
+    status = told.get("status")
+    old = told["level"] if status in ("open", "accepted") and told.get("level") in PROBLEM else "ok"
+    why = None
+    if f is not None:
+        lvl = _level_of(f)
+        if lvl == UNKNOWN:
+            return told or None, None
+        if lvl in PROBLEM and f["accepted"]:
+            if status == "accepted" and old == lvl:
+                return told, None
+            return _quiet(key, told, "accepted", lvl, now, a, item, f), None
+        if lvl in PROBLEM:
+            if status == "open" and old == lvl:
+                return told, None
+            if status == "open":
+                kind = "worse" if hslib.rank(lvl) > hslib.rank(old) else "better"
+            elif status == "accepted":
+                kind = "expired"
+            elif status == "resolved":
+                kind = "again"
+            elif hslib.rank(lvl) <= hslib.rank(adopt):
+                return _quiet(key, told, "open", lvl, now, a, item, f), None
+            else:
+                kind = "worse"
+            new_status, new = "open", lvl
+        elif status == "open":
+            # the add-on rates it OK (or a note) now
+            kind, new_status, new = "resolved", "resolved", "ok"
+        elif status == "accepted":
+            return _quiet(key, told, "resolved", "ok", now, a, item, f), None
+        else:
+            return told or None, None
+    elif complete and status == "open":
+        kind, new_status, new, why = "resolved", "resolved", "ok", "fixed"
+    elif complete and status == "accepted":
+        return _quiet(key, told, "resolved", "ok", now, a, item, None), None
+    else:
+        # resolved already, or missing from a list that cannot say it is gone: as it was
+        return told or None, None
+    change = ("accepted" if status == "accepted" else old) + ">" + new
+    last = told.get("last") if isinstance(told.get("last"), dict) else {}
+    if isinstance(last.get(change), (int, float)) and now - last[change] < FLAP:
+        return told or None, None
+    event = _fevent(key, a, item, f, told, kind, old, new, why)
+    entry = _quiet(key, told, new_status, new, now, a, item, f)
+    entry["last"] = dict(last, **{change: now})
+    return entry, event
+
+
+def _names(key, a, item, f, told):
+    """(label, title, item title) of a finding: from the answer, else from what was told."""
+    return (a.get("label") or told.get("label") or _parts(key)[0],
+            (f or {}).get("title") or told.get("title") or _parts(key)[2],
+            (item or {}).get("title") or told.get("item"))
+
+
+def _quiet(key, told, status, lvl, now, a, item, f):
+    """A finding's new entry in the memory (a change without a message keeps its `last`)."""
+    label, title, item_title = _names(key, a, item, f, told)
+    entry = {"level": lvl, "status": status, "at": now,
+             "last": told.get("last") if isinstance(told.get("last"), dict) else {}, "label": label, "title": title}
+    if item_title:
+        entry["item"] = item_title
+    return entry
+
+
+def _fevent(key, a, item, f, told, kind, old, new, why=None):
+    """One change of a finding (the item it belongs to, the finding or None when it is missing)."""
+    pkg, iid, fid = _parts(key)
+    label, title, item_title = _names(key, a, item, f, told or {})
+    return {
+        "key": key, "pkg": pkg, "id": iid, "fid": fid, "label": label, "title": title, "item": item_title,
+        "kind": kind, "from": old, "to": new, "state": f["state"] if f else new,
+        "value": None, "detail": None, "stale_at": (item or {}).get("stale_at"), "why": why,
+        "addon_kind": None, "reason": None, "code": None,
+    }
+
+
+def _prune(out, now):
+    """Resolved findings are forgotten after KEEP seconds, and at most MAX_KEYS keys stay: what
+    was told as a problem first, then accepted findings, then the rest (OK keys kept against
+    flapping, resolved findings), each the newest first."""
+    def at(e):
+        return e["at"] if isinstance(e.get("at"), (int, float)) else 0
+
+    kept = {k: e for k, e in out.items() if not (e.get("status") == "resolved" and now - at(e) >= KEEP)}
+    if len(kept) > MAX_KEYS:
+        def weight(kv):
+            k, e = kv
+            return (0 if _told(e) in PROBLEM else 1 if e.get("status") == "accepted" else 2, -at(e), k)
+        kept = dict(sorted(kept.items(), key=weight)[:MAX_KEYS])
+    return kept
 
 
 def _unchecked(pkg, told):
@@ -367,14 +645,19 @@ def _recent(entry, now):
 
 
 def baseline(snapshot, now):
-    """The memory after the first message (the summary): every problem as told."""
+    """The memory after the first message (the summary): every problem as told, an accepted
+    finding as accepted."""
     out = {}
-    for key, (lvl, item) in keys_of(snapshot).items():
+    for key, (lvl, item, f) in keys_of(snapshot).items():
         if lvl in PROBLEM:
-            pkg = key.partition("#")[0]
+            pkg = _parts(key)[0]
             out[key] = {"level": lvl, "at": now, "last": {}, "label": snapshot[pkg]["label"]}
-            if item:
+            if f:
+                out[key].update(status="accepted" if f["accepted"] else "open", title=f["title"], item=item["title"])
+            elif item:
                 out[key]["title"] = item["title"]
+                if item.get("findings") is not None:
+                    out[key]["findings"] = True
     return out
 
 
@@ -388,25 +671,38 @@ def _unreadable(lang, e):
     return t(lang, key, code=e.get("code")) if key in T["en"] else None
 
 
+def _head(lang, e):
+    """What happened: the state now (worse, again, expired), the state instead of the one before
+    (better), or OK again."""
+    if e["kind"] in ("worse", "again", "expired"):
+        return t(lang, "head." + e["kind"], state=t(lang, "state." + e["to"]))
+    if e["kind"] == "better":
+        return t(lang, "head.better", state=t(lang, "state." + e["to"]), before=t(lang, "state." + e["from"]))
+    return t(lang, "head.resolved")
+
+
 def _line(lang, e):
-    """One change as two lines: what and where, then the detail."""
+    """One change as two lines: what and where, then the detail. A finding: what happened, the
+    add-on and the finding, then its item (and why it is gone, or since when it is out of date)."""
     if e["kind"] == "unchecked":
         first = f"{t(lang, 'head.unchecked')} · {e['label']} · {t(lang, 'unchecked.why')}"
         n = e.get("open") or 0
         return first + ("\n" + t(lang, "unchecked.one" if n == 1 else "unchecked.other", n=n) if n else "")
     resolved = e["kind"] == "resolved"
+    head = _head(lang, e)
+    if e.get("fid"):
+        second = e["item"]
+        if resolved and e["why"]:
+            second = (second + ": " if second else "") + t(lang, "why." + e["why"])
+        elif not resolved and e["stale_at"]:
+            second = (second + "; " if second else "") + t(lang, "stale", when=when(lang, e["stale_at"]))
+        return f"{head} · {e['label']} · {e['title']}" + ("\n" + second if second else "")
     if e["id"]:
         title, detail = e["title"] or e["id"], e["detail"]
     elif resolved:
         title, detail = (t(lang, "unreadable") if e["why"] else t(lang, "readable")), None
     else:
         title, detail = t(lang, "unreadable"), _unreadable(lang, e)
-    if e["kind"] == "worse":
-        head = t(lang, "head.worse", state=t(lang, "state." + e["to"]))
-    elif e["kind"] == "better":
-        head = t(lang, "head.better", state=t(lang, "state." + e["to"]), before=t(lang, "state." + e["from"]))
-    else:
-        head = t(lang, "head.resolved")
     first = f"{head} · {e['label']} · {title}" + (f" ({e['value']})" if e["value"] and not resolved else "")
     if resolved:
         second = t(lang, "why." + e["why"]) if e["why"] else None
@@ -431,11 +727,14 @@ def _fit(lang, head, lines, tail):
 
 
 def problems_of(snapshot):
-    """The problems of a snapshot as changes from OK, the most severe first."""
+    """The problems of a snapshot as changes from OK, the most severe first; an item that lists
+    findings by its open ones (accepted findings are not told)."""
     out = []
-    for key, (lvl, item) in keys_of(snapshot).items():
-        if lvl in PROBLEM:
-            out.append(_event(key, snapshot[key.partition("#")[0]], item, "ok", lvl))
+    for key, (lvl, item, f) in keys_of(snapshot).items():
+        if lvl not in PROBLEM or (f and f["accepted"]):
+            continue
+        a = snapshot[_parts(key)[0]]
+        out.append(_fevent(key, a, item, f, None, "worse", "ok", lvl) if f else _event(key, a, item, "ok", lvl))
     out.sort(key=lambda e: (-hslib.rank(e["to"]), e["label"].lower(), e["key"]))
     return out
 
