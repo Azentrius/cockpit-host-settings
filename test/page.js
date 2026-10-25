@@ -16,13 +16,45 @@ const STATUS_FILE = "/var/lib/cockpit-host-settings/status.json";
 const TOKEN = "tk_testtokentesttokentesttokent";
 const EVIL = "<img src=x onerror=\"window.__pwned=1\">";
 
+// The catalog of roles as `show` sends it (lib/hslib.py, ROLES).
+const CATALOG = {
+    base: ["host-settings", "update-gaps", "security", "cronjobs"],
+    roles: [["web", ["image-updates"]], ["database", ["image-updates"]], ["build", []], ["bastion", []]],
+    labels: { "host-settings": "Host Settings", "update-gaps": "Update Gaps", security: "Security Monitor", cronjobs: "Cron Jobs",
+              "image-updates": "Image Update Monitor" },
+};
+// The profile part of `show` without a profile, and with one: role web, one more check expected,
+// two checks left out (one of them ended).
+function noProfile(extra) {
+    return Object.assign({ set: false, unreadable: false, roles: [], extra: [], expect: [], skip: [], set_at: null, bad_lines: [],
+                           catalog: CATALOG }, extra || {});
+}
+function webProfile(extra) {
+    return noProfile(Object.assign({
+        set: true, roles: ["web"], extra: ["security/exposure"],
+        expect: ["host-settings", "update-gaps", "security", "cronjobs", "image-updates", "security/exposure"],
+        skip: [{ check: "update-gaps/cve", until: "2026-12-31", reason: "network data off on purpose", active: true },
+               { check: "security/fail2ban", until: "2026-10-01", reason: "CrowdSec instead", active: false }],
+        set_at: "2026-10-19T09:00:00Z",
+    }, extra || {}));
+}
+// What the notifier found last for the expected add-ons and checks (last.coverage).
+const COVERAGE = [
+    { id: "host-settings", label: "Host Settings", coverage: "checked", gaps: [] },
+    { id: "update-gaps", label: "Update Gaps", coverage: "checked", gaps: [] },
+    { id: "security", label: "Security Monitor", coverage: "failed", gaps: [{ id: "containers", title: "Container hardening", coverage: "failed" }] },
+    { id: "cronjobs", label: "Cron Jobs", coverage: "checked", gaps: [] },
+    { id: "image-updates", label: "Image Update Monitor", coverage: "missing", gaps: [] },
+    { id: "security/exposure", label: "Security Monitor", coverage: "checked", gaps: [] },
+];
+
 // What `host-settings.py show` says on a server that was never set up.
 function fresh(extra) {
     return Object.assign({
         root: true, config: { ntfy_url: null, ntfy_topic: null, mail_to: null, language: "en" }, bad_lines: [],
         token: false, timer: "inactive", next: null, running: false, host: "server",
         smtp: { listening: false, sendmail: false }, last: null, check: null, test_mail: null,
-        docs: "https://docs.ntfy.sh/install/",
+        docs: "https://docs.ntfy.sh/install/", profile: noProfile(),
     }, extra || {});
 }
 // ... and on one with ntfy and e-mail, the timer on, two runs behind it.
@@ -154,4 +186,5 @@ function text(el) {
     return c.textContent.replace(/\s+/g, " ").trim();
 }
 
-module.exports = { boot, settle, proc, text, fresh, ready, statusDoc, closeAll, NOW, HELPER, PLUGIN, STATUS_FILE, TOKEN, EVIL };
+module.exports = { boot, settle, proc, text, fresh, ready, statusDoc, closeAll, noProfile, webProfile, COVERAGE,
+                   NOW, HELPER, PLUGIN, STATUS_FILE, TOKEN, EVIL };

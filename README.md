@@ -66,9 +66,15 @@ second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
   and, on request, for sending, and the token may not read.
 - **Shows the commands for the ntfy server:** the user, its write access to the topic and the
   token this server needs, ready to copy. Host Settings does not set up the server itself.
+- **Knows what the server is expected to check** (its target profile): its roles (`web`,
+  `database`, `build`, `bastion`), the add-ons they expect, more add-ons if you add them, and
+  single checks left out on purpose, with a reason and, if you like, an end. When an expected
+  add-on or check can no longer be checked (not installed, failed, no access, not set up, status
+  not readable), one message says so, and one more when it can again. Add-ons the profile does
+  not expect give no such message.
 - **Reports its own state** through the status contract: Status Board shows whether messages are
   set up, whether the last one went out, whether the topic is closed and when the notifier last
-  ran; Cockpit's menu shows it as an icon.
+  ran, and reads the server's target profile from it; Cockpit's menu shows it as an icon.
 
 ## What it does not do
 
@@ -107,7 +113,8 @@ out on any channel is sent again on the next run.
 - "Check connection" and "Send a test message" run in `cockpit-host-settings-test@ntfy.service` and
   `@mail.service`, as the same user as the notifier.
 - The page calls only the fixed verbs of `/usr/lib/cockpit-host-settings/host-settings.py`: the
-  settings in `/etc/cockpit-host-settings/notify.conf`, the token, the timer, a run now, the checks.
+  settings in `/etc/cockpit-host-settings/notify.conf`, the token, the timer, a run now, the checks,
+  the target profile in `/etc/cockpit-host-settings/profile.conf`.
 - Paths, verbs, formats and every step in detail: [docs/INTERNALS.md](docs/INTERNALS.md).
 
 ## Security model
@@ -125,6 +132,9 @@ out on any channel is sent again on the next run.
   bidirectional characters.
 - **Sending without a login** is tried only when you press "Check connection" (the page says so
   first); should the topic accept it, that message itself is the warning.
+- **The target profile** is readable by everyone (0644): Status Board and the status verb read it
+  without root. It holds roles, add-on and check names and the reasons you write, nothing secret.
+  Only root changes it, through the helper's fixed verbs; the page does so only through its dialog.
 
 ## Requirements
 
@@ -142,7 +152,7 @@ system by itself.
 
 | | Systems | What is checked |
 |---|---|---|
-| **Tested** | Ubuntu 24.04 (GitHub runner) with systemd, ntfy 2.32 in Docker and postfix | the package with its real units, listed by Cockpit (job `e2e`): the page's commands on the ntfy server as shown, "Check connection" against a topic closed without a login and an open one, the first run's summary through ntfy and e-mail, a change told once, a run without a change silent, the status as `nobody`, switching off, the token in no file but its own and in no log, removing the package |
+| **Tested** | Ubuntu 24.04 (GitHub runner) with systemd, ntfy 2.32 in Docker and postfix | the package with its real units, listed by Cockpit (job `e2e`): the page's commands on the ntfy server as shown, "Check connection" against a topic closed without a login and an open one, the first run's summary through ntfy and e-mail, a change told once, a run without a change silent, a target profile's gaps and an expected add-on that goes away told once each, the status as `nobody` with the profile, switching off, the token in no file but its own and in no log, removing the package |
 | **Tested** | Rocky Linux 9.8 and 10.2 (for RHEL 9 and 10) in a VM with SELinux enforcing, ntfy 2.32 in Podman and postfix | the same as job `e2e`, with the `.rpm` and the distribution's Cockpit, and no SELinux denial from before the install to after the removal (job `e2e-el`, `tools/vm.sh`) |
 | **Tested** | Python 3.8 and 3.12 | the notifier, the helper and the status against Status Board's own test answers (job `python-min` and `make check`) |
 | **Checked** | four Ubuntu servers (24.04 and 26.04) | the status verbs of Cron Jobs, Image Update Monitor, Update Gaps and Security Monitor answer as an unprivileged user without network |
@@ -212,6 +222,45 @@ Removing the package removes its state and keeps the settings, the token and the
    everything is as it should be.
 2. **E-mail:** "Set up e-mail" with a recipient, then "Send a test message".
 3. **The regular check:** "Set up the regular check". The first run sends the summary.
+4. **The target profile** (optional): "Set up a profile" under Target profile, and choose the
+   server's roles. Every server is expected to have Host Settings, Update Gaps, Security Monitor
+   and Cron Jobs; the roles add to that:
+
+   | Role | Also expected |
+   |---|---|
+   | `web` | Image Update Monitor |
+   | `database` | Image Update Monitor |
+   | `build` | nothing more |
+   | `bastion` | nothing more that reports a status (Status Board, which runs there, has no status of its own) |
+
+   For example, four servers with their roles:
+
+   | Server | Role | Expected |
+   |---|---|---|
+   | public-host | `web` | Host Settings, Update Gaps, Security Monitor, Cron Jobs, Image Update Monitor |
+   | claw-host | `web` | the same |
+   | vpn-host | `bastion` | Host Settings, Update Gaps, Security Monitor, Cron Jobs |
+   | build-host | `build` | the same |
+
+   The same on the console, with administrative access (each change keeps the file as it was in
+   `profile.conf.bak`):
+
+   ```bash
+   sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles web       # public-host, claw-host
+   sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles bastion   # vpn-host
+   sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles build     # build-host
+   # more than the roles expect: an add-on, or one check of an add-on
+   sudo /usr/lib/cockpit-host-settings/host-settings.py profile expect add security/exposure
+   # a check left out on purpose (always add-on/check, never an add-on alone), until a day if
+   # you like; the reason on standard input
+   echo "CrowdSec instead" | sudo /usr/lib/cockpit-host-settings/host-settings.py profile skip add security/fail2ban
+   echo "network data off for now" | sudo /usr/lib/cockpit-host-settings/host-settings.py profile skip add update-gaps/cve 2026-12-31
+   /usr/lib/cockpit-host-settings/host-settings.py profile show
+   ```
+
+   The next run of the notifier tells once what cannot be checked right now. Without a profile,
+   Status Board counts every installed add-on as expected and says the server has no target
+   profile.
 
 ![Check connection: reachable, encrypted, the test message, closed for reading and sending, the token may only write](docs/img/check-dialog.png)
 
@@ -220,7 +269,10 @@ Removing the package removes its state and keeps the settings, the token and the
 - The state of the last run: the page, or `sudo /usr/lib/cockpit-host-settings/host-settings.py show`.
 - The log: `journalctl -u cockpit-host-settings-notify.service`.
 - A run now: "Run now" on the page, or `sudo systemctl start cockpit-host-settings-notify.service`.
-- The status for the board: `/usr/lib/cockpit-host-settings/host-settings.py status --lang en`.
+- The status for the board: `/usr/lib/cockpit-host-settings/host-settings.py status --lang en`
+  (with the target profile under `profile`).
+- The target profile: the page, or `/usr/lib/cockpit-host-settings/host-settings.py profile show`;
+  `sudo … profile remove` takes it away again.
 - Switching off: "Switch off" on the page (`host-settings.py remove timer`); Status Board then shows
   Host Settings as switched off.
 - A topic shown as open: set `auth-default-access: deny-all` on the ntfy server and give the
@@ -268,7 +320,11 @@ The screenshots in `docs/img` come from the CI artifact `screenshots` of the tes
   because the notifier's sandbox ignores the setgid bit postfix' `postdrop` needs.
 - An add-on that answers its status verb with exit 77 (nothing readable without root) gives no
   message, and what was told about it before stays as it was, since nothing of it can be checked.
-  Status Board shows it as a warning, "No access".
+  Status Board shows it as a warning, "No access". When the target profile expects that add-on,
+  one message says its check is no longer possible.
+- The roles are a fixed catalog; a role this version does not know makes the line `roles` not
+  count (the page names it). Status Board on the bastion cannot be expected: it has no status of
+  its own.
 - "Check connection" is tested against ntfy 2.32 and was against 2.11 before; it reads a topic
   with `poll=1&since=1m`, which older and newer servers know as well.
 - The tab for Cockpit's own settings is not there yet.

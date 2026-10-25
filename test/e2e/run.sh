@@ -15,7 +15,9 @@
 #     HTTP answers ntfy really gives (401 or 403), and that the write-only token cannot read;
 #   - the first run sends the summary through ntfy and e-mail, a change sends one message, a run
 #     without a change none; once the stand-in lists findings, a second finding sends one message
-#     although its item stays a danger; the status verb answers as nobody; switching off says so;
+#     although its item stays a danger; a target profile states its gaps in one message, and the
+#     stand-in it expects going away sends one more; the status verb answers as nobody, with the
+#     profile; switching off says so;
 #   - the token is in no file but its own and in no log.
 # Writes OUT/report.md and the raw answers. Exit 1 at the first step that fails.
 set -eu
@@ -205,11 +207,50 @@ note "after a run without a change: $count messages (expected $((before + 1)))"
 [ "$count" = $((before + 1)) ] || fail "a run without a change sent a message"
 ok "the first finding taken as told, the second told once while the item stayed a danger, the next run told nothing"
 
+next "a target profile: its gaps in one message, the stand-in it expects gone in one more"
+# The stand-in OK again and its findings gone first (told, not counted here).
+echo ok > /var/lib/e2e-addon/state
+echo '[]' > /var/lib/e2e-addon/findings
+run_notifier run-6
+# No role: the add-ons of every host, none of which is installed here; and the stand-in.
+{ "$helper" profile roles && "$helper" profile expect add e2e-addon &&
+  echo "not installed in this test" | "$helper" profile skip add security/fail2ban; } > "$out/profile.txt" 2>&1 ||
+    { cat "$out/profile.txt"; fail "profile roles, expect add, skip add"; }
+if "$helper" profile roles mail > /dev/null 2>&1; then fail "an unknown role was taken"; fi
+if echo r | "$helper" profile skip add security > /dev/null 2>&1; then fail "an add-on alone was left out"; fi
+test "$(stat -c '%a %U' /etc/cockpit-host-settings/profile.conf)" = "644 root" || fail "mode of profile.conf"
+before=$(messages "$topic" | wc -l)
+run_notifier run-7
+messages "$topic" > "$out/messages-7.json"
+count=$(wc -l < "$out/messages-7.json")
+gaps=$(grep -c 'Check no longer possible' "$out/messages-7.json" || true)
+note "after setting the profile: $count messages (expected $((before + 1))); messages naming a check no longer possible: $gaps (expected 1)"
+[ "$count" = $((before + 1)) ] || fail "the gaps of the new profile did not come as one message"
+[ "$gaps" = 1 ] || fail "the gaps of the new profile were not told"
+mkdir -p /var/lib/e2e-addon/off
+mv /usr/share/cockpit/e2e-addon/manifest.json /var/lib/e2e-addon/off/
+run_notifier run-8
+messages "$topic" > "$out/messages-8.json"
+count=$(wc -l < "$out/messages-8.json")
+gone=$(grep -c 'Check no longer possible · E2E Add-on' "$out/messages-8.json" || true)
+note "after the stand-in went away: $count messages (expected $((before + 2))); naming it: $gone (expected 1)"
+[ "$count" = $((before + 2)) ] || fail "the expected add-on that went away did not give exactly one message"
+[ "$gone" = 1 ] || fail "the expected add-on that went away was not told"
+tail -n 1 "$out/messages-8.json" | grep -q 'the add-on is not installed' || fail "the message does not say why"
+run_notifier run-9
+count=$(messages "$topic" | wc -l)
+note "after a run without a change: $count messages (expected $((before + 2)))"
+[ "$count" = $((before + 2)) ] || fail "a run without a change sent a message"
+ok "the profile's gaps in one message, the expected stand-in gone in one more, the next run told nothing"
+
 next "the status verb as nobody, and for the board"
 runuser -u nobody -- "$helper" status --lang de > "$out/status-de.json"
 field "(d['state'], d['summary'])" < "$out/status-de.json" | tee -a "$report"
 [ "$(field "d['addon']" < "$out/status-de.json")" = host-settings ] || fail "status verb"
-ok "the status verb answers without root"
+field "(d['features'], d['profile']['roles'], d['profile']['expect'], d['profile']['skip'])" < "$out/status-de.json" | tee -a "$report"
+[ "$(field "'profile' in d.get('features', []) and 'e2e-addon' in d['profile']['expect']" < "$out/status-de.json")" = True ] ||
+    fail "the status as nobody does not name the profile"
+ok "the status verb answers without root, with the target profile"
 
 next "Check connection against an open topic"
 ntfy ntfy ntfy access everyone cockpit-open rw > /dev/null 2>&1

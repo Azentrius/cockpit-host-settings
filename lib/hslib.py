@@ -14,7 +14,11 @@ no side effects on import; nothing here runs a command or uses the network.
   never better than its open findings (itemState()). test/notify_test.py
   holds these rules against the board's own fixtures (test/fixtures/board,
   tools/board-fixtures.sha256).
+- What the board knows about an add-on (its coverage), as the board's
+  coverageOf(), checksCoverage() and checkCoverage() judge it.
 - The settings file /etc/cockpit-host-settings/notify.conf.
+- A host's target profile, /etc/cockpit-host-settings/profile.conf, and the
+  catalog of roles.
 """
 
 import json
@@ -425,6 +429,91 @@ def evaluate(status, now):
     }
 
 
+# ---------------------------------------------------------------------------
+# Coverage: what the board knows about an add-on on a host (the board's checkCoverage(),
+# checksCoverage(), tileOf() and coverageOf(); contract, "Checks and coverage"). Times are seconds
+# here, milliseconds there.
+
+# The gaps a check can show, worst first; a check that is "checked" and in time shows none, one
+# that is "notapplicable" does not count.
+CHECK_GAPS = ("noaccess", "unconfigured", "failed", "unsupported", "stale", "partial")
+
+
+def check_rank(coverage):
+    if coverage == "checked":
+        return 0
+    return len(CHECK_GAPS) - CHECK_GAPS.index(coverage) if coverage in CHECK_GAPS else len(CHECK_GAPS) + 1
+
+
+def check_coverage(check, now):
+    """What one check says at the time now: {coverage, stale_at}; "stale" for a checked or partial
+    check past checked_at + stale_after (stale_at: since when)."""
+    at = check["checked_at"] + check["stale_after"] \
+        if check.get("checked_at") is not None and check.get("stale_after") is not None else None
+    stale = at is not None and now > at and check["state"] in ("checked", "partial")
+    return {"coverage": "stale" if stale else check["state"], "stale_at": at if stale else None}
+
+
+def checks_coverage(status, now, skipped=()):
+    """The coverage of a valid answer from its checks at the time now: {coverage, worst, gaps},
+    the worst of the checks that apply (all but "notapplicable"), the first of the worst in the
+    add-on's order, and every check with a gap, each with its coverage and stale_at. None when
+    the answer has no checks, or none that applies: then its items decide.
+    skipped: ids of checks a host's profile leaves out on purpose, which do not apply either
+    (Host Settings only; the board does not read profiles yet)."""
+    checks = status.get("checks")
+    if not isinstance(checks, list):
+        return None
+    judged = [dict(c, **check_coverage(c, now)) for c in checks
+              if c["state"] != "notapplicable" and c["id"] not in skipped]
+    if not judged:
+        return None
+    gaps = [c for c in judged if c["coverage"] != "checked"]
+    worst = None
+    for c in gaps:
+        if worst is None or check_rank(c["coverage"]) > check_rank(worst["coverage"]):
+            worst = c
+    return {"coverage": worst["coverage"] if worst else "checked", "worst": worst, "gaps": gaps}
+
+
+def tile_of(result, now):
+    """What the board's tileOf() makes of the result of a status call, as far as coverage needs
+    it: {kind, state, word, status, eval}. result is {"kind": "ok", "status": a valid status}, or
+    {"kind": "noaccess"} (exit 77), {"kind": "rejected"} (a command the manifest may not name),
+    or any other kind (the add-on said nothing usable)."""
+    kind = result.get("kind")
+    if kind == "ok":
+        ev = evaluate(result["status"], now)
+        # An answer that rates nothing has checked nothing yet: a gap, not Unknown.
+        if ev["state"] == "none":
+            return {"kind": "status", "state": "warning", "word": "unchecked", "status": result["status"], "eval": ev}
+        return {"kind": "status", "state": ev["state"], "word": "stale" if ev["by_age"] else ev["state"],
+                "status": result["status"], "eval": ev}
+    if kind in ("noaccess", "rejected"):
+        return {"kind": kind, "state": "warning", "word": kind}
+    return {"kind": "error", "state": "warning", "word": "unreadable"}
+
+
+def coverage_of(tile, now, skipped=()):
+    """What the board knows about an add-on (its coverage), from its tile at the time now:
+    checked, unchecked (a valid answer that rates nothing), stale, noaccess, unreadable, and from
+    checks partial, failed, unconfigured, unsupported (the worst check that applies). None for a
+    tile that is no installed add-on with a status entry. skipped: as checks_coverage()."""
+    kind = tile.get("kind")
+    if kind == "status":
+        from_checks = checks_coverage(tile["status"], now, skipped)
+        if from_checks:
+            return from_checks["coverage"]
+        if tile["word"] == "unchecked":
+            return "unchecked"
+        return "stale" if tile["eval"]["stale_since"] is not None else "checked"
+    if kind == "noaccess":
+        return "noaccess"
+    if kind in ("error", "rejected"):
+        return "unreadable"
+    return None
+
+
 def status_entry(manifest):
     """What a manifest says about the status contract: ("command", path), ("rejected", None)
     for a status entry whose command is not allowed, or None without one."""
@@ -541,4 +630,217 @@ def channels(cfg):
         out.append("ntfy")
     if cfg.get("mail_to"):
         out.append("mail")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# A host's target profile: /etc/cockpit-host-settings/profile.conf (key = value, root, 0644)
+#
+# What this host is expected to check: its roles, and with them the add-ons it should have, extra
+# add-ons or checks, and checks left out on purpose. The status verb sends it as `profile` (status
+# contract, "Optional: checks, findings and a host's profile"); the notifier tells when an
+# expected check is no longer possible.
+#
+#   roles = web
+#   expect = security/exposure
+#   skip = update-gaps/cve until 2026-12-31: network data off on purpose
+#   set_at = 2026-10-25T10:00:00Z
+#
+# A profile is set when the file has a valid `roles` line (it may name no role: the add-ons of
+# every host only). As Status Board reads it: an `expect` of a check ("security/exposure") makes
+# its add-on expected, and a skip names one check of an add-on, never an add-on alone.
+
+# Every host: the way messages go out, updates, what is reachable from where, scheduled jobs.
+BASE_EXPECT = ("host-settings", "update-gaps", "security", "cronjobs")
+# The roles and what each expects beyond the add-ons of every host. Status Board, which marks the
+# bastion, has no status entry of its own, so "bastion" adds nothing that reports a status.
+ROLES = (("web", ("image-updates",)), ("database", ("image-updates",)), ("build", ()), ("bastion", ()))
+ROLE_EXPECT = dict(ROLES)
+# The product names of the add-ons the roles name, for one that is not installed.
+ADDON_LABELS = {"host-settings": "Host Settings", "update-gaps": "Update Gaps", "security": "Security Monitor",
+                "cronjobs": "Cron Jobs", "image-updates": "Image Update Monitor"}
+PROFILE_KEYS = ("roles", "expect", "skip", "set_at")
+# A skip names one check of an add-on ("update-gaps/cve"): Status Board lets only such a skip take
+# effect, an add-on alone cannot be left out.
+SKIP_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}/[a-z0-9-]{1,40}")
+DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+SKIP_REASON_MAX = LIMITS["detail"]
+_ROLE_SPLIT_RE = re.compile(r"[,\s]+")
+PROFILE_HEADER = ("# Host Settings: the target profile of this host (roles, expected add-ons and checks, checks left",
+                  "# out on purpose). Written by the page (host-settings.py profile ...); comments and other lines stay.",
+                  "# SPDX-License-Identifier: Apache-2.0")
+
+
+def parse_date(value):
+    """A day "YYYY-MM-DD" as the seconds of its start (00:00 UTC), or None."""
+    if not isinstance(value, str) or not DATE_RE.fullmatch(value):
+        return None
+    try:
+        return datetime(int(value[:4]), int(value[5:7]), int(value[8:10]), tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def parse_roles(value):
+    """The roles of a `roles` line ("web, database"; none at all is allowed) as a list without
+    repeats, or None when one is not in the catalog or there are more than MAX_ROLES."""
+    names = list(dict.fromkeys(r for r in _ROLE_SPLIT_RE.split(value) if r))
+    if len(names) > MAX_ROLES or any(not ROLE_RE.fullmatch(r) or r not in ROLE_EXPECT for r in names):
+        return None
+    return names
+
+
+def clean_reason(value):
+    """The reason of a skip as it is kept: one line of text, cleaned, cut to 200, or None."""
+    return clean_text(value, SKIP_REASON_MAX)
+
+
+def parse_skip(value):
+    """The value of a `skip` line, "ADDON/CHECK[ until YYYY-MM-DD]: REASON", as {check, until,
+    reason} (until "YYYY-MM-DD" or None), or None when it breaks the rules (an add-on alone among
+    them)."""
+    left, sep, reason = value.partition(":")
+    words = left.split()
+    reason = clean_reason(reason)
+    if not sep or not reason or len(words) not in (1, 3) or not SKIP_RE.fullmatch(words[0]):
+        return None
+    until = None
+    if len(words) == 3:
+        if words[1] != "until" or parse_date(words[2]) is None:
+            return None
+        until = words[2]
+    return {"check": words[0], "until": until, "reason": reason}
+
+
+def _profile_line(raw):
+    """One line of profile.conf: (ident, entry) for a valid line of the profile (ident: ("roles",),
+    ("expect", item), ("skip", check) or ("set_at",)), ("bad", None) for a line that is not
+    understood, (None, None) for an empty line or a comment."""
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        return None, None
+    key, sep, value = line.partition("=")
+    key, value = key.strip(), value.strip()
+    if not sep or key not in PROFILE_KEYS:
+        return "bad", None
+    if key == "roles":
+        roles = parse_roles(value)
+        return (("roles",), roles) if roles is not None else ("bad", None)
+    if key == "expect":
+        return (("expect", value), value) if EXPECT_RE.fullmatch(value) else ("bad", None)
+    if key == "skip":
+        s = parse_skip(value)
+        return (("skip", s["check"]), s) if s else ("bad", None)
+    at = parse_time(value)
+    return (("set_at",), iso(at)) if at is not None else ("bad", None)
+
+
+def resolve_expect(roles, extra=()):
+    """What a host with these roles and extra expectations should have: the add-ons of every host,
+    those of its roles, then the extra ones, each once, at most MAX_EXPECT."""
+    out = list(BASE_EXPECT)
+    for r in roles or ():
+        out.extend(ROLE_EXPECT.get(r, ()))
+    out.extend(extra)
+    return list(dict.fromkeys(out))[:MAX_EXPECT]
+
+
+def parse_profile(text):
+    """The profile from profile.conf: (profile, bad line numbers). profile is {roles, extra, skip,
+    set_at}: roles None when the file sets no profile; extra the expectations beyond the roles;
+    skip [{check, until, reason}]. A line that is not one of the four keys with a valid value is
+    left out and counted; of `roles` and `set_at` the last valid line counts; `expect` and `skip`
+    come once per add-on or check (a later `skip` of the same check counts instead of the earlier
+    one). Lines past the limits (MAX_EXPECT expected, MAX_SKIP skips) count as bad."""
+    prof = {"roles": None, "extra": [], "skip": [], "set_at": None}
+    bad, extra, skips = [], {}, {}
+    for n, raw in enumerate((text or "").splitlines(), 1):
+        ident, entry = _profile_line(raw)
+        if ident is None:
+            continue
+        if ident == "bad":
+            bad.append(n)
+        elif ident[0] == "roles":
+            prof["roles"] = entry
+        elif ident[0] == "set_at":
+            prof["set_at"] = entry
+        elif ident[0] == "expect":
+            extra.setdefault(entry, n)
+        else:
+            skips.pop(entry["check"], None)
+            skips[entry["check"]] = (n, entry)
+    for item, n in extra.items():
+        have = resolve_expect(prof["roles"], prof["extra"])
+        if item in have or len(have) < MAX_EXPECT:
+            prof["extra"].append(item)
+        else:
+            bad.append(n)
+    for n, entry in sorted(skips.values(), key=lambda x: x[0]):
+        if len(prof["skip"]) < MAX_SKIP:
+            prof["skip"].append(entry)
+        else:
+            bad.append(n)
+    return prof, sorted(bad)
+
+
+def profile_set(prof):
+    return isinstance(prof, dict) and prof.get("roles") is not None
+
+
+def skip_active(skip, now):
+    """Whether a skip counts at the time now: without an end, or before its day (it ends on its
+    day at 00:00 UTC, as an acceptance does)."""
+    return skip["until"] is None or now < parse_date(skip["until"])
+
+
+def _profile_lines(prof):
+    """The profile's lines as [(ident, entry, line)] in the order they are written."""
+    if not profile_set(prof):
+        return []
+    out = [(("roles",), list(prof["roles"]), "roles = " + ", ".join(prof["roles"]))]
+    out += [(("expect", x), x, "expect = " + x) for x in prof["extra"]]
+    out += [(("skip", s["check"]), s, "skip = " + s["check"] + (" until " + s["until"] if s["until"] else "") + ": " +
+             s["reason"]) for s in prof["skip"]]
+    if prof.get("set_at"):
+        out.append((("set_at",), prof["set_at"], "set_at = " + prof["set_at"]))
+    return out
+
+
+def format_profile(text, prof):
+    """profile.conf with the profile prof (None or no roles: no profile), line by line: comments,
+    empty lines and every line that is not a valid line of the profile stay as they are, where
+    they are; a valid line stays as it is while it still holds, is changed in place when it
+    holds something else now, and goes when it no longer holds (or comes twice); new lines go to
+    the end."""
+    want = {ident: (entry, line) for ident, entry, line in _profile_lines(prof)}
+    lines = (text or "").splitlines()
+    out, placed = ([] if lines else list(PROFILE_HEADER)), set()
+    for raw in lines:
+        ident, entry = _profile_line(raw)
+        if ident is None or ident == "bad":
+            out.append(raw)
+        elif ident in want and ident not in placed:
+            placed.add(ident)
+            out.append(raw if entry == want[ident][0] else want[ident][1])
+    out += [line for ident, (_, line) in want.items() if ident not in placed]
+    return "\n".join(out) + "\n" if out else ""
+
+
+def profile_answer(prof, mtime=None):
+    """The `profile` of the status answer (contract, "Optional: checks, findings and a host's
+    profile"), or None without a profile: the roles, what they expect with the extra
+    expectations (resolved), every skip with its reason and, when it has one, its end as a time
+    (the day at 00:00 UTC), and when the profile was set (set_at, else the file's time)."""
+    if not profile_set(prof):
+        return None
+    skip = []
+    for s in prof["skip"]:
+        e = {"check": s["check"], "reason": s["reason"]}
+        if s["until"]:
+            e["until"] = s["until"] + "T00:00:00Z"
+        skip.append(e)
+    out = {"roles": list(prof["roles"]), "expect": resolve_expect(prof["roles"], prof["extra"]), "skip": skip}
+    at = prof.get("set_at") or (iso(mtime) if mtime is not None else None)
+    if at:
+        out["set_at"] = at
     return out

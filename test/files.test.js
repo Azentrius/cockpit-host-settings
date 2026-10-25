@@ -66,7 +66,11 @@ t("only the fixed verbs, and require only for the dialog", () => {
     // The dialog's calls: the first word of every argv in ACTIONS and the two forms.
     const block = js.slice(js.indexOf("const ACTIONS = {"), js.indexOf("function copyCommands"));
     const verbs = [...block.matchAll(/\["([a-z]+)"/g)].map((m) => m[1]).filter((v) => v !== "en" && v !== "de");
-    assert.deepStrictEqual([...new Set(verbs)].sort(), ["check", "install", "remove", "run", "set", "test", "token", "unset"]);
+    assert.deepStrictEqual([...new Set(verbs)].sort(), ["check", "install", "profile", "remove", "run", "set", "test", "token", "unset"]);
+    // The profile's verbs, each a fixed form; the reason of a skip goes on standard input.
+    const profile = [...block.matchAll(/\["profile", "([a-z]+)"(?:, "([a-z]+)")?/g)].map((m) => m[1] + (m[2] ? " " + m[2] : ""));
+    assert.deepStrictEqual([...new Set(profile)].sort(), ["expect add", "expect remove", "remove", "roles", "skip add", "skip remove"]);
+    assert.ok(/input: \(v\) => v\.reason\.replace\(/.test(block), "the reason goes to standard input");
     assert.ok(!/cockpit\.spawn\(\[/.test(js), "every call goes through spawn()");
     assert.ok(!/superuser: "require"/.test(js.replace(/err: superuser === "require"/, "")), "no other require");
     assert.ok(js.includes('cockpit.file(STATUS_PATH, { syntax: JSON })'), "only status.json is watched");
@@ -132,6 +136,10 @@ t("the regular expressions of the page are those of the helper", () => {
     assert.strictEqual(jsRe("TOKEN_RE"), pyRe("TOKEN_RE"));
     assert.strictEqual(jsRe("MAIL_RE"), pyRe("MAIL_RE"));
     assert.strictEqual(jsRe("URL_RE"), pyRe("URL_RE"));
+    assert.strictEqual(jsRe("EXPECT_RE"), pyRe("EXPECT_RE"));
+    assert.strictEqual(jsRe("SKIP_RE"), pyRe("SKIP_RE"));
+    assert.strictEqual(jsRe("ROLE_RE"), pyRe("ROLE_RE"));
+    assert.strictEqual(jsRe("DATE_RE"), pyRe("DATE_RE"));
 });
 
 t("the label classes exist in azentrius.css", () => {

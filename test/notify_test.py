@@ -918,6 +918,343 @@ class Findings(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Coverage: the twins of the board's checkCoverage(), checksCoverage(), tileOf() and coverageOf()
+# against the board's own cases (cockpit-status-board, test/status.test.js, "coverage" and
+# "coverage from checks"), then what a host's profile expects, run after run
+
+def with_checks(checks, state="ok"):
+    """An answer of the add-on x with the given checks and an item in state (as the board's
+    withChecks())."""
+    return hslib.validate_status(json.dumps({"schema": 1, "addon": "x", "state": state, "features": ["checks"],
+                                             "checks": checks, "items": [{"id": "a", "state": state, "title": "A"}]}),
+                                 "x")[1]
+
+
+def tile(name_or_status, now=NOW):
+    st = ext(name_or_status) if isinstance(name_or_status, str) else name_or_status
+    return hslib.tile_of({"kind": "ok", "status": st}, now)
+
+
+class CoverageTwin(unittest.TestCase):
+    def test_checks_coverage_the_worst_check_that_applies_and_every_gap(self):
+        sec = ext("ext-good-security.json")
+        c = hslib.checks_coverage(sec, NOW)
+        self.assertEqual([c["coverage"], c["worst"]["id"], [[g["id"], g["coverage"], g["stale_at"]] for g in c["gaps"]]],
+                         ["partial", "containers", [["containers", "partial", None]]], "fail2ban does not apply")
+        later = hslib.checks_coverage(sec, NOW + 3600)
+        self.assertEqual([later["coverage"], later["worst"]["id"], [[g["id"], g["coverage"], g["stale_at"]] for g in later["gaps"]]],
+                         ["stale", "exposure", [["exposure", "stale", ts("2026-10-19T19:50:00Z")],
+                                                ["containers", "stale", ts("2026-10-19T19:50:00Z")]]])
+        self.assertEqual(hslib.checks_coverage(sec, ts("2026-10-19T19:50:00Z"))["coverage"], "partial",
+                         "on the dot it is not out of date yet")
+        gaps = hslib.checks_coverage(ext("ext-good-update-gaps.json"), NOW)
+        self.assertEqual([gaps["coverage"], gaps["worst"]["title"], len(gaps["gaps"])], ["unconfigured", "Open CVEs (network data)", 1])
+        hs = ext("ext-good-host-settings.json")
+        self.assertEqual([hslib.checks_coverage(hs, NOW)["coverage"], hslib.checks_coverage(hs, NOW)["worst"]], ["checked", None])
+        self.assertEqual(hslib.checks_coverage(hs, ts("2026-10-19T19:11:00Z"))["coverage"], "stale",
+                         "Notifications, 15 minutes after 18:55")
+
+    def test_checks_coverage_none_without_checks_or_when_none_applies(self):
+        for name in ("real-security.json", "good-cronjobs-ok.json", "ext-broken-shapes.json"):
+            self.assertIsNone(hslib.checks_coverage(ext(name), NOW), name)
+        self.assertIsNone(hslib.checks_coverage(with_checks([{"id": "d", "state": "notapplicable", "title": "D",
+                                                              "reason": "no Docker"}]), NOW))
+        self.assertIsNone(hslib.checks_coverage(with_checks([]), NOW))
+
+    def test_checks_coverage_the_order_of_the_gaps(self):
+        order = ["partial", "stale", "unsupported", "failed", "unconfigured", "noaccess"]
+
+        def check(state, i):
+            if state == "stale":
+                return {"id": f"c{i}", "state": "checked", "title": f"C{i}", "checked_at": "2026-10-19T10:00:00Z", "stale_after": 60}
+            return {"id": f"c{i}", "state": state, "title": f"C{i}"}
+        for n in range(1, len(order) + 1):
+            states = order[:n]
+            self.assertEqual(hslib.checks_coverage(with_checks([check(s, i) for i, s in enumerate(states)]), NOW)["coverage"],
+                             states[-1], states)
+            self.assertEqual(hslib.checks_coverage(with_checks([check(s, i) for i, s in enumerate(reversed(states))]), NOW)["coverage"],
+                             states[-1], "in any order")
+        failed = with_checks([{"id": "f", "state": "failed", "title": "F", "checked_at": "2026-10-19T10:00:00Z", "stale_after": 60}])
+        self.assertEqual(hslib.checks_coverage(failed, NOW)["coverage"], "failed", "no better for being out of date as well")
+
+    def test_coverage_of_every_kind_of_tile(self):
+        self.assertEqual(hslib.coverage_of(tile("good-cronjobs-ok.json"), NOW), "checked", "an entry in state none is no gap")
+        self.assertEqual(hslib.coverage_of(tile("good-image-updates-stale.json"), NOW), "stale")
+        self.assertEqual(hslib.coverage_of(tile("good-minimal.json"), NOW), "unchecked")
+        self.assertEqual(tile("good-minimal.json")["word"], "unchecked")
+        self.assertEqual(hslib.coverage_of(tile("ext-good-security.json"), NOW), "partial")
+        self.assertEqual(hslib.coverage_of(tile("ext-good-security.json", NOW + 3600), NOW + 3600), "stale")
+        self.assertEqual(hslib.coverage_of(tile("ext-good-update-gaps.json"), NOW), "unconfigured")
+        self.assertEqual(hslib.coverage_of(tile("ext-good-host-settings.json"), NOW), "checked")
+        self.assertEqual(hslib.coverage_of(hslib.tile_of({"kind": "noaccess"}, NOW), NOW), "noaccess")
+        for kind in ("rejected", "invalid", "missing", "failed", "timeout", "unsupported", "manifest"):
+            self.assertEqual(hslib.coverage_of(hslib.tile_of({"kind": kind}, NOW), NOW), "unreadable", kind)
+        self.assertIsNone(hslib.coverage_of({"kind": "missing"}, NOW), "not installed: no gap of a check (without a profile)")
+        self.assertIsNone(hslib.coverage_of({"kind": "nostatus"}, NOW))
+        # every check applies or not, whatever the items say
+        self.assertEqual(hslib.coverage_of(tile(with_checks([{"id": "c", "state": "failed", "title": "C"}])), NOW), "failed")
+        self.assertEqual(hslib.coverage_of(tile(with_checks([{"id": "c", "state": "notapplicable", "title": "C"}])), NOW), "checked")
+        self.assertEqual(hslib.coverage_of(tile(with_checks([{"id": "c", "state": "notapplicable", "title": "C"}], "none")), NOW),
+                         "unchecked")
+        # a check the profile leaves out does not apply (Host Settings only)
+        self.assertEqual(hslib.coverage_of(tile("ext-good-security.json"), NOW, {"containers"}), "checked")
+        self.assertEqual(hslib.coverage_of(tile("ext-good-update-gaps.json"), NOW, {"cve"}), "checked")
+
+    def test_the_notifier_keeps_what_the_twins_need(self):
+        sec = hsnotify.read_addon("security", None, ("command", SEC), "en", NOW,
+                                  Runner({SEC: ok(board("status/ext-good-security.json"))}), lstat_of({SEC: (0o755, 0)}))
+        self.assertEqual([c["id"] for c in sec["checks"]], ["exposure", "containers", "fail2ban"])
+        self.assertEqual((sec["legacy"], hsnotify.addon_coverage(sec, NOW)), ("checked", "partial"))
+        self.assertEqual(hsnotify.addon_coverage(sec, NOW, {"containers"}), "checked")
+        cron = hsnotify.read_addon("cronjobs", None, ("command", CMD), "en", NOW,
+                                   Runner({CMD: ok(board("status/good-image-updates-stale.json").replace('"image-updates"', '"cronjobs"'))}),
+                                   lstat_of({CMD: (0o755, 0)}))
+        self.assertEqual((cron["checks"], cron["legacy"], hsnotify.addon_coverage(cron, NOW)), (None, "stale", "stale"))
+        self.assertEqual(hsnotify.addon_coverage(addon("A", [], kind="noaccess"), NOW), "noaccess")
+        self.assertEqual(hsnotify.addon_coverage(addon("A", [], kind="timeout"), NOW), "unreadable")
+
+
+def gaps_doc(checks, at, items=None):
+    """A Security Monitor's answer with checks: [(id, state)], each checked at `at`, stale after an hour."""
+    return json.dumps({"schema": 1, "addon": "security", "label": "Security Monitor", "version": "0.4.0", "checked_at": at,
+                       "state": "ok", "summary": "s", "features": ["checks"],
+                       "checks": [dict({"id": cid, "state": state, "title": cid.title(), "checked_at": at, "stale_after": 3600},
+                                       **({"reason": "the Docker API did not answer"} if state == "failed" else {}))
+                                  for cid, state in checks],
+                       "items": items or [{"id": "logins", "state": "ok", "title": "Logins", "checked_at": at, "stale_after": 3600}]})
+
+
+class Profiled:
+    """A host's add-ons run after run with a profile: the Security Monitor's checks (or another
+    result of its status verb), Cron Jobs and Update Gaps answering OK, through changes() with
+    the coverage of the profile, the memory carried from run to run."""
+
+    def __init__(self, roles=(), skip=(), extra=(), sent=None):
+        self.profile = {"expect": hslib.resolve_expect(list(roles), list(extra)), "skip": list(skip)}
+        self.sent, self.now = dict(sent or {}), NOW
+        self.have = {"security", "cronjobs", "update-gaps"}
+
+    def snapshot(self, checks=(("exposure", "checked"), ("containers", "checked")), result=None, gone=(), others=None):
+        snap = {}
+        if "security" not in gone:
+            snap["security"] = read_sec(result or ok(gaps_doc(checks, hslib.iso(self.now - 60))), self.now)
+        for pkg in ("cronjobs", "update-gaps"):
+            if pkg not in gone:
+                snap[pkg] = addon(pkg.title(), [{"id": "x", "state": "ok"}])
+        snap.update(others or {})
+        return snap
+
+    def step(self, after=300, profile=True, **kw):
+        self.now += after
+        snap = self.snapshot(**kw)
+        cov = hsnotify.profile_coverage(self.profile, snap, self.now, self.have - set(kw.get("gone", ()))) if profile else None
+        events, self.sent = hsnotify.changes(self.sent, snap, self.now, cov)
+        return events
+
+
+def cov_told(events):
+    return [(e["key"], e["kind"], e.get("coverage")) for e in events]
+
+
+class Coverage(unittest.TestCase):
+    def test_what_a_profile_expects_and_how_far_it_can_be_checked(self):
+        p = Profiled(roles=["web"], extra=["security/exposure", "cronjobs/cron"])
+        snap = p.snapshot(checks=[("exposure", "checked"), ("containers", "failed"), ("fail2ban", "notapplicable")])
+        report, keys, hold = hsnotify.profile_coverage(p.profile, snap, NOW, p.have)
+        self.assertEqual([(r["id"], r["coverage"], [g["id"] for g in r["gaps"]]) for r in report], [
+            ("host-settings", "checked", []), ("update-gaps", "checked", []), ("security", "failed", ["containers"]),
+            ("cronjobs", "checked", []), ("image-updates", "missing", []), ("security/exposure", "checked", []),
+            ("cronjobs/cron", "notapplicable", [])])
+        self.assertEqual(report[4]["label"], "Image Update Monitor", "the product name of one that is not installed")
+        # cronjobs/cron: Cron Jobs reports no checks, so the entry is no gap of its own
+        self.assertEqual({k: v[0] for k, v in keys.items()}, {
+            "update-gaps@": "checked", "security@": "checked", "security@exposure": "checked", "security@containers": "failed",
+            "cronjobs@": "checked", "image-updates@": "missing"})
+        self.assertEqual(keys["security@containers"][2:], ("Containers", "the Docker API did not answer"))
+        self.assertEqual(hold, {"image-updates"})
+        # installed in a version without a status entry: not supported, not missing
+        report, keys, _ = hsnotify.profile_coverage(p.profile, snap, NOW, p.have | {"image-updates"})
+        self.assertEqual(keys["image-updates@"][0], "unsupported")
+        # a check expected on its own makes its add-on expected, and so every check of it
+        q = Profiled(roles=["build"])
+        q.profile["expect"] = ["host-settings", "image-updates/rollout"]
+        report, keys, _ = hsnotify.profile_coverage(q.profile, q.snapshot(), NOW, q.have)
+        self.assertEqual([(r["id"], r["coverage"]) for r in report], [("host-settings", "checked"), ("image-updates/rollout", "missing")])
+        self.assertEqual({k: v[0] for k, v in keys.items()}, {"image-updates@": "missing"})
+        q.profile["expect"] = ["security/exposure"]
+        _, keys, _ = hsnotify.profile_coverage(q.profile, q.snapshot(checks=[("containers", "failed")]), NOW, q.have)
+        self.assertEqual({k: v[0] for k, v in keys.items()}, {"security@": "checked", "security@containers": "failed"},
+                         "exposure, which the add-on does not report, is no gap; its other checks are expected")
+
+    def test_an_expected_addon_goes_missing_and_comes_back_two_messages(self):
+        p = Profiled()
+        self.assertEqual(p.step(), [])
+        events = p.step(gone=["security"])
+        self.assertEqual(cov_told(events), [("security@", "lost", "missing")])
+        msg = hsnotify.message("en", "web1", events=events)
+        self.assertEqual(msg["title"], "web1: Security Monitor, check no longer possible")
+        self.assertEqual(msg["body"], "Check no longer possible · Security Monitor\nthe add-on is not installed\n\nHost Settings on web1")
+        self.assertEqual((msg["priority"], msg["tags"]), (3, ["warning"]))
+        de = hsnotify.message("de", "web1", events=events)
+        self.assertEqual((de["title"], de["body"].split("\n\n")[0]), (
+            "web1: Security Monitor, Prüfung nicht mehr möglich",
+            "Prüfung nicht mehr möglich · Security Monitor\ndas Add-on ist nicht installiert"))
+        self.assertEqual(p.step(gone=["security"]), [], "told once")
+        self.assertEqual(p.sent["security@"]["level"], "lost")
+        events = p.step(after=hsnotify.FLAP)
+        self.assertEqual(cov_told(events), [("security@", "regained", "checked")])
+        back = hsnotify.message("en", "web1", events=events)
+        self.assertEqual((back["title"], back["body"].split("\n\n")[0], back["priority"]),
+                         ("web1: Security Monitor, check possible again", "Check possible again · Security Monitor", 2))
+        self.assertEqual(hsnotify.message("de", "web1", events=events)["body"].split("\n\n")[0],
+                         "Prüfung wieder möglich · Security Monitor")
+        self.assertEqual(p.step(), [], "two messages in all")
+
+    def test_an_addon_that_is_gone_keeps_its_name(self):
+        p = Profiled(extra=["thing"])
+        p.have.add("thing")
+        self.assertEqual(p.step(others={"thing": addon("The Thing", [{"id": "x", "state": "ok"}])}), [])
+        self.assertEqual(p.sent["thing@"]["label"], "The Thing")
+        p.have.discard("thing")
+        events = p.step()
+        self.assertEqual([hsnotify._line("en", e) for e in events], ["Check no longer possible · The Thing\nthe add-on is not installed"])
+        self.assertEqual(hsnotify.message("en", "h", events=events)["title"], "h: The Thing, check no longer possible")
+
+    def test_an_optional_addon_that_goes_missing_says_nothing(self):
+        p = Profiled(roles=["build"])
+        img = {"image-updates": addon("Image Update Monitor", [{"id": "updates", "state": "info"}])}
+        self.assertEqual(p.step(others=img), [])
+        self.assertEqual(p.step(), [], "not expected: no message when it is gone")
+        self.assertFalse([k for k in p.sent if k.startswith("image-updates")])
+        # with the role web it is expected
+        p = Profiled(roles=["web"])
+        self.assertEqual(cov_told(p.step()), [("image-updates@", "lost", "missing")])
+
+    def test_a_skip_that_runs_then_ends(self):
+        tomorrow = hslib.iso(NOW + 86400)[:10]
+        p = Profiled(skip=[{"check": "security/containers", "until": tomorrow, "reason": "no Docker yet"}])
+        self.assertEqual(p.step(checks=[("exposure", "checked"), ("containers", "failed")]), [], "not applicable while it runs")
+        self.assertNotIn("security@containers", p.sent)
+        report, _, _ = hsnotify.profile_coverage(p.profile, p.snapshot(checks=[("containers", "failed")]), p.now, p.have)
+        self.assertEqual(report[2]["coverage"], "checked", "the skipped check is no gap of the add-on")
+        events = p.step(after=86400, checks=[("exposure", "checked"), ("containers", "failed")])
+        self.assertEqual(cov_told(events), [("security@containers", "lost", "failed")], "it ended on its day: it counts")
+        self.assertEqual(hsnotify._line("en", events[0]),
+                         "Check no longer possible · Security Monitor · Containers\nthe check failed: the Docker API did not answer")
+        self.assertEqual(hsnotify._line("de", events[0]).splitlines()[1],
+                         "die Prüfung ist fehlgeschlagen: the Docker API did not answer")
+        # a skip without an end, set while it was told: forgotten without a word
+        p.profile["skip"] = [{"check": "security/containers", "until": None, "reason": "r"}]
+        self.assertEqual(p.step(checks=[("exposure", "checked"), ("containers", "failed")]), [])
+        self.assertNotIn("security@containers", p.sent)
+        # a skip that names an add-on alone does nothing (as on Status Board; the helper refuses it)
+        p.profile["skip"] = [{"check": "security", "until": None, "reason": "r"}]
+        self.assertEqual(cov_told(p.step(gone=["security"])), [("security@", "lost", "missing")])
+
+    def test_no_access_and_not_set_up(self):
+        p = Profiled()
+        p.step()
+        events = p.step(result=hsproc.Result(77))
+        self.assertEqual(cov_told(events), [("security@", "lost", "noaccess")], "exit 77 of an expected add-on is told")
+        self.assertEqual(hsnotify._line("en", events[0]).splitlines()[1], "nothing is readable without root")
+        events = p.step(after=hsnotify.FLAP, checks=[("exposure", "checked"), ("containers", "unconfigured")])
+        self.assertEqual(cov_told(events), [("security@containers", "lost", "unconfigured"), ("security@", "regained", "checked")],
+                         "what is lost first")
+        self.assertEqual(hsnotify._line("en", events[0]).splitlines()[1],
+                         "the check is not set up (its timer is off, or it never ran)")
+        msg = hsnotify.message("en", "h", events=events)
+        self.assertEqual((msg["title"], msg["priority"]), ("h: 2 changes", 3))
+        # unreadable: the message about the add-on's status says it, the coverage is remembered
+        events = p.step(after=hsnotify.FLAP, result=ok("{"))
+        self.assertEqual([(e["key"], e["kind"]) for e in events], [("security#", "worse")])
+        self.assertEqual((p.sent["security@"]["level"], p.sent["security@"]["coverage"]), ("lost", "unreadable"))
+        self.assertEqual(p.sent["security@containers"]["level"], "lost", "a check of an add-on that cannot be read stays")
+
+    def test_the_hour_against_flapping(self):
+        p = Profiled()
+        p.step()
+        self.assertEqual(len(p.step(checks=[("exposure", "failed")])), 1)
+        self.assertEqual(cov_told(p.step(checks=[("exposure", "checked")])), [("security@exposure", "regained", "checked")])
+        self.assertEqual(p.step(checks=[("exposure", "failed")]), [], "the same change within the hour waits")
+        self.assertEqual(p.sent["security@exposure"]["level"], "ok")
+        self.assertEqual(cov_told(p.step(after=hsnotify.FLAP, checks=[("exposure", "failed")])),
+                         [("security@exposure", "lost", "failed")], "told after the hour, as it still holds")
+
+    def test_a_run_without_a_change_and_gaps_that_are_no_loss(self):
+        p = Profiled()
+        p.step(checks=[("exposure", "failed")])
+        for _ in range(3):
+            self.assertEqual(p.step(checks=[("exposure", "failed")]), [])
+        # partial, out of date or not supported keep what was told: no message either way
+        self.assertEqual(p.step(checks=[("exposure", "partial")]), [])
+        self.assertEqual(p.sent["security@exposure"]["level"], "lost")
+        old_check = gaps_doc([("exposure", "checked")], hslib.iso(p.now - 7200), [{"id": "logins", "state": "ok", "title": "Logins"}])
+        self.assertEqual(p.step(result=ok(old_check)), [], "out of date")
+        self.assertEqual(cov_told(p.step(after=hsnotify.FLAP, checks=[("exposure", "checked")])),
+                         [("security@exposure", "regained", "checked")])
+        q = Profiled()
+        q.step()
+        self.assertEqual(q.step(checks=[("exposure", "partial")]), [], "partial was OK before: no loss")
+        self.assertEqual(q.step(checks=[("exposure", "unsupported")]), [])
+
+    def test_without_a_profile_no_coverage_messages(self):
+        p = Profiled()
+        p.step(gone=["security"])
+        self.assertIn("security@", p.sent)
+        self.assertEqual(p.step(profile=False), [], "the profile removed: nothing told")
+        self.assertFalse([k for k in p.sent if "@" in k], "and the coverage keys are forgotten")
+        self.assertEqual(p.step(profile=False, gone=["security"]), [], "today's behaviour: an add-on that told nothing goes quietly")
+        # set up again later: the gaps of now are told once
+        self.assertEqual(cov_told(p.step(gone=["security"])), [("security@", "lost", "missing")])
+        self.assertEqual(p.step(gone=["security"]), [])
+
+    def test_old_last_json_keys_keep_working_with_a_profile(self):
+        old = {"cronjobs#x": {"level": "warning", "at": NOW - 86400, "last": {"ok>warning": NOW - 86400}, "label": "Cron Jobs",
+                              "title": "X"},
+               "security#logins": {"level": "warning", "at": NOW - 86400, "last": {}, "label": "Security Monitor", "title": "Logins"}}
+        p = Profiled(sent=old)
+        events = p.step(checks=[("exposure", "checked"), ("containers", "failed")])
+        self.assertEqual(sorted((e["key"], e["kind"]) for e in events),
+                         [("cronjobs#x", "resolved"), ("security#logins", "resolved"), ("security@containers", "lost")])
+        self.assertEqual(p.step(checks=[("exposure", "checked"), ("containers", "failed")]), [])
+
+    def test_a_removed_addon_that_told_problems_is_told_once(self):
+        p = Profiled()
+        p.step(result=ok(gaps_doc([("exposure", "checked")], hslib.iso(NOW + 240),
+                                  [{"id": "logins", "state": "danger", "title": "Logins", "checked_at": hslib.iso(NOW + 240),
+                                    "stale_after": 3600}])))
+        events = p.step(gone=["security"])
+        self.assertEqual([(e["key"], e["kind"]) for e in events], [("security#", "unchecked")],
+                         "no longer checked says it; the coverage is remembered")
+        self.assertEqual(p.sent["security@"]["level"], "lost")
+
+    def test_the_first_summary_names_the_gaps(self):
+        p = Profiled(roles=["web"])
+        snap = p.snapshot(checks=[("exposure", "checked"), ("containers", "noaccess")])
+        gaps, told = hsnotify.coverage_changes({}, hsnotify.profile_coverage(p.profile, snap, NOW, p.have), NOW)
+        msg = hsnotify.message("en", "h", snapshot=snap, summary=True, gaps=gaps)
+        self.assertEqual(msg["body"].split("\n\n"), [
+            "Messages about the Azentrius add-ons of this host now come this way.", "Right now:",
+            "Check no longer possible · Image Update Monitor\nthe add-on is not installed",
+            "Check no longer possible · Security Monitor · Containers\nnothing is readable without root", "Host Settings on h"])
+        self.assertEqual(msg["priority"], 3)
+        base = dict(hsnotify.baseline(snap, NOW), **told)
+        self.assertEqual(sorted(k for k in base if base[k].get("level") == "lost"), ["image-updates@", "security@containers"])
+        self.assertEqual(base["security@exposure"]["level"], "ok", "every expected key is remembered")
+        events, _ = hsnotify.changes(base, snap, NOW + 300, hsnotify.profile_coverage(p.profile, snap, NOW + 300, p.have))
+        self.assertEqual(events, [], "nothing told twice")
+
+    def test_the_memory_keeps_lost_coverage_first(self):
+        sent = {f"security#exposure/port.{n}-tcp": {"level": "ok", "status": "resolved", "at": NOW - n, "last": {},
+                                                    "label": "Security Monitor", "title": str(n)} for n in range(1, 2101)}
+        sent["image-updates@"] = {"level": "lost", "coverage": "missing", "at": NOW - 99999, "last": {}, "label": "Image Update Monitor"}
+        p = Profiled(roles=["web"], sent=sent)
+        self.assertEqual(p.step(), [])
+        self.assertIn("image-updates@", p.sent)
+        self.assertEqual(len(p.sent), hsnotify.MAX_KEYS)
+
+
+# ---------------------------------------------------------------------------
 # Messages
 
 class Messages(unittest.TestCase):

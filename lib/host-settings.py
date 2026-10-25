@@ -16,10 +16,18 @@ Status Board.
   host-settings.py run                       one run of the notifier now (root)
   host-settings.py install timer             the regular run: every 5 minutes (root)
   host-settings.py remove timer              switch it off (root)
+  host-settings.py profile show              the host's target profile (no root: the file is 0644)
+  host-settings.py profile roles [ROLE ...]  set the roles; none: the add-ons of every host (root)
+  host-settings.py profile expect add|remove ADDON[/CHECK]   an extra expectation (root)
+  host-settings.py profile skip add ADDON/CHECK [YYYY-MM-DD] leave a check out on purpose, until
+                                             that day if given; the reason on standard input (root)
+  host-settings.py profile skip remove ADDON/CHECK (root)
+  host-settings.py profile remove            no profile any more (root)
 
 Everything else is a wrong call (exit 64). Every argument is checked here.
 The changes this helper makes are the settings in /etc/cockpit-host-settings
-(notify.conf 0644, ntfy.token 0600, both root's) and the add-on's own timer;
+(notify.conf and profile.conf 0644, ntfy.token 0600, all root's; the profile
+keeps its previous version in profile.conf.bak) and the add-on's own timer;
 the token never appears in an argument, an output or a log. Sending and
 checking run in the add-on's services as their own user, never as root.
 
@@ -27,6 +35,7 @@ Exit codes: 0 ok, 1 failed, 2 unit missing, 64 wrong call, 75 busy, 77 needs
 root. HOST_SETTINGS_LANG=de|en selects the language of the messages.
 """
 
+import copy
 import fcntl
 import json
 import os
@@ -46,6 +55,7 @@ import hsstatus  # noqa: E402
 
 CONF_DIR = "/etc/cockpit-host-settings"
 CONF = CONF_DIR + "/notify.conf"
+PROFILE = CONF_DIR + "/profile.conf"
 TOKEN = CONF_DIR + "/ntfy.token"
 STATE_DIR = "/var/lib/cockpit-host-settings"
 LOCK = "/run/cockpit-host-settings.lock"
@@ -56,7 +66,9 @@ USER = "cockpit-host-settings"
 LANG_RE = re.compile(r"[A-Za-z]{2,3}(?:[_-][A-Za-z0-9]{2,8})?")
 USAGE = ("usage: host-settings.py status [--lang en|de] | show | set ntfy URL TOPIC | set mail ADDRESS | "
          "set language en|de | unset ntfy|mail | token set|remove | check ntfy | test mail | run | "
-         "install timer | remove timer")
+         "install timer | remove timer | profile show | profile roles [ROLE ...] | "
+         "profile expect add|remove ADDON[/CHECK] | profile skip add ADDON/CHECK [YYYY-MM-DD] | "
+         "profile skip remove ADDON/CHECK | profile remove")
 ENV = {"PATH": hsproc.PATH, "LC_ALL": "C.UTF-8", "TZ": "UTC"}
 
 
@@ -130,7 +142,23 @@ def language(rest):
     return "de" if rest[1].lower()[:2] == "de" else "en"
 
 
-def do_status(rest, path=None, now=None):
+def read_profile(path):
+    """(profile, bad line numbers, the file's time) of profile.conf: no profile when the file is
+    missing, None for the profile when it cannot be read."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read(1 << 16)
+            mtime = os.fstat(f.fileno()).st_mtime
+    except FileNotFoundError:
+        prof, bad = hslib.parse_profile("")
+        return prof, bad, None
+    except (OSError, UnicodeDecodeError):
+        return None, [], None
+    prof, bad = hslib.parse_profile(text)
+    return prof, bad, mtime
+
+
+def do_status(rest, path=None, now=None, profile=None):
     lang = language(rest)
     if lang is None:
         print(USAGE, file=sys.stderr)
@@ -155,6 +183,13 @@ def do_status(rest, path=None, now=None):
         else:
             doc = hsstatus.localize(status, lang, now)
             doc["version"] = ver
+    # The host's target profile, from the file itself (0644): the board sees a change at once, also
+    # before the notifier ran. Without a profile (or a file that cannot be read) no field at all.
+    prof, _, mtime = read_profile(profile or PROFILE)
+    answer = hslib.profile_answer(prof, mtime) if prof else None
+    if answer:
+        doc["features"] = list(dict.fromkeys(list(doc.get("features") or []) + ["profile"]))
+        doc["profile"] = answer
     json.dump(doc, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
     return 0
@@ -205,7 +240,27 @@ def hostname():
     return socket.gethostname()
 
 
-def do_show(rest, conf=CONF, token=TOKEN, state_dir=STATE_DIR, run=hsproc.run):
+def profile_view(path=PROFILE, now=None):
+    """The profile as `show` and `profile show` print it: whether one is set, the roles, the extra
+    expectations, what is expected (resolved), the skips (each active or ended at the time now),
+    set_at, the lines that do not count, and the catalog of roles; unreadable when the file
+    cannot be read."""
+    now = time.time() if now is None else now
+    prof, bad, mtime = read_profile(path)
+    catalog = {"base": list(hslib.BASE_EXPECT), "roles": [[r, list(adds)] for r, adds in hslib.ROLES],
+               "labels": dict(hslib.ADDON_LABELS)}
+    if prof is None:
+        return {"set": False, "unreadable": True, "roles": [], "extra": [], "expect": [], "skip": [], "set_at": None,
+                "bad_lines": [], "catalog": catalog}
+    on = hslib.profile_set(prof)
+    return {"set": on, "unreadable": False, "roles": prof["roles"] or [], "extra": prof["extra"],
+            "expect": hslib.resolve_expect(prof["roles"], prof["extra"]) if on else [],
+            "skip": [dict(s, active=hslib.skip_active(s, now)) for s in prof["skip"]],
+            "set_at": prof["set_at"] or (hslib.iso(mtime) if on and mtime is not None else None),
+            "bad_lines": bad, "catalog": catalog}
+
+
+def do_show(rest, conf=CONF, token=TOKEN, state_dir=STATE_DIR, run=hsproc.run, profile=None):
     if rest:
         raise WRONG
     need_root()
@@ -226,10 +281,12 @@ def do_show(rest, conf=CONF, token=TOKEN, state_dir=STATE_DIR, run=hsproc.run):
         "root": True, "config": cfg, "bad_lines": bad, "token": token_set, "timer": timer, "next": nxt,
         "running": systemctl("is-active", SERVICE).stdout.strip() == "activating",
         "host": hostname(), "smtp": {"listening": smtp_listening(run), "sendmail": os.path.exists("/usr/sbin/sendmail")},
-        "last": {k: last.get(k) for k in ("baseline_at", "run", "delivery", "access", "seen")} if last else None,
+        "last": {k: last.get(k) for k in ("baseline_at", "run", "delivery", "access", "seen", "coverage")}
+        if last else None,
         "check": read_json(os.path.join(state_dir, "test-ntfy.json")),
         "test_mail": read_json(os.path.join(state_dir, "test-mail.json")),
         "docs": hslib.NTFY_DOCS,
+        "profile": profile_view(profile or PROFILE),
     }
     if out["last"] and isinstance(out["last"].get("access"), dict):
         out["last"]["access"] = {k: v for k, v in out["last"]["access"].items() if k != "steps"}
@@ -342,6 +399,193 @@ def do_token(rest, token=TOKEN, lock=LOCK, stdin=None):
             os.makedirs(os.path.dirname(token), mode=0o755, exist_ok=True)
             write_text_atomic(token, "", 0o600)
         say("Token entfernt.", "Token removed.")
+        return 0
+    raise WRONG
+
+
+# ---------------------------------------------------------------------------
+# The target profile (root; `profile show` without)
+
+NO_PROFILE = Fail(1, "Dieser Host hat noch kein Profil: Setzen Sie zuerst die Rollen (profile roles …).",
+                  "This host has no profile yet: set the roles first (profile roles …).")
+BAD_ITEM = Fail(64, "Erwartet wird ein Add-on (security) oder eine seiner Prüfungen (security/exposure).",
+                "Expected: an add-on (security) or one of its checks (security/exposure).")
+BAD_SKIP = Fail(64, "Auslassen lässt sich nur eine Prüfung eines Add-ons, als ADD-ON/PRÜFUNG (update-gaps/cve); "
+                    "ein Add-on allein lässt sich nicht auslassen.",
+                "Only a check of an add-on can be left out, as ADDON/CHECK (update-gaps/cve); an add-on alone cannot "
+                "be left out.")
+UNCHANGED = ("Nichts geändert.", "Nothing changed.")
+
+
+def change_profile(update, path=PROFILE, lock=LOCK, now=None):
+    """Changes the profile under the lock: update(profile) gets a copy and returns the new profile
+    (None: no profile), or raises Fail. Writes profile.conf atomically (0644, line by line, see
+    hslib.format_profile) after keeping the file as it was in profile.conf.bak, and only when
+    something changes. Returns whether it did."""
+    with Locked(lock):
+        os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+        try:
+            with open(path, encoding="utf-8") as f:
+                old = f.read(1 << 16)
+        except FileNotFoundError:
+            old = ""
+        except (OSError, UnicodeDecodeError) as e:
+            why = getattr(e, "strerror", None) or "UTF-8"
+            raise Fail(1, f"{path} ist nicht lesbar: {why}", f"{path} is not readable: {why}")
+        prof, _ = hslib.parse_profile(old)
+        new = update(copy.deepcopy(prof))
+        if new is None:
+            text = hslib.format_profile(old, None)
+            if not old or text == old:
+                return False
+        else:
+            if new == prof:
+                return False
+            new["set_at"] = hslib.iso(time.time() if now is None else now)
+            text = hslib.format_profile(old, new)
+        if old:
+            write_text_atomic(path + ".bak", old, 0o644)
+        write_text_atomic(path, text, 0o644)
+    return True
+
+
+def read_reason(stdin=None):
+    """The reason of a skip, from standard input: one line of UTF-8 text, cleaned and cut to 200."""
+    data = (stdin or sys.stdin.buffer).read(4097)
+    try:
+        text = data.decode("utf-8").rstrip("\r\n")
+    except UnicodeDecodeError:
+        text = ""
+    reason = hslib.clean_reason(text) if "\n" not in text and "\r" not in text else None
+    if len(data) > 4096 or not reason:
+        raise Fail(64, "Der Grund fehlt oder ist ungültig: eine Zeile Text auf der Standardeingabe; davon werden "
+                       "höchstens 200 Zeichen behalten.",
+                   "The reason is missing or not valid: one line of text on standard input, of which at most 200 "
+                   "characters are kept.")
+    return reason
+
+
+def _known_roles():
+    return ", ".join(r for r, _ in hslib.ROLES)
+
+
+def do_profile(rest, path=PROFILE, lock=LOCK, stdin=None, now=None):
+    if rest == ["show"]:
+        view = profile_view(path, now)
+        if view["unreadable"]:
+            raise Fail(1, f"{path} ist nicht lesbar.", f"{path} is not readable.")
+        json.dump(view, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+
+    if rest and rest[0] == "roles":
+        roles = list(dict.fromkeys(rest[1:]))
+        unknown = [r for r in roles if not hslib.ROLE_RE.fullmatch(r) or r not in hslib.ROLE_EXPECT]
+        if unknown or len(roles) > hslib.MAX_ROLES:
+            named = ", ".join(r for r in unknown if hslib.ROLE_RE.fullmatch(r)) or "?"
+            raise Fail(64, f"Unbekannte Rolle: {named}. Bekannt sind: {_known_roles()}.",
+                       f"Unknown role: {named}. Known roles: {_known_roles()}.")
+        need_root()
+        if not change_profile(lambda p: dict(p, roles=roles), path, lock, now):
+            say(*UNCHANGED)
+            return 0
+        if roles:
+            say(f"Profil gespeichert: Rollen {', '.join(roles)}.", f"Profile saved: roles {', '.join(roles)}.")
+        else:
+            say("Profil gespeichert: keine Rolle, erwartet werden die Add-ons jedes Hosts.",
+                "Profile saved: no role, the add-ons of every host are expected.")
+        return 0
+
+    if len(rest) == 3 and rest[0] == "expect" and rest[1] in ("add", "remove"):
+        item = rest[2]
+        if not hslib.EXPECT_RE.fullmatch(item):
+            raise BAD_ITEM
+        need_root()
+
+        def expect(p):
+            if not hslib.profile_set(p):
+                raise NO_PROFILE
+            have = hslib.resolve_expect(p["roles"], p["extra"])
+            if rest[1] == "add":
+                if item in have:
+                    return p
+                if len(have) >= hslib.MAX_EXPECT:
+                    raise Fail(1, f"Höchstens {hslib.MAX_EXPECT} Add-ons und Prüfungen werden erwartet.",
+                               f"At most {hslib.MAX_EXPECT} add-ons and checks are expected.")
+                p["extra"].append(item)
+            elif item in p["extra"]:
+                p["extra"].remove(item)
+            elif item in have:
+                raise Fail(1, f"{item} erwarten die Rollen oder jeder Host. Eine Prüfung lassen Sie mit "
+                              f"„profile skip add“ aus.",
+                           f"{item} is expected by the roles or by every host. Leave a check out with "
+                           f"\"profile skip add\".")
+            return p
+        if not change_profile(expect, path, lock, now):
+            say(*UNCHANGED)
+        elif rest[1] == "add":
+            say(f"Zusätzlich erwartet: {item}.", f"Also expected now: {item}.")
+        else:
+            say(f"Nicht mehr zusätzlich erwartet: {item}.", f"No longer expected in addition: {item}.")
+        return 0
+
+    if len(rest) in (3, 4) and rest[:2] == ["skip", "add"]:
+        check, until = rest[2], (rest[3] if len(rest) == 4 else None)
+        if not hslib.SKIP_RE.fullmatch(check):
+            raise BAD_SKIP
+        if until is not None:
+            day = hslib.parse_date(until)
+            today = int((time.time() if now is None else now) // 86400) * 86400
+            if day is None or day <= today:
+                raise Fail(64, "Das Ende ist ein Tag in der Zukunft, JJJJ-MM-TT. Die Ausnahme endet an diesem Tag.",
+                           "The end is a day in the future, YYYY-MM-DD. The skip ends on that day.")
+        need_root()
+        reason = read_reason(stdin)
+
+        def skip_add(p):
+            if not hslib.profile_set(p):
+                raise NO_PROFILE
+            entry = {"check": check, "until": until, "reason": reason}
+            if any(s["check"] == check for s in p["skip"]):
+                p["skip"] = [entry if s["check"] == check else s for s in p["skip"]]
+            elif len(p["skip"]) >= hslib.MAX_SKIP:
+                raise Fail(1, f"Höchstens {hslib.MAX_SKIP} Prüfungen lassen sich auslassen.",
+                           f"At most {hslib.MAX_SKIP} checks can be left out.")
+            else:
+                p["skip"].append(entry)
+            return p
+        if not change_profile(skip_add, path, lock, now):
+            say(*UNCHANGED)
+        elif until:
+            say(f"Bewusst ausgelassen bis {until}: {check}.", f"Left out on purpose until {until}: {check}.")
+        else:
+            say(f"Bewusst ausgelassen: {check}.", f"Left out on purpose: {check}.")
+        return 0
+
+    if len(rest) == 3 and rest[:2] == ["skip", "remove"]:
+        check = rest[2]
+        if not hslib.SKIP_RE.fullmatch(check):
+            raise BAD_SKIP
+        need_root()
+
+        def skip_remove(p):
+            if not hslib.profile_set(p):
+                raise NO_PROFILE
+            p["skip"] = [s for s in p["skip"] if s["check"] != check]
+            return p
+        if not change_profile(skip_remove, path, lock, now):
+            say(*UNCHANGED)
+        else:
+            say(f"Zählt wieder: {check}.", f"Counts again: {check}.")
+        return 0
+
+    if rest == ["remove"]:
+        need_root()
+        if not change_profile(lambda p: None, path, lock, now):
+            say(*UNCHANGED)
+        else:
+            say("Profil entfernt: Dieser Host hat kein Sollprofil mehr.", "Profile removed: this host has no target "
+                "profile any more.")
         return 0
     raise WRONG
 
@@ -463,6 +707,8 @@ def main(argv):
             return do_run(rest)
         if verb in ("install", "remove"):
             return do_timer(verb, rest)
+        if verb == "profile":
+            return do_profile(rest)
         raise WRONG
     except Fail as f:
         say(f.de, f.en, sys.stderr)

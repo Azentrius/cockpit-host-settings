@@ -115,6 +115,12 @@ dialog.hs-dialog::backdrop { background: var(--backdrop); }
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+/* The roles: one switch per line, with what the role adds. */
+.hs-switches { margin: 0; padding: 0; border: 0; gap: var(--space-sm); }
+.hs-switches legend { padding: 0; margin-block-end: var(--space-xs); }
+.hs-switches .az-switch { align-items: flex-start; }
+.hs-switches .az-switch__track { margin-block-start: 1px; }
+.hs-switches .az-switch__label { min-width: 0; overflow-wrap: anywhere; }
 .hs-dialog-result:empty { display: none; }
 .hs-dialog-result.is-ok { color: var(--status-success); }
 .hs-dialog-result.is-error { color: var(--danger-text); }
