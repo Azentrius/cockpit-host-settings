@@ -1,0 +1,10 @@
+{
+    "version": 0,
+    "menu": {
+        "index": { "label": "Host Settings", "order": 38 }
+    },
+    "preload": ["index"],
+    "azentrius": {
+        "status": ["/usr/lib/cockpit-host-settings/host-settings.py", "status"]
+    }
+}

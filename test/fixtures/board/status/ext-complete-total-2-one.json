@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "addon": "security",
+  "label": "Security Monitor",
+  "version": "0.4.0",
+  "checked_at": "2026-10-19T18:55:00Z",
+  "state": "danger",
+  "summary": "Findings in 1 area: Reachable from the internet.",
+  "features": [
+    "checks",
+    "findings"
+  ],
+  "checks": [
+    {
+      "id": "exposure",
+      "state": "checked",
+      "title": "Reachable from the internet",
+      "item": "exposure",
+      "checked_at": "2026-10-19T18:55:00Z",
+      "stale_after": 3600
+    }
+  ],
+  "items": [
+    {
+      "id": "exposure",
+      "state": "danger",
+      "title": "Reachable from the internet",
+      "value": "2",
+      "link": "#/exposure",
+      "checked_at": "2026-10-19T18:55:00Z",
+      "stale_after": 3600,
+      "findings": {
+        "complete": true,
+        "total": 2,
+        "list": [
+          {"fid": "port.5432-tcp", "state": "danger", "title": "5432/tcp postgres", "since": "2026-10-19T18:30:00Z", "exposure": "internet", "fix": "available", "link": "#/exposure/5432-tcp"}
+        ]
+      }
+    }
+  ]
+}

@@ -243,6 +243,56 @@ class Runs(unittest.TestCase):
                          [("h: Update-Gaps, mariadb-server is held",
                            "Warning · Update-Gaps · mariadb-server is held\nHeld packages\n\nHost Settings on h")])
 
+    def test_findings_that_break_the_rules_resolve_nothing_in_whole_runs(self):
+        # The sequence of the review, through discover(), the status verb, hslib's rules,
+        # changes(), the message, the channel and last.json: a broken list next to a check that
+        # ran in part closes nothing; only a complete list does, and a send that fails is
+        # repeated.
+        host = Host()
+        held = [{"fid": "held.postgresql-16", "state": "warning", "title": "postgresql-16 is held"}]
+        now = {"list": held, "check": "checked", "state": "warning"}
+
+        def gaps(argv):
+            doc = json.loads(status_doc("update-gaps", [{"id": "held", "state": now["state"], "title": "Held packages",
+                                                         "findings": {"complete": True, "total": len(now["list"]) if
+                                                                      isinstance(now["list"], list) else 1,
+                                                                      "list": now["list"]}}],
+                                        at=hslib.iso(host.now - 60)))
+            doc.update(features=["checks", "findings"],
+                       checks=[{"id": "held", "state": now["check"], "title": "Held packages", "item": "held",
+                                "checked_at": hslib.iso(host.now - 60), "stale_after": 3600}])
+            return ok(json.dumps(doc))
+        runner = Runner({CRON: host.answer("cronjobs"), GAPS: gaps})
+        key = "update-gaps#held/held.postgresql-16"
+        code, out = host.run(runner=runner)
+        self.assertEqual(code, 0, out)
+        self.assertIn("Warning · Update-Gaps · postgresql-16 is held", host.posts()[0]["message"])
+        self.assertEqual(host.file("last.json")["sent"][key]["status"], "open")
+        # the item OK, its check partial, the list a text: no message, the finding stays open
+        now.update(list="unreadable", check="partial", state="ok")
+        host.now += 300
+        self.assertEqual(host.run(runner=runner)[0], 0)
+        self.assertEqual(len(host.posts()), 1)
+        self.assertEqual(host.file("last.json")["sent"][key]["status"], "open")
+        # readable and unchanged again: nothing, not a second new
+        now.update(list=held, check="checked", state="warning")
+        host.now += 300
+        host.run(runner=runner)
+        self.assertEqual(len(host.posts()), 1)
+        # a complete list without it, but nothing goes out: it stays open, the change comes again
+        now.update(list=[], state="ok")
+        host.http.answers[("POST", "https://ntfy.example.com/", "auth")] = "network"
+        host.now += 300
+        host.run(runner=runner)
+        self.assertEqual(host.file("last.json")["sent"][key]["status"], "open")
+        host.http.answers[("POST", "https://ntfy.example.com/", "auth")] = (200, "{}")
+        host.now += 300
+        host.run(runner=runner)
+        self.assertEqual(host.posts()[-1]["message"], "OK again · Update-Gaps · postgresql-16 is held\n"
+                                                      "Held packages: no longer found by a complete check\n\nHost Settings on h")
+        self.assertEqual(host.file("last.json")["sent"][key]["status"], "resolved")
+        self.assertEqual(len(host.posts()), 3, "the summary, the failed try, the message")
+
     def test_an_addon_that_fails_is_a_warning_of_its_own(self):
         host = Host()
         host.run()

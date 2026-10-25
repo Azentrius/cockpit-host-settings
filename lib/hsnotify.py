@@ -242,7 +242,10 @@ def read_addon(pkg, label, entry, lang, now, run=hsproc.run, lstat=os.lstat):
     An item's state is the one the board shows at the time now (never better than its open
     findings, at least a warning when out of date); its findings are None, or {complete, total,
     list} when the add-on declares the feature and the item lists them, each finding {fid,
-    state, title, accepted, link} with accepted judged at the time now. checks are the answer's
+    state, title, accepted, link} with accepted judged at the time now; its listing is
+    hslib's: "listed", "broken" (the item sends findings that break the rules) or "none" (it
+    sends none), which changes() needs to tell a broken list from an add-on that never lists
+    findings. checks are the answer's
     checks (hslib.validate_check) or None; legacy is what its items say about its coverage, as
     the board judges an answer without checks (checked, unchecked, stale)."""
     out = {"label": label or pkg, "kind": "ok", "reason": None, "code": None, "state": "none",
@@ -284,7 +287,8 @@ def read_addon(pkg, label, entry, lang, now, run=hsproc.run, lstat=os.lstat):
                summary=status["summary"], dropped=status["dropped"],
                items=[{"id": i["id"], "title": i["title"], "state": i["state"], "value": i["value"],
                        "detail": i["detail"], "link": i["link"], "stale_at": i["stale_at"],
-                       "findings": _findings_of(i["findings"], owner.get(i["id"]), now)} for i in ev["items"]],
+                       "findings": _findings_of(i["findings"], owner.get(i["id"]), now),
+                       "listing": i["listing"]} for i in ev["items"]],
                checks=status["checks"],
                legacy=hslib.coverage_of(hslib.tile_of({"kind": "ok", "status": dict(status, checks=None)}, now), now))
     return out
@@ -498,6 +502,15 @@ def _worst(levels):
     return max(levels, key=hslib.rank, default="ok")
 
 
+def _listing(it):
+    """Why an item of a snapshot has the findings it has (read_addon()): "listed", "broken" or
+    "none"; an item without the field (a snapshot of the tests) by its findings."""
+    lst = it.get("listing")
+    if lst in hslib.LISTINGS:
+        return lst
+    return "listed" if it.get("findings") is not None else "none"
+
+
 def _level_of(thing):
     """The level of an item or a finding; UNKNOWN while the add-on cannot judge it (none)."""
     return UNKNOWN if thing["state"] == "none" else level(thing["state"])
@@ -558,9 +571,16 @@ def changes(sent, snapshot, now, coverage=None):
     no items out; otherwise it keeps what was told. A resolved finding that comes back within
     KEEP seconds is told as "again". When an item that was compared per item (0.1.0 or an
     add-on without findings) lists findings for the first time, those no more severe than what
-    was told for the item are taken as told, without a message. An item that lists no findings
-    (any more) is compared per item, from the most severe of the findings it told; once it is
-    OK, they are resolved with it."""
+    was told for the item are taken as told, without a message.
+
+    An item that lists no findings now while findings of it were told is no proof that they are
+    gone: its findings break the rules ("broken", read_addon()), or it sends none any more (an
+    older version of the add-on, the extension lost). Its findings keep what was told (open,
+    accepted, resolved) and, as long as they are open or accepted, explain the item's level, so
+    the item itself is told only for what they do not explain; they change again only with a
+    list that can be read (above). An item that never told findings is compared per item, as
+    before. An item whose findings break the rules is told nothing better, its own key neither:
+    it may get worse, never better, until a list that can be read comes."""
     sent = sent if isinstance(sent, dict) else {}
     told_coverage = {k: v for k, v in sent.items() if COVERAGE in k}
     sent = {k: v for k, v in sent.items() if COVERAGE not in k}
@@ -571,7 +591,8 @@ def changes(sent, snapshot, now, coverage=None):
         if fid and isinstance(entry, dict):
             told_findings.setdefault((pkg, iid), {})[fid] = entry
     present = {(pkg, it["id"]): it for pkg, a in snapshot.items() if a["kind"] == "ok" for it in a["items"]}
-    cover, fold = {}, {}
+    broken = {k for k, it in present.items() if _listing(it) == "broken"}
+    cover = {}
 
     # 1. The findings of the items that list them.
     for (pkg, iid), it in sorted(present.items()):
@@ -598,8 +619,9 @@ def changes(sent, snapshot, now, coverage=None):
         cover[(pkg, iid)] = _worst([_known(out.get(item_key + "/" + fid)) for fid in fids] +
                                    [x for x in (_level_of(f) for f in found["list"]) if x in PROBLEM])
 
-    # 2. Findings told for an item that lists none now: kept as they are; an add-on that is gone
-    #    takes them along. Such an item, compared per item again, starts from the most severe.
+    # 2. Findings told for an item that lists none now (its findings break the rules, or it
+    #    sends none any more): no proof that they are gone, so they stay as they are and, while
+    #    open or accepted, explain the item's level. An add-on that is gone takes them along.
     for (pkg, iid), told in sorted(told_findings.items()):
         if pkg not in snapshot:
             for fid, entry in sorted(told.items()):
@@ -608,8 +630,9 @@ def changes(sent, snapshot, now, coverage=None):
             continue
         for fid, entry in told.items():
             out[pkg + "#" + iid + "/" + fid] = entry
-        if (pkg, iid) in present:
-            fold[(pkg, iid)] = _worst(_known(e) for e in told.values())
+        known = _worst(_known(e) for e in told.values())
+        if (pkg, iid) in present and known in PROBLEM:
+            cover[(pkg, iid)] = known
 
     # 3. The add-ons and their items.
     cur = {}
@@ -622,11 +645,6 @@ def changes(sent, snapshot, now, coverage=None):
         pkg, iid, _ = _parts(key)
         old_entry = sent.get(key) if isinstance(sent.get(key), dict) else {}
         old = _told(old_entry)
-        if hslib.rank(fold.get((pkg, iid), "ok")) > hslib.rank(old):
-            old = fold[(pkg, iid)]
-            old_entry = dict({"at": now, "last": {}, "label": snapshot[pkg]["label"],
-                              "title": present[(pkg, iid)]["title"]}, **old_entry)
-            old_entry["level"] = old
         why = None
         if key in cur:
             new, item = cur[key]
@@ -653,6 +671,10 @@ def changes(sent, snapshot, now, coverage=None):
             if store in PROBLEM or _recent(old_entry, now):
                 out[key] = dict(old_entry, level=store)
             continue
+        if (pkg, iid) in broken and hslib.rank(store) < hslib.rank(old):
+            # its findings break the rules: worse is told, better waits for a list that can be read
+            out[key] = old_entry
+            continue
         change = old + ">" + new
         last = old_entry.get("last") if isinstance(old_entry.get("last"), dict) else {}
         if isinstance(last.get(change), (int, float)) and now - last[change] < FLAP:
@@ -671,13 +693,6 @@ def changes(sent, snapshot, now, coverage=None):
         if key in out and bool(out[key].get("findings")) != ((pkg, iid) in cover):
             out[key] = dict(out[key], findings=True) if (pkg, iid) in cover else \
                 {k: v for k, v in out[key].items() if k != "findings"}
-
-    # An item compared per item that is OK now resolves the findings it told, without a message.
-    for (pkg, iid) in fold:
-        if _level_of(present[(pkg, iid)]) == "ok" and _told(out.get(pkg + "#" + iid)) == "ok":
-            prefix = pkg + "#" + iid + "/"
-            for key in [k for k in out if k.startswith(prefix) and out[k].get("status") in ("open", "accepted")]:
-                out[key] = dict(out[key], level="ok", status="resolved", at=now)
 
     events.extend(_unchecked(pkg, entries) for pkg, entries in sorted(uninstalled.items()))
     told_addons = {e["pkg"] for e in events if not e["id"]}
