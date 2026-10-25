@@ -1,0 +1,9 @@
+{
+    "version": 0,
+    "menu": {
+        "index": { "label": "Edge Exact", "order": 90 }
+    },
+    "azentrius": {
+        "status": ["/usr/lib/cockpit-edge-exact/status", "status"]
+    }
+}

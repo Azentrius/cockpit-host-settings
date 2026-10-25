@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "addon": "security",
+  "label": "Security Monitor",
+  "version": "0.4.0",
+  "checked_at": "2026-10-19T18:55:00Z",
+  "state": "ok",
+  "summary": "Nothing found.",
+  "features": [
+    "checks",
+    "findings"
+  ],
+  "checks": [
+    {
+      "id": "exposure",
+      "state": "checked",
+      "title": "Reachable from the internet",
+      "item": "exposure",
+      "checked_at": "2026-10-19T18:55:00Z",
+      "stale_after": 3600
+    }
+  ],
+  "items": [
+    {
+      "id": "exposure",
+      "state": "ok",
+      "title": "Reachable from the internet",
+      "value": "0",
+      "link": "#/exposure",
+      "checked_at": "2026-10-19T18:55:00Z",
+      "stale_after": 3600,
+      "findings": {
+        "complete": true,
+        "total": 0,
+        "list": []
+      }
+    }
+  ]
+}
