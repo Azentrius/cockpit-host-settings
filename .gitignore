@@ -8,5 +8,7 @@ test/shots/
 build/
 dist/
 first.sha256
+/e2e-suite/
+/products/
 *.tar.gz
 SHA256SUMS

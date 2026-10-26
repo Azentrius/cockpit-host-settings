@@ -728,3 +728,18 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   causes a denial on purpose (root entering `httpd_t` with `/usr/bin/true`) and fails unless the
   check catches it. Report, journal, audit log and console
   are in the artifacts `e2e-rocky-9` and `e2e-rocky-10`.
+- Workflow `e2e-suite` (E2E-1, `test/e2e-suite/`): the suite with its real packages on the runner.
+  Security Monitor, Host Settings and Status Board are built from one exact commit each (inputs
+  with defaults; `manifest.py` writes the version manifest), installed with apt, then
+  `setup.sh` adds Cockpit with an administrator and a user without administrative access, ntfy,
+  UFW with 5432/tcp and 6379/tcp allowed, a public address on a dummy interface and a second host
+  for the board (a container with SSH and Host Settings, whose profile expects Security Monitor).
+  `core.py` (steps 1 to 9) opens real listeners the scan rates a danger from the internet and
+  checks the messages, `last.json` and the coverage through two findings, a repeat in German and
+  in another order, a resolved finding, a packet filter listing that fails inside the scan's unit
+  (partial, nothing resolved), the hour against flapping (by moving a time in `last.json`, test
+  only) and two broken answers of a stand-in for Security Monitor's status verb. `ui.py` (step 10)
+  checks the board's tasks per host, the jump to the port in Security Monitor's open frame, the
+  expected gap with "Only what needs attention", and that a user without administrative access
+  sees no details. Pull requests run it only when the workflow or `test/e2e-suite/` changes; the
+  artifact `e2e-suite` holds the manifest, status answers, messages, assertions and screenshots.
