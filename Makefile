@@ -42,7 +42,7 @@ check:
 
 # As in CI (the tools: pip install -r test/requirements.txt).
 lint:
-	shellcheck --severity=warning tools/*.sh test/*.sh test/e2e/*.sh packaging/scripts/*
+	shellcheck --severity=warning tools/*.sh test/*.sh test/e2e/*.sh test/e2e-suite/*.sh packaging/scripts/*
 	ruff check .
 	sh tools/check-units.sh
 
