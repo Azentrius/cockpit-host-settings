@@ -6,7 +6,7 @@ e2e-suite; never a server). As root:
 
     sudo env MANIFEST=OUT/manifest.json python3 -B test/e2e-suite/core.py OUT/core
 
-The two listeners are real sockets of a real process on 0.0.0.0 (listen.py, a unit of its own),
+The two listeners are real sockets of a real process on 203.0.113.10 (listen.py, a unit of its own),
 5432/tcp (A) and 6379/tcp (B), both allowed by a UFW rule, so the scan follows a new connection
 from the public address on pub0 to an ACCEPT and rates each a danger from the internet
 (databases are dangerous ports). Every scan is the page's "Refresh" verb (security.py scan, the
@@ -415,7 +415,7 @@ def step1():
 
 def step2():
     begin(2, "Listener A: finding A, exactly one message")
-    check(listener(A[0], True), "listener A on 0.0.0.0:5432")
+    check(listener(A[0], True), "listener A on 203.0.113.10:5432")
     sc = scan("A-open")
     pa = sc["test_ports"].get(A[0]) or {}
     check(pa.get("internet") == "open" and pa.get("state") == "danger" and pa.get("why") == "public-danger",
@@ -443,7 +443,7 @@ def step3():
     begin(3, "Listener B while A stays open: finding B, exactly one message")
     before = exposure(status(SM, "security", "en", "before-B"))[0].get("state")
     check(before == "danger", "the item exposure is a danger already", before)
-    check(listener(B[0], True), "listener B on 0.0.0.0:6379")
+    check(listener(B[0], True), "listener B on 203.0.113.10:6379")
     sc = scan("B-open")
     pb = sc["test_ports"].get(B[0]) or {}
     check(pb.get("internet") == "open" and pb.get("state") == "danger", "the scan: 6379/tcp open from the internet, a danger", pb)
@@ -591,7 +591,7 @@ def step7():
 
 def step8():
     begin(8, "B open again: the hour against flapping, then again")
-    check(listener(B[0], True), "listener B on 0.0.0.0:6379 again")
+    check(listener(B[0], True), "listener B on 203.0.113.10:6379 again")
     scan("B-reopened")
     sm = answers("B-reopened")
     check((exposure(sm)[3].get(B[1]) or {}).get("state") == "danger", "the status: finding B, a danger")
