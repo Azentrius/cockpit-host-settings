@@ -55,12 +55,13 @@ install -d -m 755 "$lib"
 install -m 755 "$here/listen.py" "$here/security_stub.py" "$here/no_packet_filter.sh" "$lib/"
 
 step "Two Cockpit users"
-# The runner image sets XDG_CONFIG_HOME=/home/runner/.config for everyone in /etc/environment:
-# Cockpit's bridge, started for another user, then fails on that folder and the login ends with
-# 401 (found by Security Monitor's e2e job).
-if grep -q '^XDG_CONFIG_HOME=' /etc/environment 2> /dev/null; then
-    sed -i '/^XDG_CONFIG_HOME=/d' /etc/environment
-fi
+# The runner image sets the runner's XDG folders for everyone in /etc/environment: with
+# XDG_CONFIG_HOME=/home/runner/.config Cockpit's bridge, started for another user, fails and the
+# login ends with 401 (found by Security Monitor's e2e job); with XDG_RUNTIME_DIR=/run/user/1001
+# its SSH (ferny) cannot make its control socket there, and the board finds e2e-peer
+# unreachable ("Permission denied: '/run/user/1001/ferny'").
+grep '^XDG_' /etc/environment || true
+sed -i '/^XDG_[A-Z_]*=/d' /etc/environment
 useradd -m -s /bin/bash -G sudo "$ADMIN_USER"
 useradd -m -s /bin/bash "$PLAIN_USER"
 printf '%s:%s\n%s:%s\n' "$ADMIN_USER" "$ADMIN_PW" "$PLAIN_USER" "$PLAIN_PW" | chpasswd
