@@ -54,9 +54,11 @@ external watchdog notices when the notifier itself stops.
 - **Systems:** the `.rpm` is installed and checked on Rocky Linux and AlmaLinux 9 and 10, and the
   end-to-end test runs in Rocky Linux 9 and 10 VMs with SELinux enforcing as well.
 - **Install:** the README and the release notes name the package repository first again.
-- **Tested together:** Status Board 0.3.0, Host Settings 0.2.0 and Security Monitor 0.4.0. Single
-  findings of exposed ports need Security Monitor 0.4.0 or newer, the target profile on the board
-  Status Board 0.3.0 or newer.
+- **Tested together:** Status Board 0.3.0, Host Settings 0.2.0 and Security Monitor 0.4.0, with
+  their real packages in the new end-to-end test of the suite (workflow `e2e-suite`): a real scan,
+  the real notifier and ntfy, and a real Cockpit with a second host, on a throw-away machine.
+  Single findings of exposed ports need Security Monitor 0.4.0 or newer, the target profile on the
+  board Status Board 0.3.0 or newer.
 - **Older add-ons:** the status contract stays at schema 1 and the new parts are optional. Add-ons
   in older versions still work and are compared per item as before; Status Board shows their items
   as "summary only".
