@@ -40,6 +40,7 @@ peer_image=ubuntu:24.04
 topic=cockpit-e2e
 # shellcheck disable=SC1091
 . /etc/os-release
+# shellcheck disable=SC2154 # set by /etc/os-release
 backports=$VERSION_CODENAME-backports
 
 apt_get() {
@@ -107,6 +108,8 @@ for u in "$ADMIN_USER" "$PLAIN_USER"; do
     home=$(getent passwd "$u" | cut -d: -f6)
     install -d -m 700 -o "$u" -g "$u" "$home/.ssh"
     runuser -u "$u" -- ssh-keygen -q -t ed25519 -N '' -C "e2e-suite $u" -f "$home/.ssh/id_ed25519"
+    # The runner's umask leaves the key readable for others, which ssh refuses.
+    chmod 600 "$home/.ssh/id_ed25519"
     docker exec -i e2e-peer tee "/etc/ssh/e2e-keys/$u" < "$home/.ssh/id_ed25519.pub" > /dev/null
 done
 : > "$run/known_hosts"

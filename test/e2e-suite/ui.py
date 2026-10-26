@@ -245,9 +245,9 @@ def main():
         shot(page, "tasks-admin")
 
         # 2. The jump into the open frame, to the port.
-        attached = poll(lambda: page.locator(SECURITY).count() == 1, 30)
-        check(attached, "after the login the shell has loaded Security Monitor's page (hidden, for its menu icon)")
-        sm = page.frame(name=SECURITY_NAME)
+        sm = shell_frame(page, SECURITY)
+        check(sm is not None and not page.locator(SECURITY).is_visible(),
+              "the shell has loaded Security Monitor's page hidden (for its menu icon) before the jump")
         if sm is not None:
             sm.evaluate("() => { window.e2eSuiteMark = true; }")
         f = jump_from_task(page, b)
