@@ -22,11 +22,11 @@ on:
       host_settings:
         description: Commit of Azentrius/cockpit-host-settings to build (all 40 hex digits)
         required: true
-        default: 9b175efb8ad592166e3f79c873a22e5cd76e3613
+        default: 2d466087c48f81d4da64684961d1524ed5269c6e
       status_board:
         description: Commit of Azentrius/cockpit-status-board to build (all 40 hex digits)
         required: true
-        default: 440492d971fb204e90910dc06f3a79858859ab22
+        default: 4115eb1a85fdb16a8f26f0b7a17f5272d20fb230
   pull_request:
     paths:
       - .github/workflows/e2e-suite.yml
@@ -42,8 +42,8 @@ concurrency:
 env:
   # A pull request has no inputs: the same commits as the defaults above (keep both in step).
   SECURITY_MONITOR_SHA: ${{ inputs.security_monitor || '8f99016fc9904e664571605196819cf95e174cf4' }}
-  HOST_SETTINGS_SHA: ${{ inputs.host_settings || '9b175efb8ad592166e3f79c873a22e5cd76e3613' }}
-  STATUS_BOARD_SHA: ${{ inputs.status_board || '440492d971fb204e90910dc06f3a79858859ab22' }}
+  HOST_SETTINGS_SHA: ${{ inputs.host_settings || '2d466087c48f81d4da64684961d1524ed5269c6e' }}
+  STATUS_BOARD_SHA: ${{ inputs.status_board || '4115eb1a85fdb16a8f26f0b7a17f5272d20fb230' }}
   OUT: ${{ github.workspace }}/e2e-suite
 
 jobs:
