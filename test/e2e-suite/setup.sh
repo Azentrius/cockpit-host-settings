@@ -90,12 +90,13 @@ docker exec e2e-peer sh -ec '
     timeout 600 apt-get $apt install -y -qq --no-install-recommends openssh-server /tmp/cockpit-host-settings.deb > /dev/null
     dpkg-query -W cockpit-bridge openssh-server cockpit-host-settings
     install -d -m 755 /etc/ssh/e2e-keys
-    printf "AuthorizedKeysFile /etc/ssh/e2e-keys/%%u\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n" \
+    printf "AuthorizedKeysFile /etc/ssh/e2e-keys/%%u\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nLogLevel VERBOSE\n" \
         > /etc/ssh/sshd_config.d/e2e-suite.conf
     ssh-keygen -A
     install -d -m 755 /run/sshd
     /usr/sbin/sshd -t
-    /usr/sbin/sshd
+    # No syslog in the container: the log goes to a file (job step Logs).
+    /usr/sbin/sshd -E /var/log/sshd-e2e.log
     # Its target profile: no role, so the add-ons of every host are expected, Security Monitor
     # among them.
     /usr/lib/cockpit-host-settings/host-settings.py profile roles
@@ -177,4 +178,9 @@ systemd-tmpfiles --create /etc/tmpfiles.d/sshd-privsep.conf
 step "Cockpit"
 systemctl start cockpit.socket
 systemctl is-active cockpit.socket
+# With UFW on, the second host is still reachable for both users.
+for u in "$ADMIN_USER" "$PLAIN_USER"; do
+    got=$(runuser -u "$u" -- ssh -p 2022 -o BatchMode=yes e2e-peer echo ok)
+    [ "$got" = ok ] || die "$u cannot log in to e2e-peer with UFW on"
+done
 echo "setup done"

@@ -138,7 +138,10 @@ jobs:
           sudo sh -c 'docker logs ntfy > "$1/logs/ntfy.log" 2>&1' sh "$OUT" || true
           sudo sh -c 'ufw status verbose > "$1/logs/ufw.txt" 2>&1; ss -Htlnp > "$1/logs/listening.txt" 2>&1' sh "$OUT" || true
           sudo sh -c 'cat /etc/cockpit-host-settings/profile.conf > "$1/logs/profile.conf" 2>&1' sh "$OUT" || true
+          sudo sh -c 'journalctl --no-pager -n 3000 -u "cockpit*" -t cockpit-ws -t cockpit-session -t cockpit-bridge > "$1/logs/cockpit.txt" 2>&1' sh "$OUT" || true
+          sudo sh -c 'docker exec e2e-peer cat /var/log/sshd-e2e.log > "$1/logs/e2e-peer-sshd.log" 2>&1' sh "$OUT" || true
           sudo chown -R "$(id -u)" "$OUT"
+          tail -n 40 "$OUT/logs/cockpit.txt" "$OUT/logs/e2e-peer-sshd.log" || true
       - name: No credential in the artifact (the test's tokens and passwords)
         if: always()
         run: |

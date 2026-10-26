@@ -144,7 +144,9 @@ def tasks(b):
         key: t.dataset.task,
         group: (t.closest('.sb-group') || { dataset: {} }).dataset.group || null,
         title: ((t.querySelector('.sb-task__title') || {}).innerText || '').trim(),
-        where: ((t.querySelector('.sb-task__where') || {}).innerText || '').trim()}))""")
+        where: ((t.querySelector('.sb-task__where') || {}).innerText || '').trim(),
+        detail: ((t.querySelector('.sb-task__detail') || {}).innerText || '').trim(),
+        sub: ((t.querySelector('.sb-task__sub') || {}).innerText || '').trim()}))""")
 
 
 def login(browser, user, pw):
@@ -231,6 +233,12 @@ def main():
         ts = tasks(b)
         keys = {t["key"]: t for t in ts}
         note("tasks: " + json.dumps([[t["group"], t["key"]] for t in ts]))
+        for t in ts:
+            if t["key"].endswith(("/unreachable", "/locked", "/discovery")):
+                note("%s: %s %s %s" % (t["key"], t["title"], t["detail"], t["sub"]))
+        check(not [t["key"] for t in ts if t["key"].startswith("e2e-peer/") and t["key"].count("/") == 1
+                   and t["key"] != "e2e-peer/profile"], "the board reaches e2e-peer over SSH",
+              [t for t in ts if t["key"].startswith("e2e-peer/") and t["key"].count("/") == 1])
         t = keys.get(TASK) or {}
         check(t.get("group") == "danger", "finding 6379/tcp: a task of this host (localhost), a danger", t)
         check(hostname in t.get("where", "") and "Security Monitor" in t.get("where", ""),
