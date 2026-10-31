@@ -37,7 +37,7 @@ jobs:
         run: make check
       - name: Packages (.deb, .rpm) with valid AppStream data, built twice to the same bytes
         run: |
-          sudo apt-get update -qq
+          sudo sh tools/apt-update.sh
           sudo apt-get install -y -qq --no-install-recommends rpm appstream > /dev/null
           appstreamcli validate --no-net packaging/*.metainfo.xml
           make packages
@@ -98,7 +98,7 @@ jobs:
           persist-credentials: false
       - name: Packages
         run: |
-          sudo apt-get update -qq
+          sudo sh tools/apt-update.sh
           sudo apt-get install -y -qq --no-install-recommends rpm > /dev/null
           make packages
       - name: Install, check and remove on ${{ matrix.image }}
@@ -146,7 +146,7 @@ jobs:
           persist-credentials: false
       - name: The package of this build
         run: |
-          sudo apt-get update -qq
+          sudo sh tools/apt-update.sh
           sudo apt-get install -y -qq --no-install-recommends rpm > /dev/null
           make packages
       - name: ntfy, postfix, the add-on and the watchdog (test/e2e/run.sh)
