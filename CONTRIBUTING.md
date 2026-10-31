@@ -30,7 +30,7 @@ python3 tools/preview/shoot.py   # screenshots to docs/img (needs Playwright wit
 The offline tests need no root and no network: the notifier reads Status Board's own test answers
 in `test/fixtures/board` (pinned in `tools/board-fixtures.sha256`), recorded answers of an ntfy
 server and a stand-in for SMTP. The `test` workflow runs the lint, the tests and the package build
-on every push and pull request; the job `e2e` runs the package with its real units against a real
+on every pull request and every push to `main`; the job `e2e` runs the package with its real units against a real
 ntfy server and postfix (`test/e2e/run.sh`, only on a throw-away machine), and the job `e2e-el`
 runs the same test with the `.rpm` in Rocky Linux 9 and 10 VMs with SELinux enforcing and fails on
 any SELinux denial (`tools/vm.sh`, CI only: it needs KVM).
