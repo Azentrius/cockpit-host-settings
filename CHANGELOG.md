@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 – 2026-11-01
 
 A check that the target profile names counts only when its add-on reports it, a check that is not
 supported is no longer possible, and a channel that failed stays a failure until it works again: a
@@ -44,6 +44,13 @@ run with nothing to send no longer makes it look fine.
   the last message stays failing, one that took it is not confirmed yet, since those versions
   kept no target. Going back to 0.2.0 keeps the new records, and what 0.2.0 sent is taken in when
   this version comes back. The update from 0.2.0, and back to it, is tested in CI as well.
+- **README, AppStream and package description:** they name the target profile, the coverage
+  messages and the watchdog besides the messages about findings, and say that neither a channel
+  that accepted a message nor a quiet watchdog shows that someone read it. The pictures show this
+  version, with each channel's state.
+- **Releases:** the release workflow waits for the shared suite (workflow `e2e-suite`, the three
+  products together) to pass for the commit it releases, and every pull request runs it too. CI
+  also tests the update from 0.1.0.
 
 ## 0.2.0 – 2026-10-26
 

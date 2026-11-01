@@ -46,7 +46,7 @@ t("a fresh server: nothing set up, the way to set it up", async () => {
     assert.ok(d.getElementById("hs-loading").hidden);
     assert.strictEqual(d.getElementById("hs-meta").textContent, "Not run yet");
     assert.ok(d.getElementById("hs-tabs").hidden, "one tab: no tab bar");
-    assert.strictEqual(d.getElementById("hs-sig-version").textContent, "Host Settings 0.2.0");
+    assert.strictEqual(d.getElementById("hs-sig-version").textContent, "Host Settings 0.3.0");
 });
 
 t("a set-up server: channels, timer, last run and message, the check, the commands", async () => {
