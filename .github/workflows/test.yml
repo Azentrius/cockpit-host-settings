@@ -11,6 +11,18 @@ on:
 permissions:
   contents: read
 
+# The release the upgrade test (test/e2e/upgrade.sh) installs first: 0.1.0, the first one, the
+# oldest a server may run (before the watchdog, findings and target profiles), so the test goes
+# over every change of the settings and of last.json since. Its packages as its GitHub release
+# serves them, pinned by SHA-256 (test/e2e/release-asset.sh also checks them against the release's
+# SHA256SUMS).
+env:
+  PREVIOUS_TAG: v0.1.0
+  PREVIOUS_DEB: cockpit-host-settings_0.1.0-1_all.deb
+  PREVIOUS_DEB_SHA256: 0449c2a216a5ce8475f2f57dbb0ba0d6bc464197abc64d8c2fba064d6d7ba3ae
+  PREVIOUS_RPM: cockpit-host-settings-0.1.0-1.noarch.rpm
+  PREVIOUS_RPM_SHA256: 295c86fa2f84b46cf9302baa062c8bf1cf64817e3e1d96a5e11d8d4e767f5a42
+
 jobs:
   # Everything that runs without a server: lint, the offline tests, the packages (built twice to
   # the same bytes), installed on Debian and Fedora with a run of the notifier as its own user and
@@ -171,18 +183,59 @@ jobs:
           name: e2e-session
           path: e2e-session/
 
-  # The same end-to-end test with the .rpm in a Rocky Linux VM with SELinux enforcing (tools/vm.sh:
+  # The update from the previous release (PREVIOUS_* above) on this throw-away runner
+  # (test/e2e/upgrade.sh): the .deb of that release set up with ntfy, the token and the timer tells
+  # a warning of the stand-in add-on; the package of this build goes over it with apt. Settings,
+  # token and timer stay, heartbeat.conf comes empty, last.json is read on without a message,
+  # findings of the item told are taken as told and a danger is told once, a target profile set
+  # afterwards works; removing the package keeps the settings and removes the state. The steps
+  # and the raw answers are in the artifact upgrade-session.
+  upgrade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The package of this build
+        run: |
+          sudo sh tools/apt-update.sh
+          sudo apt-get install -y -qq --no-install-recommends rpm > /dev/null
+          make packages
+      - name: The .deb of the previous release (test/e2e/release-asset.sh)
+        run: sh test/e2e/release-asset.sh "$GITHUB_REPOSITORY" "$PREVIOUS_TAG" "$PREVIOUS_DEB" "$PREVIOUS_DEB_SHA256" previous
+      - name: ntfy, the previous release set up, this build over it (test/e2e/upgrade.sh)
+        run: sudo env OUT="$PWD/upgrade-session" sh test/e2e/upgrade.sh "previous/$PREVIOUS_DEB" dist/*.deb
+      - name: Report and logs
+        if: always()
+        run: |
+          # The script ran as root: the folder is root's until it is handed back.
+          sudo mkdir -p upgrade-session
+          sudo chown -R "$(id -u)" upgrade-session
+          [ ! -f upgrade-session/report.md ] || cat upgrade-session/report.md >> "$GITHUB_STEP_SUMMARY"
+          sudo journalctl --no-pager -n 2000 -u 'cockpit-host-settings*' > upgrade-session/journal.txt || true
+          sudo docker logs ntfy > upgrade-session/ntfy.log 2>&1 || true
+      - name: Keep the report and the logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-session
+          path: upgrade-session/
+
+  # The same end-to-end test (suite e2e) and the same upgrade test (suite upgrade, the .rpm of the
+  # previous release first) with the .rpm in a Rocky Linux VM with SELinux enforcing (tools/vm.sh:
   # the pinned cloud image under KVM on this runner), Podman with podman-docker standing in for
   # Docker for the ntfy server. The job fails on every SELinux denial between the mark after the
   # set-up and the end of the test. A pilot: not yet part of the required check e2e.
   e2e-el:
-    name: e2e (${{ matrix.os }}, SELinux enforcing)
+    name: ${{ matrix.suite }} (${{ matrix.os }}, SELinux enforcing)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         os: [rocky-9, rocky-10]
+        suite: [e2e, upgrade]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -209,39 +262,53 @@ jobs:
         with:
           path: ~/.cache/azentrius-vm
           key: vm-${{ steps.image.outputs.name }}
+      - name: The .rpm of the previous release (test/e2e/release-asset.sh)
+        if: matrix.suite == 'upgrade'
+        run: sh test/e2e/release-asset.sh "$GITHUB_REPOSITORY" "$PREVIOUS_TAG" "$PREVIOUS_RPM" "$PREVIOUS_RPM_SHA256" previous
       - name: Boot ${{ matrix.os }} (tools/vm.sh)
         env:
           OS: ${{ matrix.os }}
         run: sh tools/vm.sh start "$OS"
-      - name: Podman for the ntfy server, the package and the test into the machine
+      - name: Podman for the ntfy server, the packages and the test into the machine
+        env:
+          SUITE: ${{ matrix.suite }}
         run: |
           sh tools/vm.sh root dnf install -y -q podman podman-docker openssl
           sh tools/vm.sh root touch /etc/containers/nodocker
-          sh tools/vm.sh copy /root/e2e dist/*.rpm test/e2e/run.sh test/e2e/watchdog.py
+          sh tools/vm.sh copy /root/e2e dist/*.rpm test/e2e/run.sh test/e2e/upgrade.sh test/e2e/watchdog.py
+          if [ "$SUITE" = upgrade ]; then sh tools/vm.sh copy /root/e2e/previous "previous/$PREVIOUS_RPM"; fi
       - name: The SELinux check catches a denial on purpose; then the mark in the audit log
         run: |
           sh tools/vm.sh avc-selftest
           sh tools/vm.sh avc-mark
-      - name: End-to-end test in the machine (test/e2e/run.sh as root)
-        run: sh tools/vm.sh root sh -c "'cd /root/e2e && OUT=/root/e2e/session sh run.sh /root/e2e/*.rpm'"
+      - name: The test in the machine (test/e2e/run.sh or upgrade.sh as root)
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          case $SUITE in
+            e2e) sh tools/vm.sh root sh -c "'cd /root/e2e && OUT=/root/e2e/session sh run.sh /root/e2e/*.rpm'" ;;
+            upgrade) sh tools/vm.sh root sh -c "'cd /root/e2e && OUT=/root/e2e/session sh upgrade.sh /root/e2e/previous/$PREVIOUS_RPM /root/e2e/*.rpm'" ;;
+            *) echo "unknown suite $SUITE"; exit 1 ;;
+          esac
       - name: No SELinux denials during the test
         run: sh tools/vm.sh avc-check
       - name: Report and logs
         if: always()
         env:
           OS: ${{ matrix.os }}
+          SUITE: ${{ matrix.suite }}
         run: |
           mkdir -p e2e-el
           sh tools/vm.sh fetch e2e-el /root/e2e/session || true
           sh tools/vm.sh logs e2e-el || true
           if [ -f e2e-el/root/e2e/session/report.md ]; then
-            { echo "### $OS"; cat e2e-el/root/e2e/session/report.md; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "### $SUITE, $OS"; cat e2e-el/root/e2e/session/report.md; } >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Keep the report and the logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: e2e-${{ matrix.os }}
+          name: ${{ matrix.suite }}-${{ matrix.os }}
           path: e2e-el/
 
   # Secrets in the files and in the whole history (gitleaks, pinned with its checksum). The
