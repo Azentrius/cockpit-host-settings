@@ -121,7 +121,8 @@ set_at = 2026-10-25T10:00:00Z
   catalog does not count at all. Of `roles` and `set_at` the last valid line counts.
 - `expect`: one add-on (`image-updates`) or one check of an add-on (`security/exposure`) per line,
   beyond the roles. As Status Board reads it, a check makes its add-on expected (and with it every
-  check of the add-on); it is no gap of its own when the add-on does not report that check.
+  check of the add-on), and the add-on must report exactly that check: one it does not report is
+  a gap of its own (below, "Coverage").
 - `skip`: `ADDON/CHECK[ until YYYY-MM-DD]: REASON`, one check of an add-on per line (a later line
   for the same check counts instead); the reason is one line of text, cleaned and cut to 200
   characters, and required. A skip ends on its day at 00:00 UTC, as an acceptance does. An add-on
@@ -323,14 +324,20 @@ read. Without a profile the notifier does nothing with it, as before.
 With a profile (`hsnotify.profile_coverage()`), it is read as Status Board reads it: every entry
 of `expect` makes its add-on expected (`security/exposure` as well as `security`), and every check
 of an expected add-on is expected, unless the add-on reports it as not applicable or a skip that
-runs leaves it out; a check named in `expect` is no gap of its own when the add-on does not report
-it. An expected add-on that is not installed is `missing` (`unsupported` when it is installed in a
-version without a status entry); Host Settings itself counts as checked. The keys in `sent`:
+runs leaves it out. A check named in `expect` that the add-on's valid answer does not report (it
+sends no `checks`, or not that id, a misspelled one included) is a gap of its own:
+`hslib.not_reported_checks()`, the twin of the board's `notReportedChecks()`, makes a check of
+state `unsupported` for it, with the id as its title, and the add-on's coverage takes it into
+account like any other check. While the add-on is not installed, installed without the status
+entry, unreadable or without access, its own gap stands for its checks and none is made up; an
+add-on expected alone is judged as before. An expected add-on that is not installed is `missing`
+(`unsupported` when it is installed in a version without a status entry); Host Settings itself
+counts as checked. The keys in `sent`:
 
 | Key | What | Its coverage |
 |---|---|---|
-| `PKG@` | an expected add-on | `missing`, `unsupported`, `noaccess`, `unreadable`; for a valid answer `checked` while its checks speak for themselves, else what its items say |
-| `PKG@CHECK` | a check of an expected add-on that applies | the check's coverage |
+| `PKG@` | an expected add-on | `missing`, `unsupported`, `noaccess`, `unreadable`; for a valid answer `checked` while its own checks speak for themselves, else what its items say |
+| `PKG@CHECK` | a check of an expected add-on that applies, or a check named in `expect` that the add-on does not report | the check's coverage; `unsupported` for one not reported |
 
 Package names and check ids have no `@`, so these keys never meet `PKG#`, `PKG#ID`, `PKG#ID/FID`.
 An entry is `{level, coverage, at, last, label, title}`, `level` `lost` or `ok`, kept for every
@@ -339,15 +346,23 @@ messages, only for what the profile expects:
 
 | Coverage now | Told before | Message |
 |---|---|---|
-| `failed`, `noaccess`, `unconfigured`, `unreadable`, `missing` | OK | `lost`: "Check no longer possible" |
+| `failed`, `noaccess`, `unconfigured`, `unreadable`, `missing`, `unsupported` | OK | `lost`: "Check no longer possible" |
 | `checked` | lost | `regained`: "Check possible again" |
-| `partial`, `stale`, `unchecked`, `unsupported` | either | none: what was told stays |
+| `partial`, `stale`, `unchecked` | either | none: what was told stays |
 | not applicable (a skip runs, the add-on says so), no longer expected | either | none: the key is forgotten |
+
+`unsupported` is an add-on installed in a version without the status entry, a check the add-on
+cannot run on this system, or a check named in `expect` that the add-on does not report. Up to
+0.2.0 it kept what was told; after the update each such gap is told once, as one that the memory
+holds as OK.
 
 - The same change of the same key waits for the hour against flapping (`ok>lost`, `lost>ok`), and
   every change of a run goes into its one message, as for items and findings.
 - While an expected add-on cannot be judged (not installed, exit 77, unreadable), what was told
-  about its checks stays as it was.
+  about its checks stays as it was, a check it did not report included.
+- A check that comes back `checked` and in time is told once as possible again. Neither that nor
+  its loss resolves a finding or makes one new: findings change only with their lists (above,
+  "Findings").
 - A change of `PKG@` is not told in a run that tells about the add-on itself (its status is not
   readable or readable again, it is no longer installed), though it is remembered.
 - The first run after a profile is set up finds its keys missing from `sent`: the gaps of that
@@ -372,9 +387,10 @@ messages, only for what the profile expects:
   it reported can no longer be checked. An expected add-on or check (coverage):
   `Check no longer possible · LABEL · CHECK TITLE` and why ("the check failed", "nothing is
   readable without root", "the check is not set up (its timer is off, or it never ran)", "the
-  status cannot be read", "the add-on is not installed"; for a check with the add-on's reason
-  after a colon), or `Check possible again · LABEL · CHECK TITLE`; for the add-on itself without
-  the check. The title of one such change: `HOST: LABEL, check no longer possible` or
+  status cannot be read", "the add-on is not installed", "this version of the add-on reports no
+  status", "the check is not supported on this system", "the expected check is not reported" with
+  the check's id as its title; for a check with the add-on's reason after a colon), or
+  `Check possible again · LABEL · CHECK TITLE`; for the add-on itself without the check. The title of one such change: `HOST: LABEL, check no longer possible` or
   `HOST: LABEL, check possible again`. At most 20
   blocks and 3800 bytes (ntfy turns longer messages into attachments), then "and N more"; the
   footer `Host Settings on HOST`.
@@ -595,10 +611,19 @@ in `sent` and `coverage`, what the last run found for each add-on and check the 
 (`null` without a profile), for the page:
 
 ```json
-"coverage": [{"id": "security", "label": "Security Monitor", "coverage": "partial",
-              "gaps": [{"id": "containers", "title": "Container hardening", "coverage": "partial"}]},
-             {"id": "image-updates", "label": "Image Update Monitor", "coverage": "missing", "gaps": []}]
+"coverage": [{"id": "security", "label": "Security Monitor", "coverage": "unsupported",
+              "gaps": [{"id": "containers", "title": "Container hardening", "coverage": "partial"},
+                       {"id": "exposure", "title": "exposure", "coverage": "unsupported", "not_reported": true}]},
+             {"id": "image-updates", "label": "Image Update Monitor", "coverage": "missing", "gaps": []},
+             {"id": "security/exposure", "label": "Security Monitor", "coverage": "unsupported", "gaps": [],
+              "not_reported": true},
+             {"id": "security/fail2ban", "label": "Security Monitor", "coverage": "notapplicable", "gaps": [],
+              "reason": "fail2ban is not installed"}]
 ```
+
+`not_reported` marks a check named in `expect` that the add-on does not report, `reason` is the
+add-on's reason for a check it reports; the page shows either below the label. Both came without
+a new `format`: a page or a file without them reads as before.
 
 ## `status.json` and `host-settings.py status` (status contract)
 
@@ -655,7 +680,8 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   watchdog alone enables "Set up the regular check".
 - The target profile is a section of the Notifications tab (`renderProfile()`), with
   administrative access only: the roles, what is expected and why (every host, a role, added
-  here) with the coverage the notifier found last, the checks left out with reason and end. Each
+  here) with the coverage the notifier found last (and below it the add-on's reason, or "Expected
+  check is not reported"), the checks left out with reason and end. Each
   change opens the dialog: the roles as switches (from the catalog `show` sends), an add-on or
   check, a skip (the reason goes to the helper on standard input), a remove. Without
   administrative access the summary names the profile from the status answer, with no button.
@@ -663,8 +689,11 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
 ## Tests
 
 - `test/notify_test.py`: every answer in `test/fixtures/board/status` with the expectations of the
-  board's own `test/status.test.js` and the board's tests of the optional parts and of a complete
-  list (the shared answers `ext-complete-*.json`), its manifests;
+  board's own `test/status.test.js` and the board's tests of the optional parts, of a complete
+  list (the shared answers `ext-complete-*.json`) and of checks a profile names (the shared
+  answers `ext-expect-*.json`: not reported, misspelled, gone and back, not applicable, left out
+  until a day, an add-on that cannot be judged, an add-on expected alone, two of one add-on, an
+  update and a restart), its manifests;
   reading an add-on (trust, exit codes); changes, flapping, unreadable add-ons, removed ones;
   findings as sequences of answers (a second finding while the item is a danger, the same answer
   in the other language or order, lists that cannot say a finding is gone, resolved, again,

@@ -69,9 +69,12 @@ second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
 - **Knows what the server is expected to check** (its target profile): its roles (`web`,
   `database`, `build`, `bastion`), the add-ons they expect, more add-ons if you add them, and
   single checks left out on purpose, with a reason and, if you like, an end. When an expected
-  add-on or check can no longer be checked (not installed, failed, no access, not set up, status
-  not readable), one message says so, and one more when it can again. Add-ons the profile does
-  not expect give no such message.
+  add-on or check can no longer be checked (not installed, failed, no access, not set up, not
+  supported, status not readable), one message says so, and one more when it can again. A check
+  the profile names (`security/exposure`) counts only when its add-on reports it: one it does not
+  report, a misspelled one included, is told the same way ("the expected check is not reported");
+  while the add-on itself cannot be read, its own message stands for its checks. Add-ons the
+  profile does not expect give no such message, and neither message resolves a finding.
 - **Tells an external watchdog that it works** (optional): after every run a signal to
   [Healthchecks](https://healthchecks.io/) or a push monitor of
   [Uptime Kuma](https://github.com/louislam/uptime-kuma), success once the run is done and its
@@ -288,7 +291,8 @@ Removing the package removes its state and keeps the settings, the token and the
    sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles web       # web1, web2
    sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles bastion   # bastion
    sudo /usr/lib/cockpit-host-settings/host-settings.py profile roles build     # ci1
-   # more than the roles expect: an add-on, or one check of an add-on
+   # more than the roles expect: an add-on, or one check of an add-on (which the add-on must
+   # report, else it is a gap of its own)
    sudo /usr/lib/cockpit-host-settings/host-settings.py profile expect add security/exposure
    # a check left out on purpose (always add-on/check, never an add-on alone), until a day if
    # you like; the reason on standard input

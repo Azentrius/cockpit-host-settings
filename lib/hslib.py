@@ -15,7 +15,9 @@ no side effects on import; nothing here runs a command or uses the network.
   holds these rules against the board's own fixtures (test/fixtures/board,
   tools/board-fixtures.sha256).
 - What the board knows about an add-on (its coverage), as the board's
-  coverageOf(), checksCoverage() and checkCoverage() judge it.
+  coverageOf(), checksCoverage() and checkCoverage() judge it, and the checks
+  a host's profile names that an answer does not report
+  (notReportedChecks()).
 - The settings file /etc/cockpit-host-settings/notify.conf.
 - A host's target profile, /etc/cockpit-host-settings/profile.conf, and the
   catalog of roles.
@@ -479,7 +481,7 @@ def checks_coverage(status, now, skipped=()):
     add-on's order, and every check with a gap, each with its coverage and stale_at. None when
     the answer has no checks, or none that applies: then its items decide.
     skipped: ids of checks a host's profile leaves out on purpose, which do not apply either
-    (Host Settings only; the board does not read profiles yet)."""
+    (the board marks them not applicable in its copy of the answer instead)."""
     checks = status.get("checks")
     if not isinstance(checks, list):
         return None
@@ -493,6 +495,26 @@ def checks_coverage(status, now, skipped=()):
         if worst is None or check_rank(c["coverage"]) > check_rank(worst["coverage"]):
             worst = c
     return {"coverage": worst["coverage"] if worst else "checked", "worst": worst, "gaps": gaps}
+
+
+def not_reported_checks(checks, pkg, expect):
+    """The checks of the add-on pkg that a host's profile names (expect: its entries,
+    "security/exposure" among them) and that its answer does not report (checks: the answer's
+    checks, or None for an answer without them), in the order of the profile: the board's
+    notReportedChecks(). Each one is a check made up for the gap: state "unsupported", the id as
+    its title, nothing else of its own, and not_reported True ("Expected check is not reported").
+    A check the answer reports in any state, notapplicable included, is no gap here, and no id is
+    made up that the profile does not name."""
+    have = {c["id"] for c in checks or ()}
+    out = []
+    for entry in expect:
+        name, sep, cid = entry.partition("/")
+        if not sep or name != pkg or cid in have:
+            continue
+        have.add(cid)
+        out.append({"id": cid, "state": "unsupported", "title": cid, "item": None, "checked_at": None,
+                    "stale_after": None, "reason": None, "link": None, "not_reported": True})
+    return out
 
 
 def tile_of(result, now):
