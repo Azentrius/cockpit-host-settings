@@ -1061,7 +1061,7 @@ head.
 **The released combination** (`suite-manifest.json`): for each product its repository, tag, full
 commit and, for now informational, the package of the release (name, version, `.deb` and its
 SHA-256), and `required_scenarios` (below). At present Status Board 0.4.0, Host Settings 0.3.0 and
-Security Monitor 0.4.0, the commits of their tags. After a release: change the manifest in a pull
+Security Monitor 0.4.1, the commits of their tags. After a release: change the manifest in a pull
 request of Host Settings, then move the pin in the callers of Status Board and Security Monitor
 to the merged commit, each in a pull request of its own.
 
