@@ -5,7 +5,7 @@
 | What | Path | Owner, mode |
 |---|---|---|
 | The page | `/usr/share/cockpit/host-settings/` | root, 0644 |
-| The helpers | `/usr/lib/cockpit-host-settings/` (`host-settings.py`, `host-settings-notify.py` 0755; `hslib.py`, `hsnotify.py`, `hsstatus.py`, `hsproc.py`, `hsheartbeat.py`, `hschannels.py` 0644) | root |
+| The helpers | `/usr/lib/cockpit-host-settings/` (`host-settings.py`, `host-settings-notify.py` 0755; `hslib.py`, `hsnotify.py`, `hsstatus.py`, `hsproc.py`, `hsheartbeat.py`, `hschannels.py`, `hsmenu.py` 0644) | root |
 | The units | `cockpit-host-settings-notify.service`, `.timer`, `cockpit-host-settings-test@.service` | root |
 | The user | `cockpit-host-settings` (`/usr/lib/sysusers.d/cockpit-host-settings.conf`) | |
 | The settings | `/etc/cockpit-host-settings/notify.conf` | root, 0644 |
@@ -16,6 +16,9 @@
 | | `last.json`, `heartbeat.json`, `test-ntfy.json`, `test-mail.json`, `test-heartbeat.json` | 0600 |
 | | `status.json` (status contract) | 0644 |
 | The lock of the settings | `/run/cockpit-host-settings.lock` | root, 0600 |
+| Cockpit's menu for all users | `/etc/cockpit/<folder>.override.json` (Cockpit's own file; the helper changes only its part, below "Cockpit's menu") | root, 0644 |
+| | the version before each of the last five changes: `/var/lib/cockpit-host-settings/backup/menu/<UTC time>/` | root, 0700 and 0600 |
+| Cockpit's menu just for one user | `~/.config/cockpit/<folder>.override.json` of that user | the user, 0644 |
 
 The package's `configure` script creates the user (`systemd-sysusers`, else `useradd`), the
 state folder with that owner, `/etc/cockpit-host-settings`, an empty token file and an empty
@@ -764,6 +767,73 @@ cannot be read, neither field is sent, and Status Board says the host has no tar
 `test/helper_test.py` checks that the board's rules (`hslib.validate_profile`, the twin of the
 board's `validateProfile()`) keep every part of it, also at the limits (`ext_dropped` 0).
 
+## Cockpit's menu (`hsmenu.py`)
+
+The verbs for the menu editor of the Cockpit tab. The page does not call them yet.
+
+| Call | Superuser | What |
+|---|---|---|
+| `host-settings.py menu show` | none | every entry of Cockpit's menu and what the override files change in it, as JSON; run as the user whose menu it is |
+| `host-settings.py menu apply system` (plan on standard input) | require | the override files for all users |
+| `host-settings.py menu apply user` (plan on standard input) | none | the calling user's own override files; refused as root (64), else it would change root's menu |
+
+**How Cockpit reads it** (its bridge, `src/cockpit/packages.py`, read on 2026-11-01): the pages are
+`cockpit/*/manifest.json` below `$XDG_DATA_HOME` (`~/.local/share`), then below `$XDG_DATA_DIRS`
+(`/usr/local/share`, `/usr/share`). Before it reads a manifest's name, priority and conditions it
+merges three override files into it (JSON merge patch, RFC 7396), each later one winning: the
+package's own `override.json`; `<folder>.override.json` in the first of `$XDG_CONFIG_DIRS` (`/etc`)
+that has one below `cockpit/` (else the first); `<folder>.override.json` in
+`$XDG_CONFIG_HOME/cockpit` (`~/.config/cockpit`). `<folder>` is the package's folder, not its
+name. Of several packages with one name it serves the one with the highest priority whose
+conditions (`path-exists`, `path-not-exists`, `any`; others hold) are met. A file that is not a
+JSON object is ignored. The bridge loads all this when the session starts and again whenever the
+Shell starts anew, so reloading Cockpit in the browser is enough. `hsmenu.load()` does the same,
+except that it does not check a manifest's `requires`.
+
+**`menu show`** prints one object:
+
+- `entries`: one per entry of `dashboard`, `menu` and `tools` of every package served, in the
+  order of the package's manifest: `section`, `key`, `package` (its name), `dir` (its folder),
+  `editable`, `base` (`label` and `order` with the package's own `override.json`), `system` and
+  `user` (what that scope's file does to it: `null` nothing, `{"hidden": true}`, or the `order` and
+  `label` it sets, `"other": true` when it holds more), and `effective` (`label`, `order`, `hidden`).
+- `orphans`: a key in an override file that the package does not have (`scope`, `dir`,
+  `section`, `key`). With `phantom` the file holds an object for it, and Cockpit shows an entry
+  without a page; a null for it does nothing.
+- `files`: every override file of both scopes: `scope`, `dir`, `path`, `sha256` of its bytes,
+  `valid`, `error` (`unreadable`, `too-large`, `invalid`, `not-an-object`), `foreign` (how many
+  things in it the editor does not manage) and `served` (whether a package with that folder is
+  served).
+- `user`, `uid`, `paths` (the folders of both scopes), `cut` (more than 200 manifests).
+
+**`menu apply system|user`** takes a plan of at most 64 KiB on standard input:
+
+```json
+{"base": {"systemd": "<sha256 of the file the plan was made from, or empty>"},
+ "set": {"systemd": {"menu": {"logs": null, "services": {"order": 1, "label": "Units"}}}}}
+```
+
+- `set` is the editor's whole part of this scope for each folder named in `base`: a folder in
+  `base` without `set` loses it. The editor's part is every `null` and every `order` and `label`
+  in `dashboard`, `menu` and `tools`; everything else in a file stays as it is, in its order, also
+  `bridges` or `content-security-policy` that someone else wrote there.
+- Refused whole (64, nothing written): anything but `base` and `set`; more than 200 folders or
+  100 entries in one section; a folder not `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` or in `set` but not in
+  `base`; a checksum that is not 64 hex digits; a section other than the three; a key not
+  `[A-Za-z0-9_-]{1,64}`; a value other than `null` or an object with only `order` and `label`; an
+  `order` that is not a number from -1000 to 10000 with at most three decimals; a `label` that is
+  not 1 to 60 characters, NFC, without control, zero-width or bidirectional characters, line breaks
+  or spaces at either end.
+- Refused whole for a file: 75 when its `sha256` is no longer the one in `base` (someone changed
+  it); 1 when it cannot be read or is not a JSON object, and when hiding an entry would delete what
+  someone else wrote for it there (or the entry there is not an object).
+- A file left with nothing is removed. Files are written atomically next to the old one (0644),
+  under an exclusive lock on their folder (75 when held). For `system` the version before is kept
+  in `/var/lib/cockpit-host-settings/backup/menu/<UTC time>/` (0700, the files 0600), the newest
+  five of these folders stay.
+- The output names each file changed or removed, then that it takes effect once Cockpit is
+  reloaded; "Nothing changed." when nothing was.
+
 ## Page internals
 
 - `plugin/menu-status.js` runs first: Cockpit loads the page hidden after the login
@@ -822,7 +892,11 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
 - `test/helper_test.py`: the verbs of `host-settings.py`, the profile's among them (refusals,
   unknown roles, the file line by line, atomic write and backup, the limits, the status field),
   and the watchdog's (the URL from standard input only, 0600, never printed, not by `show`
-  either; the refusals; the timer with a watchdog alone; what switching off says).
+  either; the refusals; the timer with a watchdog alone; what switching off says), and the
+  menu's (`Menu`, in a throw-away tree: priority, conditions and the order of the overrides as the
+  bridge has them, orphans and broken files; a plan that keeps everything else in a file, hides,
+  shows again and removes an empty file; just for me never as root; every refusal leaves every
+  file as it was; a file changed meanwhile, the backups, the lock).
 - `test/heartbeat_test.py`: the addresses each adapter takes, the requests of both protocols,
   every answer (also 200 bodies that say no and `{"ok": false}`), the tries and the budget;
   `hsnotify.http` against real sockets (a redirect not followed, a timeout, a TLS error, nobody

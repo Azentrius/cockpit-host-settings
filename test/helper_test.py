@@ -5,7 +5,9 @@ systemctl and ss: every argument is checked before anything is written; the sett
 its format; the token comes from standard input only, lands with mode 0600 and is never printed;
 the status verb answers without root, also without a status.json; switching the timer off says
 so in the status; "install timer" needs a channel or a watchdog; the watchdog's URL comes from
-standard input only, lands with mode 0600 and is never printed, also not by "show"."""
+standard input only, lands with mode 0600 and is never printed, also not by "show". Cockpit's menu
+(hsmenu.py) is read as the bridge reads it, and a plan changes only order, label and null in one
+scope's override files, keeps everything else, and is refused whole when anything in it is wrong."""
 
 import importlib.util
 import io
@@ -23,6 +25,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, LIB)
 import hsheartbeat  # noqa: E402
 import hslib  # noqa: E402
+import hsmenu  # noqa: E402
 import hsproc  # noqa: E402
 import hsstatus  # noqa: E402
 
@@ -641,6 +644,238 @@ class Profile(Base):
         doc = json.loads(call(hs.do_show, [], self.conf, self.token, self.state, ss, self.profile)[1])
         self.assertEqual(doc["profile"]["roles"], ["web"])
         self.assertTrue(doc["profile"]["set"])
+
+
+class Menu(Base):
+    """Cockpit's menu: packages and override files in a throw-away tree, found through the same
+    variables the bridge reads (HOME, XDG_DATA_DIRS, XDG_CONFIG_DIRS)."""
+
+    SYSTEMD = {"menu": {"index": {"label": "Overview", "order": -2}, "logs": {"label": "Logs", "order": 20},
+                        "services": {"label": "Services", "order": 100}},
+               "tools": {"terminal": {"label": "Terminal"}}}
+
+    def setUp(self):
+        super().setUp()
+        self.env = {"HOME": os.path.join(self.dir, "home"),
+                    "XDG_DATA_DIRS": os.path.join(self.dir, "usr-local") + ":" + os.path.join(self.dir, "usr"),
+                    "XDG_CONFIG_DIRS": os.path.join(self.dir, "etc")}
+        self.backup = os.path.join(self.dir, "backup")
+        self.package("usr", "systemd", self.SYSTEMD)
+        self.package("usr", "users", {"menu": {"index": {"label": "Accounts", "order": 70}}})
+
+    def write(self, path, doc):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(doc if isinstance(doc, str) else json.dumps(doc))
+
+    def package(self, where, folder, manifest, override=None):
+        root = os.path.join(self.dir, where, "cockpit", folder) if where != "home" else \
+            os.path.join(self.env["HOME"], ".local", "share", "cockpit", folder)
+        self.write(os.path.join(root, "manifest.json"), manifest)
+        if override is not None:
+            self.write(os.path.join(root, "override.json"), override)
+
+    def path(self, scope, folder):
+        return hsmenu.override_path(scope, folder, self.env)
+
+    def override(self, scope, folder, doc):
+        self.write(self.path(scope, folder), doc)
+
+    def read(self, scope, folder):
+        with open(self.path(scope, folder), encoding="utf-8") as f:
+            return json.load(f)
+
+    def show(self):
+        code, out, err = call(hs.do_menu, ["show"], self.env)
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def entry(self, view, section, key, folder="systemd"):
+        return next(e for e in view["entries"] if (e["section"], e["key"], e["dir"]) == (section, key, folder))
+
+    def apply(self, scope, wanted, base=None, euid=1000, raw=None, now=NOW):
+        if raw is None:
+            sha = {f["dir"]: f["sha256"] for f in self.show()["files"] if f["scope"] == scope}
+            base = base if base is not None else {folder: sha.get(folder, "") for folder in wanted}
+            raw = json.dumps({"base": base, "set": wanted}).encode()
+        return call(hs.do_menu, ["apply", scope], self.env, io.BytesIO(raw), self.backup, now, euid)
+
+    def tree(self):
+        return sorted(os.path.relpath(os.path.join(d, f), self.dir) for d, _, fs in os.walk(self.dir) for f in fs
+                      if not f.startswith("lock"))
+
+    def test_show_reads_like_the_bridge(self):
+        # Same name twice: the higher priority wins, unless its conditions do not hold.
+        self.package("usr-local", "users-old", {"name": "users", "priority": 0, "menu": {"index": {"label": "Old"}}})
+        self.package("home", "mine", {"menu": {"index": {"label": "Mine", "order": 3}},
+                                      "conditions": [{"path-exists": self.dir}]})
+        self.package("usr-local", "gone", {"conditions": [{"any": [{"path-exists": "/nonexistent-x"},
+                                                                   {"path-not-exists": self.dir}]}],
+                                           "menu": {"index": {"label": "Gone"}}})
+        self.package("usr", "broken", {"conditions": [{"path-exists": 3}], "menu": {"index": {"label": "Broken"}}})
+        # The package's own override.json counts as part of it; then system, then user, the later winning.
+        self.package("usr", "storaged", {"menu": {"index": {"label": "Storage", "order": 30}}},
+                     override={"menu": {"index": {"order": 31}}})
+        self.override("system", "systemd", {"menu": {"logs": {"order": 5}, "services": None, "old": {"order": 3}},
+                                            "preload": ["index"]})
+        self.override("user", "systemd", {"menu": {"logs": {"order": 7, "label": "Journal"}, "older": None}})
+        self.override("system", "users", "{ not json")
+        self.override("system", "nothing-here", {"menu": {"index": None}})
+        view = self.show()
+        served = sorted({e["dir"] for e in view["entries"]})
+        self.assertEqual(served, ["mine", "storaged", "systemd", "users"])
+        self.assertEqual(self.entry(view, "menu", "index", "users")["base"]["label"], "Accounts",
+                         "priority 1 beats 0; the broken override is left out as by the bridge")
+        logs = self.entry(view, "menu", "logs")
+        self.assertEqual((logs["base"], logs["system"], logs["user"], logs["effective"]),
+                         ({"label": "Logs", "order": 20}, {"order": 5}, {"order": 7, "label": "Journal"},
+                          {"label": "Journal", "order": 7, "hidden": False}))
+        services = self.entry(view, "menu", "services")
+        self.assertEqual((services["system"], services["user"], services["effective"]["hidden"]), ({"hidden": True}, None, True))
+        self.assertEqual(self.entry(view, "tools", "terminal")["effective"], {"label": "Terminal", "order": None, "hidden": False})
+        self.assertEqual(self.entry(view, "menu", "index", "storaged")["base"], {"label": "Storage", "order": 31})
+        self.assertEqual(sorted((o["scope"], o["key"], o["phantom"]) for o in view["orphans"]),
+                         [("system", "old", True), ("user", "older", False)])
+        files = {(f["scope"], f["dir"]): f for f in view["files"]}
+        self.assertEqual(sorted(files), [("system", "nothing-here"), ("system", "systemd"), ("system", "users"),
+                                         ("user", "systemd")])
+        self.assertEqual((files[("system", "systemd")]["foreign"], files[("system", "systemd")]["valid"]), (1, True))
+        self.assertEqual((files[("system", "users")]["valid"], files[("system", "users")]["error"]), (False, "invalid"))
+        self.assertFalse(files[("system", "nothing-here")]["served"])
+        self.assertEqual(len(files[("user", "systemd")]["sha256"]), 64)
+        self.assertEqual(view["paths"], {"system": os.path.join(self.dir, "etc", "cockpit"),
+                                         "user": os.path.join(self.env["HOME"], ".config", "cockpit")})
+        hs.need_root = lambda: (_ for _ in ()).throw(hs.Fail(77, "", "root"))
+        self.assertEqual(call(hs.do_menu, ["show"], self.env)[0], 0, "show needs no root")
+
+    def test_apply_for_all_users_keeps_everything_else(self):
+        before = {"menu": {"logs": {"order": 5, "docs": [{"label": "Journal", "url": "https://example.com/"}]},
+                           "index": None},
+                  "preload": ["index"], "bridges": [{"spawn": ["true"]}]}
+        self.override("system", "systemd", before)
+        code, out, err = self.apply("system", {"systemd": {"menu": {"services": {"order": 1}, "logs": {"label": "Journal"}},
+                                                           "tools": {"terminal": None}}})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.read("system", "systemd"),
+                         {"menu": {"logs": {"docs": [{"label": "Journal", "url": "https://example.com/"}], "label": "Journal"},
+                                   "services": {"order": 1}},
+                          "preload": ["index"], "bridges": [{"spawn": ["true"]}], "tools": {"terminal": None}})
+        self.assertEqual(stat.S_IMODE(os.stat(self.path("system", "systemd")).st_mode), 0o644)
+        self.assertIn(self.path("system", "systemd") + ": changed.", out)
+        kept = [os.path.join(d, f) for d, _, fs in os.walk(self.backup) for f in fs]
+        self.assertEqual(len(kept), 1)
+        with open(kept[0], encoding="utf-8") as f:
+            self.assertEqual(json.load(f), before, "the previous version is kept")
+        self.assertEqual(stat.S_IMODE(os.stat(kept[0]).st_mode), 0o600)
+        view = self.show()
+        self.assertTrue(self.entry(view, "tools", "terminal")["effective"]["hidden"])
+        self.assertEqual(self.entry(view, "menu", "index")["effective"]["hidden"], False, "a null not in the plan goes")
+
+    def test_hide_show_again_and_an_empty_file_goes(self):
+        self.assertEqual(self.apply("system", {"systemd": {"menu": {"logs": None}}})[0], 0)
+        self.assertEqual(self.read("system", "systemd"), {"menu": {"logs": None}})
+        self.assertTrue(self.entry(self.show(), "menu", "logs")["effective"]["hidden"])
+        code, out, _ = self.apply("system", {}, base={"systemd": self.show()["files"][0]["sha256"]})
+        self.assertEqual(code, 0)
+        self.assertFalse(os.path.exists(self.path("system", "systemd")))
+        self.assertIn("removed, nothing left in it", out)
+        self.assertFalse(self.entry(self.show(), "menu", "logs")["effective"]["hidden"])
+        code, out, _ = self.apply("system", {}, base={"systemd": ""})
+        self.assertEqual((code, out.splitlines()[0]), (0, "Nothing changed."))
+        self.assertEqual(self.apply("system", {"users": {"menu": {"index": {"order": 2.0}}},
+                                               "systemd": {"menu": {"logs": {"order": 20.5}}}})[0], 0)
+        self.assertEqual((self.read("system", "users"), self.read("system", "systemd")),
+                         ({"menu": {"index": {"order": 2}}}, {"menu": {"logs": {"order": 20.5}}}))
+
+    def test_just_for_me_writes_the_users_own_file_and_never_as_root(self):
+        code, _, err = self.apply("user", {"systemd": {"menu": {"logs": {"order": 1}}}}, euid=0)
+        self.assertEqual(code, 64)
+        self.assertIn("Just for me", err)
+        hs.need_root = lambda: (_ for _ in ()).throw(hs.Fail(77, "", "root"))
+        self.assertEqual(self.apply("system", {"systemd": {"menu": {"logs": {"order": 1}}}})[0], 77)
+        self.assertEqual(self.tree(), ["usr/cockpit/systemd/manifest.json", "usr/cockpit/users/manifest.json"])
+        self.assertEqual(self.apply("user", {"systemd": {"menu": {"logs": {"order": 1}}}})[0], 0)
+        self.assertEqual(self.read("user", "systemd"), {"menu": {"logs": {"order": 1}}})
+        self.assertTrue(self.path("user", "systemd").startswith(os.path.join(self.env["HOME"], ".config", "cockpit")))
+        self.assertFalse(os.path.exists(self.backup), "no copies of a user's own files")
+        self.assertEqual(self.entry(self.show(), "menu", "logs")["user"], {"order": 1})
+
+    def test_plans_that_are_refused_change_nothing(self):
+        self.override("system", "systemd", {"menu": {"logs": {"order": 5}}})
+        sha = self.show()["files"][0]["sha256"]
+        tree = self.tree()
+        bad = [
+            {"systemd": {"bridges": [{"spawn": ["sh"]}]}},
+            {"systemd": {"content-security-policy": "default-src *"}},
+            {"systemd": {"menu": {"logs": {"path": "../../x"}}}},
+            {"systemd": {"menu": {"logs": {"order": "1"}}}},
+            {"systemd": {"menu": {"logs": {"order": True}}}},
+            {"systemd": {"menu": {"logs": {"order": 10001}}}},
+            {"systemd": {"menu": {"logs": {"order": 1.0001}}}},
+            {"systemd": {"menu": {"logs": {}}}},
+            {"systemd": {"menu": {"logs": {"label": ""}}}},
+            {"systemd": {"menu": {"logs": {"label": " Logs"}}}},
+            {"systemd": {"menu": {"logs": {"label": "a\nb"}}}},
+            {"systemd": {"menu": {"logs": {"label": "x" * 61}}}},
+            {"systemd": {"menu": {"logs": {"label": "Logs" + chr(0x202E)}}}},
+            {"systemd": {"menu": {"../logs": {"order": 1}}}},
+            {"systemd": {"menu": ["logs"]}},
+            {"systemd": {"menu": {"logs": {"order": 1}}}, "users": {"menu": {"index": None}}},
+        ]
+        for wanted in bad:
+            with self.subTest(wanted):
+                self.assertEqual(self.apply("system", wanted, base={"systemd": sha})[0], 64)
+        for raw in (b"", b"[]", b"{not json", b"\xff", json.dumps({"base": {"../etc": ""}}).encode(),
+                    json.dumps({"base": {"systemd": "abc"}}).encode(),
+                    json.dumps({"base": {}, "set": {}, "more": 1}).encode(),
+                    json.dumps({"base": {"systemd": sha}, "pad": "x" * hsmenu.MAX_PLAN}).encode()):
+            with self.subTest(raw[:40]):
+                self.assertEqual(self.apply("system", None, raw=raw)[0], 64)
+        self.assertEqual(self.tree(), tree)
+        self.assertEqual(self.read("system", "systemd"), {"menu": {"logs": {"order": 5}}})
+
+    def test_a_file_changed_meanwhile_or_broken_is_left_alone(self):
+        self.override("system", "systemd", {"menu": {"logs": {"order": 5}}})
+        sha = self.show()["files"][0]["sha256"]
+        self.override("system", "systemd", {"menu": {"logs": {"order": 6}}})
+        code, _, err = self.apply("system", {"systemd": {"menu": {"logs": {"order": 1}}}}, base={"systemd": sha})
+        self.assertEqual(code, 75)
+        self.assertIn("changed meanwhile", err)
+        self.assertEqual(self.apply("system", {"users": {"menu": {"index": None}}}, base={"users": sha})[0], 75,
+                         "a file that does not exist is not the one the plan was made from")
+        self.assertEqual(self.read("system", "systemd"), {"menu": {"logs": {"order": 6}}})
+        self.override("system", "systemd", "{ broken")
+        code, _, err = self.apply("system", {"systemd": {"menu": {"logs": {"order": 1}}}})
+        self.assertEqual(code, 1)
+        self.assertIn("not a valid JSON object", err)
+        self.override("system", "systemd", {"menu": {"logs": {"docs": []}, "services": "odd"}})
+        for wanted in ({"menu": {"logs": None}}, {"menu": {"services": {"order": 1}}}):
+            with self.subTest(wanted):
+                code, _, err = self.apply("system", {"systemd": wanted})
+                self.assertEqual(code, 1)
+                self.assertIn("holds more there", err)
+        self.assertEqual(self.read("system", "systemd"), {"menu": {"logs": {"docs": []}, "services": "odd"}})
+        self.assertFalse(os.path.exists(self.backup))
+
+    def test_backups_and_the_lock(self):
+        for i in range(7):
+            self.assertEqual(self.apply("system", {"systemd": {"menu": {"logs": {"order": i + 1}}}}, now=NOW + i)[0], 0)
+        self.assertEqual(sorted(os.listdir(self.backup)),
+                         ["20261019T190002Z", "20261019T190003Z", "20261019T190004Z", "20261019T190005Z",
+                          "20261019T190006Z"], "the first run had nothing to keep; of the six after it the newest five")
+        held = os.open(os.path.dirname(self.path("system", "systemd")), os.O_RDONLY)
+        try:
+            hsmenu.fcntl.flock(held, hsmenu.fcntl.LOCK_EX)
+            self.assertEqual(self.apply("system", {"systemd": {"menu": {"logs": None}}})[0], 75)
+        finally:
+            os.close(held)
+        self.assertEqual(self.read("system", "systemd"), {"menu": {"logs": {"order": 7}}})
+
+    def test_main_routes_menu(self):
+        for argv in (["menu"], ["menu", "show", "x"], ["menu", "apply"], ["menu", "apply", "everyone"],
+                     ["menu", "reset", "system"]):
+            with self.subTest(argv):
+                self.assertEqual(call(hs.main, argv)[0], 64)
 
 
 if __name__ == "__main__":

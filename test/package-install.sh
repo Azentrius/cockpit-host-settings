@@ -35,6 +35,10 @@ test "$(stat -c "%a %U" /etc/cockpit-host-settings/ntfy.token)" = "600 root"
 test "$(stat -c "%a %U %s" /etc/cockpit-host-settings/heartbeat.conf)" = "600 root 0"
 test "$(stat -c %a /usr/lib/cockpit-host-settings/hsheartbeat.py)" = 644
 test "$(stat -c %a /usr/lib/cockpit-host-settings/hschannels.py)" = 644
+test "$(stat -c %a /usr/lib/cockpit-host-settings/hsmenu.py)" = 644
+# Cockpit's menu as the helper reads it: this add-on's own entry is in it.
+/usr/lib/cockpit-host-settings/host-settings.py menu show | python3 -c 'import json, sys
+assert any(e["dir"] == "host-settings" and e["key"] == "index" for e in json.load(sys.stdin)["entries"])'
 uid=$(getent passwd cockpit-host-settings | cut -d: -f3)
 test -n "$uid"
 test "$(stat -c %U /var/lib/cockpit-host-settings)" = cockpit-host-settings
