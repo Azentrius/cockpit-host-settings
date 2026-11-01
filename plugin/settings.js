@@ -631,11 +631,18 @@
     function coverageLabel(coverage) {
         return label(COVERAGE_STATE[coverage] || "warning", t("cov." + coverage));
     }
+    // Why an expected check is not checked: it is not reported at all (a check the profile names
+    // that the add-on does not send), or the add-on's own reason (text of the add-on).
+    function coverageWhy(x) {
+        if (x.not_reported === true) return h("span", { class: "hs-sub", text: t("cov.notReported") });
+        return typeof x.reason === "string" && x.reason ? h("span", { class: "hs-sub", text: x.reason }) : null;
+    }
     function coverageCell(row) {
         if (!row || COVERAGES.indexOf(row.coverage) < 0) return h("span", { class: "hs-sub", text: t("profile.notRead") });
         const gaps = (Array.isArray(row.gaps) ? row.gaps : []).filter((g) => g && COVERAGES.indexOf(g.coverage) >= 0);
-        return [coverageLabel(row.coverage), gaps.length ? h("ul", { class: "hs-findings" }, gaps.map((g) =>
-            h("li", null, coverageLabel(g.coverage), " ", String(g.title || g.id || "")))) : null];
+        return [coverageLabel(row.coverage), coverageWhy(row), gaps.length ? h("ul", { class: "hs-findings" }, gaps.map((g) =>
+            h("li", null, coverageLabel(g.coverage), " ", String(g.title || g.id || ""),
+              g.not_reported === true ? coverageWhy(g) : null))) : null];
     }
     function nameCell(id) {
         return h("span", null, h("strong", { text: addonName(id) }), h("span", { class: "hs-sub" }, code(id)));

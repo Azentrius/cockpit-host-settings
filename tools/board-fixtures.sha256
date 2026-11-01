@@ -31,6 +31,8 @@ ac073d47349ffbdd05d2c9c18fbaaced385b4c7e11a756e737165cc92c8f753a  test/fixtures/
 8903ad050ae33a794408d3ba3e7ca470629d75459dbd707ed89a0a803f12896f  test/fixtures/board/status/ext-complete-total-0-checked.json
 97fea5ef995df09388a7ecd420a63f645290b1c8cdbfc9a8c2048602403af7ba  test/fixtures/board/status/ext-complete-total-1-empty.json
 e73ec240739d09c866482bb636dffec6e8b77121a18f8296c188accecf38bb27  test/fixtures/board/status/ext-complete-total-2-one.json
+017e53495948afc7730196e6f6066cd03b911f27b535d49ca25d34cea89d074e  test/fixtures/board/status/ext-expect-host-settings.json
+c9cf0bee8bf047e3834f673d21e79ce87e08fa4829cb58e6292462f55df23d47  test/fixtures/board/status/ext-expect-security-ssh.json
 32fc5a1477140e47e9e9be3b9cfbbc96fb5530f7c1e5064965e0d21edf2a8f8c  test/fixtures/board/status/ext-good-host-settings.json
 5506f40f38dca6a7e27eb2cc72118a78b5326c372b122d9d1bb7b860f2a41ab3  test/fixtures/board/status/ext-good-security.json
 2928e21b4f150ace7a2d638ed3551a1d339ffe5e797e7754d45c62ce37a4957b  test/fixtures/board/status/ext-good-update-gaps.json
