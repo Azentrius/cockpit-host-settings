@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Stand-in for Cockpit's base1/cockpit.js in the preview (tools/preview/build.py): answers the
-// page's calls from made-up scenarios. ?scenario=fresh|ready|open|nomta&lang=de&admin=0
+// page's calls from made-up scenarios. ?scenario=fresh|ready|open|nomta|menu|menu-noadmin&lang=de&admin=0
+// The menu scenarios open the Cockpit tab.
 (function () {
     "use strict";
     const DATA = __DATA__;
     const NOW = Date.parse(__NOW__);
     const q = new URLSearchParams(location.search);
-    const view = DATA.scenarios[q.get("scenario")] || DATA.scenarios.ready;
-    const admin = q.get("admin") !== "0";
+    const scenario = q.get("scenario");
+    const view = DATA.scenarios[scenario] || DATA.scenarios.ready;
+    const admin = q.get("admin") !== "0" && scenario !== "menu-noadmin";
+    const po = {};
     Date.now = () => NOW;
 
     function proc(fn) {
@@ -26,9 +29,14 @@
     const listeners = {};
     window.cockpit = {
         language: "en",
-        locale(po) { if (po && po[""] && po[""].language) this.language = po[""].language; },
+        locale(data) {
+            if (!data) return;
+            Object.assign(po, data);
+            if (data[""] && data[""].language) this.language = data[""].language;
+        },
+        gettext(text) { return Array.isArray(po[text]) && typeof po[text][1] === "string" ? po[text][1] : text; },
         location: {
-            path: [],
+            path: /^menu/.test(scenario || "") ? ["cockpit"] : [],
             go(path) { this.path = path; (listeners.locationchanged || []).forEach((f) => f()); },
         },
         addEventListener(ev, f) { (listeners[ev] = listeners[ev] || []).push(f); },
@@ -53,6 +61,10 @@
             }
             if (verb.startsWith("status")) return proc(() => JSON.stringify(DATA.status[argv[3] === "de" ? "de" : "en"]));
             if (verb === "check ntfy") return proc((stream) => { stream("Checking …\nRESULT " + JSON.stringify(DATA.check) + "\n"); return ""; });
+            if (verb === "menu show") return proc(() => JSON.stringify(DATA.menu));
+            if (verb.startsWith("menu apply")) {
+                return proc((stream) => { stream("/etc/cockpit/systemd.override.json: changed.\nIn effect once Cockpit is reloaded.\n"); return ""; });
+            }
             return proc((stream) => { stream("+ " + argv.join(" ") + "\n"); return ""; });
         },
         jump() {},

@@ -9,10 +9,12 @@ Scenarios: fresh (nothing set up, no target profile), ready (ntfy and e-mail, th
 add-ons read, the target profile of a web server with one check left out, a watchdog in Uptime
 Kuma), open (the topic is open without a login, ntfy did not accept the last message and is
 failing since, the last signal did not reach the watchdog), nomta (only a sendmail command, no
-mail server on localhost:25, so e-mail failed its test and is failing). admin=0 shows the summary
-without
-administrative access. Cockpit's base1/cockpit.js is replaced by cockpit-stub.js, which answers
-the page's calls from these scenarios; the dialogs run against it too. Nothing touches a real
+mail server on localhost:25, so e-mail failed its test and is failing), menu (the Cockpit tab:
+Cockpit's menu with overrides for all users and just for the user, a setting that makes an entry
+without a page, a file that is not JSON), menu-noadmin (the same without administrative access).
+admin=0 shows the summary without administrative access. Cockpit's base1/cockpit.js is replaced
+by cockpit-stub.js, which answers the page's calls from these scenarios; the dialogs run against
+it too, and manifests-i18n.js holds German names for Cockpit's own pages. Nothing touches a real
 server. The output directory is generated and git-ignored.
 """
 import copy
@@ -34,6 +36,64 @@ PO_STUB = """// Stand-in for Cockpit's base1/po.js: ?lang=de switches the sessio
 const _l = new URLSearchParams(location.search).get("lang");
 if (_l && _l !== "en") cockpit.locale({"": {"language": _l, "language-direction": "ltr"}});
 """
+
+# Stand-in for the translations of the manifests that Cockpit's bridge serves (../manifests-i18n.js).
+MANIFESTS_DE = {"Overview": "Übersicht", "Logs": "Protokolle", "Storage": "Speicher", "Networking": "Netzwerk",
+                "Accounts": "Konten", "Services": "Dienste", "Applications": "Anwendungen",
+                "Software updates": "Software-Aktualisierungen", "Terminal": "Terminal",
+                "Diagnostic reports": "Diagnoseberichte"}
+MANIFESTS_I18N = ("// Stand-in for the translations of every package's manifest that Cockpit's bridge serves.\n"
+                  "if (cockpit.language === \"de\") cockpit.locale(" +
+                  json.dumps({k: [None, v] for k, v in MANIFESTS_DE.items()}, ensure_ascii=False) + ");\n")
+
+
+# Cockpit's menu as `menu show` says it (lib/hsmenu.py, view()).
+def menu_entry(section, key, folder, label, order, system=None, user=None):
+    now, gone = {"label": label, "order": order}, False
+    for mark in (system, user):
+        if not mark:
+            continue
+        if mark.get("hidden"):
+            gone = True
+            continue
+        if gone:
+            now, gone = {"label": None, "order": None}, False
+        now = dict(now, **{k: mark[k] for k in ("label", "order") if k in mark})
+    effective = dict(label=label, order=order, hidden=True) if gone else dict(now, hidden=False)
+    return {"section": section, "key": key, "package": folder, "dir": folder, "editable": True,
+            "base": {"label": label, "order": order}, "system": system, "user": user, "effective": effective}
+
+
+MENU = {
+    "user": "admin", "uid": 1000, "cut": False, "paths": {"system": "/etc/cockpit", "user": "/home/admin/.config/cockpit"},
+    "entries": [
+        menu_entry("menu", "index", "systemd", "Overview", -2),
+        menu_entry("menu", "logs", "systemd", "Logs", 20, {"hidden": True}),
+        menu_entry("menu", "index", "storaged", "Storage", 30),
+        menu_entry("menu", "index", "networkmanager", "Networking", 40),
+        menu_entry("menu", "index", "users", "Accounts", 70),
+        menu_entry("menu", "index", "apps", "Applications", 80),
+        menu_entry("menu", "index", "packagekit", "Software updates", 90),
+        menu_entry("menu", "services", "systemd", "Services", 100, None, {"order": 5}),
+        menu_entry("menu", "index", "status-board", "Status Board", 101),
+        menu_entry("menu", "index", "host-settings", "Host Settings", 106, {"order": 3}),
+        menu_entry("tools", "terminal", "systemd", "Terminal", None, {"label": "Console"}),
+        menu_entry("tools", "index", "sosreport", "Diagnostic reports", None),
+    ],
+    "orphans": [{"scope": "system", "dir": "users", "section": "menu", "key": "people", "phantom": True}],
+    "files": [
+        {"scope": "system", "dir": "systemd", "path": "/etc/cockpit/systemd.override.json", "sha256": "a" * 64, "valid": True,
+         "error": None, "foreign": 1, "served": True},
+        {"scope": "system", "dir": "host-settings", "path": "/etc/cockpit/host-settings.override.json", "sha256": "b" * 64,
+         "valid": True, "error": None, "foreign": 0, "served": True},
+        {"scope": "system", "dir": "users", "path": "/etc/cockpit/users.override.json", "sha256": "c" * 64, "valid": True,
+         "error": None, "foreign": 0, "served": True},
+        {"scope": "system", "dir": "storaged", "path": "/etc/cockpit/storaged.override.json", "sha256": "d" * 64, "valid": False,
+         "error": "invalid", "foreign": 0, "served": True},
+        {"scope": "user", "dir": "systemd", "path": "/home/admin/.config/cockpit/systemd.override.json", "sha256": "e" * 64,
+         "valid": True, "error": None, "foreign": 0, "served": True},
+    ],
+}
 
 # The target profile as `show` sends it: none on a fresh server, the role web on the others.
 CATALOG = {"base": list(hslib.BASE_EXPECT), "roles": [[r, list(adds)] for r, adds in hslib.ROLES],
@@ -123,11 +183,12 @@ def main():
     # The status verb adds the profile from profile.conf (host-settings.py, do_status).
     profile = hslib.profile_answer(hslib.parse_profile("roles = web\nskip = update-gaps/cve: Network data off on purpose\n"
                                                        "set_at = 2026-10-18T09:00:00Z\n")[0])
-    data = {"scenarios": {"fresh": FRESH, "ready": READY, "open": OPEN, "nomta": NOMTA},
+    data = {"scenarios": {"fresh": FRESH, "ready": READY, "open": OPEN, "nomta": NOMTA, "menu": READY, "menu-noadmin": READY},
             "status": {lang: dict(hsstatus.localize(status, lang, hslib.parse_time(NOW)), features=["profile"], profile=profile)
                        for lang in ("en", "de")},
             "check": {"at": NOW, "channel": "ntfy", "target": TARGET, "token": True, "steps": STEPS,
-                      "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok"}}}
+                      "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok"}},
+            "menu": MENU}
     shutil.rmtree(OUT, ignore_errors=True)
     os.makedirs(os.path.join(OUT, "base1"))
     shutil.copytree(os.path.join(REPO, "plugin"), os.path.join(OUT, "host-settings"))
@@ -138,6 +199,8 @@ def main():
         f.write(stub)
     with open(os.path.join(OUT, "base1", "po.js"), "w", encoding="utf-8", newline="\n") as f:
         f.write(PO_STUB)
+    with open(os.path.join(OUT, "manifests-i18n.js"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(MANIFESTS_I18N)
     print("Preview:", os.path.join(OUT, "host-settings", "index.html") + "?scenario=ready")
 
 

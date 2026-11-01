@@ -34,13 +34,15 @@
             </div>
         </header>
 
-        <!-- One tab so far; the bar shows once there is a second one (the Cockpit settings). -->
-        <nav id="hs-tabs" class="az-tabs" role="tablist" aria-label="Areas" data-i18n-aria="tabs.label" hidden>
+        <!-- Both tabs also without administrative access; the location (#/cockpit) selects one. -->
+        <nav id="hs-tabs" class="az-tabs" role="tablist" aria-label="Areas" data-i18n-aria="tabs.label">
             <button id="hs-tab-btn-notifications" class="az-tab" role="tab" type="button" aria-selected="true"
                     aria-controls="hs-tab-notifications" data-tab="notifications" data-i18n="tab.notifications">Notifications</button>
+            <button id="hs-tab-btn-cockpit" class="az-tab" role="tab" type="button" aria-selected="false" tabindex="-1"
+                    aria-controls="hs-tab-cockpit" data-tab="cockpit" data-i18n="tab.cockpit">Cockpit</button>
         </nav>
 
-        <!-- Messages for the whole page (role="alert" for errors). -->
+        <!-- Messages of the Notifications tab (role="alert" for errors). -->
         <div id="hs-status" class="hs-status-list"></div>
 
         <section id="hs-loading" class="az-card hs-loading" aria-live="polite">
@@ -49,10 +51,14 @@
                 <span class="hs-loading-sub" data-i18n="loading.sub">The channels, the regular check and what the add-ons of this server said last. Nothing is changed.</span></span>
         </section>
 
-        <!-- Without administrative access: the summary of status.json only. -->
-        <div id="hs-summary" class="hs-panel" hidden></div>
+        <section id="hs-tab-notifications" class="hs-panel" role="tabpanel" aria-labelledby="hs-tab-btn-notifications">
+            <!-- Without administrative access: the summary of status.json only. -->
+            <div id="hs-summary" class="hs-panel" hidden></div>
+            <div id="hs-notifications" class="hs-panel"></div>
+        </section>
 
-        <section id="hs-tab-notifications" class="hs-panel" role="tabpanel" aria-labelledby="hs-tab-btn-notifications"></section>
+        <!-- Cockpit's menu, read once the tab is opened. -->
+        <section id="hs-tab-cockpit" class="hs-panel" role="tabpanel" aria-labelledby="hs-tab-btn-cockpit" hidden></section>
 
         <footer class="az-signature">
             <a class="az-signature__mark" href="https://azentrius.com" target="_blank" rel="noopener noreferrer">Azentrius</a>
@@ -71,7 +77,7 @@
             <p id="hs-dialog-desc" class="hs-dialog-desc"></p>
             <div id="hs-dialog-fields" class="hs-dialog-fields"></div>
             <p id="hs-dialog-error" class="az-field__error" role="alert" hidden></p>
-            <p class="hs-dialog-note" data-i18n="dlg.note">Runs with administrator privileges via Cockpit.</p>
+            <p id="hs-dialog-note" class="hs-dialog-note" data-i18n="dlg.note">Runs with administrator privileges via Cockpit.</p>
             <pre id="hs-dialog-log" class="hs-dialog-log" hidden></pre>
             <div id="hs-dialog-outcome" class="hs-dialog-outcome" hidden></div>
             <p id="hs-dialog-result" class="hs-dialog-result" role="status" aria-live="polite"></p>

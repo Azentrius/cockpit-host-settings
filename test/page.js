@@ -5,7 +5,7 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const { JSDOM } = require("jsdom");
+const { JSDOM, VirtualConsole } = require("jsdom");
 
 const PLUGIN = path.join(__dirname, "..", "plugin");
 const html = fs.readFileSync(path.join(PLUGIN, "index.html"), "utf8");
@@ -99,6 +99,58 @@ function statusDoc(lang) {
     };
 }
 
+// Cockpit's menu as `host-settings.py menu show` says it (lib/hsmenu.py, view()). An entry with the
+// marks of both scopes (null, {hidden: true}, or the order and label they set) and its effective
+// state as view() computes it.
+function menuEntry(section, key, dir, label, order, system, user, extra) {
+    let now = { label, order };
+    let gone = false;
+    [system, user].forEach((m) => {
+        if (!m) return;
+        if (m.hidden) { gone = true; return; }
+        if (gone) { now = { label: null, order: null }; gone = false; }
+        now = Object.assign({}, now, "label" in m ? { label: m.label } : {}, "order" in m ? { order: m.order } : {});
+    });
+    return Object.assign({
+        section, key, package: dir, dir, editable: true, base: { label, order }, system: system || null, user: user || null,
+        effective: gone ? { label, order, hidden: true } : { label: now.label, order: now.order, hidden: false },
+    }, extra || {});
+}
+const MENU_SHA = { systemd: "a".repeat(64), users: "b".repeat(64), storaged: "c".repeat(64), mine: "d".repeat(64) };
+// Cockpit's own pages and Host Settings. For all users: Logs hidden, Terminal renamed (and one more
+// setting in that file), a phantom entry in the file of users, the file of storaged not JSON. Just
+// for the user: Services moved up, and a null for a key that is gone.
+function menuShow(extra) {
+    return Object.assign({
+        user: "admin", uid: 1000, cut: false,
+        paths: { system: "/etc/cockpit", user: "/home/admin/.config/cockpit" },
+        entries: [
+            menuEntry("menu", "index", "systemd", "Overview", -2),
+            menuEntry("menu", "logs", "systemd", "Logs", 20, { hidden: true }),
+            menuEntry("menu", "services", "systemd", "Services", 100, null, { order: 5 }),
+            menuEntry("tools", "terminal", "systemd", "Terminal", null, { label: "Shell" }),
+            menuEntry("menu", "index", "storaged", "Storage", 30),
+            menuEntry("menu", "index", "networkmanager", "Networking", 40),
+            menuEntry("menu", "index", "users", "Accounts", 70),
+            menuEntry("menu", "index", "host-settings", "Host Settings", 106),
+        ],
+        orphans: [
+            { scope: "system", dir: "users", section: "menu", key: "people", phantom: true },
+            { scope: "user", dir: "systemd", section: "menu", key: "gone", phantom: false },
+        ],
+        files: [
+            { scope: "system", dir: "systemd", path: "/etc/cockpit/systemd.override.json", sha256: MENU_SHA.systemd, valid: true,
+              error: null, foreign: 1, served: true },
+            { scope: "system", dir: "users", path: "/etc/cockpit/users.override.json", sha256: MENU_SHA.users, valid: true,
+              error: null, foreign: 0, served: true },
+            { scope: "system", dir: "storaged", path: "/etc/cockpit/storaged.override.json", sha256: MENU_SHA.storaged, valid: false,
+              error: "invalid", foreign: 0, served: true },
+            { scope: "user", dir: "systemd", path: "/home/admin/.config/cockpit/systemd.override.json", sha256: MENU_SHA.mine,
+              valid: true, error: null, foreign: 0, served: true },
+        ],
+    }, extra || {});
+}
+
 // Every window boot() made: closeAll() ends their timers (the menu icon checks again when an item
 // turns out of date, which can be many minutes ahead and would keep node running).
 const windows = [];
@@ -136,16 +188,19 @@ function proc(out, { chunks = [], fail = null, inputs = null } = {}) {
 }
 
 function boot({ language = "en", view = ready(), admin = true, now = NOW, onSpawn = null, location = [], hidden = false,
-                statusFile = null } = {}) {
-    const dom = new JSDOM(html, { runScripts: "outside-only", url: "https://localhost:9090/host-settings/" });
+                statusFile = null, menu = menuShow() } = {}) {
+    // What jsdom does not implement (a navigation such as location.reload()) is recorded, not printed.
+    const calls = { spawn: [], reads: [], go: [], notes: [], inputs: [], unimplemented: [] };
+    const virtualConsole = new VirtualConsole();
+    virtualConsole.on("jsdomError", (e) => calls.unimplemented.push(String(e && e.message)));
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "https://localhost:9090/host-settings/", virtualConsole });
     const w = dom.window;
     windows.push(w);
     w.document.querySelectorAll("script").forEach((s) => s.remove());
     w.HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
     w.HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
     w.Date.now = () => Date.parse(now);
-    const calls = { spawn: [], reads: [], go: [], notes: [], inputs: [] };
-    const box = { view };
+    const box = { view, menu };
     const listeners = {};
     w.cockpit = {
         language,
@@ -171,6 +226,7 @@ function boot({ language = "en", view = ready(), admin = true, now = NOW, onSpaw
                 return proc(JSON.stringify(box.view));
             }
             if (verb.startsWith("status")) return proc(JSON.stringify(statusDoc(argv[3])));
+            if (verb === "menu show") return proc(JSON.stringify(box.menu));
             return proc("", { chunks: ["ok\n"], inputs: calls.inputs });
         },
         jump() {},
@@ -189,5 +245,5 @@ function text(el) {
     return c.textContent.replace(/\s+/g, " ").trim();
 }
 
-module.exports = { boot, settle, proc, text, fresh, ready, statusDoc, closeAll, noProfile, webProfile, COVERAGE,
-                   NOW, HELPER, PLUGIN, STATUS_FILE, TOKEN, EVIL };
+module.exports = { boot, settle, proc, text, fresh, ready, statusDoc, closeAll, noProfile, webProfile, COVERAGE, menuEntry, menuShow,
+                   NOW, HELPER, PLUGIN, STATUS_FILE, TOKEN, EVIL, MENU_SHA };

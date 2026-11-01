@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 PAGE = os.path.join(HERE, "out", "host-settings", "index.html")
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "docs", "img")
-SCENARIOS = ("fresh", "ready", "open", "nomta")
+SCENARIOS = ("fresh", "ready", "open", "nomta", "menu", "menu-noadmin")
 
 
 def main():

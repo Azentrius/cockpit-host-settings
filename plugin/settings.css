@@ -93,6 +93,15 @@ html { background: var(--bg-page); }
 .az-table td > .hs-v { display: block; min-width: 0; overflow-wrap: anywhere; }
 .hs-findings { margin: 0; padding-inline-start: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-xs); }
 
+/* ---------- the Cockpit tab: the menu ---------- */
+
+/* The labels of an entry, and its buttons: they wrap instead of widening the row. */
+.hs-tags, .hs-menu-btns { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); }
+.hs-tags .az-label { white-space: normal; }
+/* "Move up" is the arrow of "Move down", turned. */
+.hs-up .az-icon { transform: rotate(180deg); }
+.hs-menu-bar { align-items: center; }
+
 /* ---------- dialog ---------- */
 
 dialog.hs-dialog { padding: 0; border: 0; }
@@ -130,6 +139,7 @@ dialog.hs-dialog::backdrop { background: var(--backdrop); }
     .hs-kv { grid-template-columns: 1fr; }
     .hs-kv dd { margin-block-end: var(--space-xs); }
     .az-table--stack td > .hs-v { text-align: end; }
+    .az-table--stack .hs-tags, .az-table--stack .hs-menu-btns { justify-content: flex-end; }
 }
 @media (prefers-reduced-motion: reduce) {
     .hs-spinner, .hs-btn-spinner { animation: none; }

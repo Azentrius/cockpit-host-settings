@@ -61,6 +61,11 @@ t("every key the page asks for exists", () => {
         "cov.": JSON.parse(js.match(/const COVERAGES = (\[[^\]]*\])/)[1]),
         "role.": ["web", "database", "build", "bastion"],
         "beat.reason.": JSON.parse(js.match(/const BEAT_REASONS = (\[[^\]]*\])/)[1]),
+        "menu.section.": JSON.parse(js.match(/const MENU_SECTIONS = (\[[^\]]*\])/)[1]),
+        "menu.scope.": JSON.parse(js.match(/const MENU_SCOPES = (\[[^\]]*\])/)[1]),
+        "menu.err.": JSON.parse(js.match(/const MENU_FILE_ERRORS = (\[[^\]]*\])/)[1]),
+        "menu.aria.": ["up", "down"],
+        "menu.btn.": ["up", "down"],
     };
     Object.entries(families).forEach(([prefix, keys]) => keys.forEach((k) => assert.ok(prefix + k in en, "missing: " + prefix + k)));
 });

@@ -6,6 +6,8 @@
  *   - the page calls only the fixed verbs of host-settings.py, with administrative access only
  *     where it changes something (through the dialog); the token only on standard input; the
  *     menu icon reads status.json only, sends only its page status,
+ *   - Cockpit's menu: read as the user, written through the dialog (just for me as the user,
+ *     the plan on standard input); the one script the page adds is Cockpit's translations,
  *   - the manifest names the status verb as the status contract wants it,
  *   - the menu entry sits with the other Azentrius add-ons and links the README.
  * Run with: node test/files.test.js */
@@ -60,9 +62,13 @@ t("stylesheets take every file from the page", () => fs.readdirSync(PLUGIN).filt
 }));
 
 t("only the fixed verbs, and require only for the dialog", () => {
-    const direct = [...js.matchAll(/spawn\(\s*\[HELPER, ([^\]]*)\]\s*,\s*"(try|require)"\)/g)].map((m) => m[1].split(",")[0].trim() + " " + m[2]);
-    assert.deepStrictEqual(direct.sort(), ['"show" try', '"status" try']);
-    assert.ok(/proc = spawn\(\[HELPER\]\.concat\(args\), "require"\)/.test(js), "the dialog runs as administrator");
+    const direct = [...js.matchAll(/spawn\(\s*\[HELPER, ([^\]]*)\]\s*,\s*("try"|"require"|null)\)/g)].map((m) => m[1] + " " + m[2]);
+    assert.deepStrictEqual(direct.sort(), ['"menu", "show" null', '"show" "try"', '"status", "--lang", LANG "try"'],
+        "Cockpit's menu is read as the user, never with administrative access");
+    assert.strictEqual((js.match(/spawn\(/g) || []).length, 6, "the three above, the dialog's, spawn() and its cockpit.spawn()");
+    assert.ok(/proc = spawn\(\[HELPER\]\.concat\(args\), spec\.asUser === true \? null : "require", "out"\)/.test(js),
+        "the dialog runs as administrator, unless it asks for the user");
+    assert.ok(/if \(superuser\) opts\.superuser = superuser;/.test(js), "without superuser, the option is left out");
     // The dialog's calls: the first word of every argv in ACTIONS and the two forms.
     const block = js.slice(js.indexOf("const ACTIONS = {"), js.indexOf("function copyCommands"));
     const verbs = [...block.matchAll(/\["([a-z]+)"/g)].map((m) => m[1]).filter((v) => v !== "en" && v !== "de");
@@ -80,6 +86,31 @@ t("only the fixed verbs, and require only for the dialog", () => {
     assert.ok(!/superuser: "require"/.test(js.replace(/err: superuser === "require"/, "")), "no other require");
     assert.ok(js.includes('cockpit.file(STATUS_PATH, { syntax: JSON })'), "only status.json is watched");
     assert.ok(!/\.watch\(/.test(js.replace("file.watch((content, tag)", "")), "no other watch");
+});
+
+t("Cockpit's menu: show as the user, apply system only through the dialog, apply user without administrative access", () => {
+    // Every use of the verb: menu show (direct, as the user) and menu apply with the scope (the dialog).
+    const uses = [...js.matchAll(/\[(?:HELPER, )?"menu"[^\]]*\]/g)].map((m) => m[0]);
+    assert.deepStrictEqual(uses.sort(), ['["menu", "apply", scope]', '[HELPER, "menu", "show"]']);
+    const save = js.slice(js.indexOf("function menuSave()"), js.indexOf("function reloadCockpit()"));
+    assert.ok(save.includes("dlg.open({"), "applying goes through the dialog");
+    assert.ok(save.includes('argv: () => ["menu", "apply", scope]'));
+    assert.ok(save.includes("const scope = menuScopeNow();") && save.includes("MENU_SCOPES.indexOf(scope) < 0) return;"));
+    assert.ok(save.includes('asUser: scope === "user",'), "only just for me runs as the user");
+    assert.strictEqual((js.match(/asUser:/g) || []).length, 1, "no other dialog runs without administrative access");
+    assert.ok(save.includes('input: () => JSON.stringify(plan) + "\\n",'), "the plan goes to standard input");
+    // For all users only with administrative access.
+    assert.ok(/function menuScopeNow\(\) \{\s*return admin !== true \? "user" : menuScope === "user" \? "user" : "system";\s*\}/.test(js));
+    assert.deepStrictEqual(JSON.parse(js.match(/const MENU_SCOPES = (\[[^\]]*\])/)[1]), ["system", "user"]);
+});
+
+t("the one script the page adds: Cockpit's translations of the manifests", () => {
+    assert.ok(js.includes('const MANIFEST_I18N = "../manifests-i18n.js";'));
+    assert.strictEqual((js.match(/createElement\("script"\)/g) || []).length, 1);
+    assert.strictEqual((js.match(/"script"/g) || []).length, 1, "no other script element");
+    assert.ok(js.includes("script.src = MANIFEST_I18N;"));
+    assert.ok(!/h\("script"|\.src = (?!MANIFEST_I18N)/.test(js), "no other source");
+    assert.ok(js.includes("window.top.location.reload();"), "Reload Cockpit");
 });
 
 t("the token: on standard input, from a password field, never in an argument", () => {
@@ -146,6 +177,15 @@ t("the regular expressions of the page are those of the helper", () => {
     assert.strictEqual(jsRe("SKIP_RE"), pyRe("SKIP_RE"));
     assert.strictEqual(jsRe("ROLE_RE"), pyRe("ROLE_RE"));
     assert.strictEqual(jsRe("DATE_RE"), pyRe("DATE_RE"));
+    // Cockpit's menu (lib/hsmenu.py, matched whole there): a package folder, a key, the limits.
+    const menu = fs.readFileSync(path.join(__dirname, "..", "lib", "hsmenu.py"), "utf8");
+    const menuRe = (name) => menu.match(new RegExp("^" + name + ' = re\\.compile\\(r"([^"]*)"\\)', "m"))[1];
+    assert.strictEqual(jsRe("DIR_RE"), menuRe("DIR_RE"));
+    assert.strictEqual(jsRe("KEY_RE"), menuRe("KEY_RE"));
+    assert.ok(/^LABEL_MAX = 60$/m.test(menu) && js.includes("const MENU_LABEL_MAX = 60;"));
+    assert.ok(/^ORDER_MIN, ORDER_MAX = -1000, 10000$/m.test(menu) && js.includes("const MENU_ORDER_MIN = -1000;") &&
+              js.includes("const MENU_ORDER_MAX = 10000;"));
+    assert.ok(/^SECTIONS = \("dashboard", "menu", "tools"\)$/m.test(menu) && js.includes('const MENU_SECTIONS = ["dashboard", "menu", "tools"];'));
 });
 
 t("the label classes exist in azentrius.css", () => {
