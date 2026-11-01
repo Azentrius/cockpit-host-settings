@@ -70,7 +70,7 @@ jobs:
         run: |
           for kind_image in deb:debian:13 rpm:fedora:43; do
             docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/test/package-install.sh:/package-install.sh:ro" \
-              "${kind_image#*:}" sh /package-install.sh "${kind_image%%:*}"
+              -v "$PWD/tools/dnf.sh:/dnf.sh:ro" "${kind_image#*:}" sh /package-install.sh "${kind_image%%:*}"
           done
       # Only the browser, from Playwright's CDN (seconds). Its system packages (--with-deps: fonts,
       # xvfb) come by apt from the Ubuntu mirror, which was slow enough to hang the job for ten
@@ -100,6 +100,8 @@ jobs:
   # The .rpm on the RHEL rebuilds Rocky Linux and AlmaLinux, 9 and 10, beyond the test job's
   # Debian 13 and Fedora 43, with the same checks (test/package-install.sh). No Cockpit or systemd
   # runs there, so an installed package is not yet a tested system.
+  # dnf runs through tools/dnf.sh, with time limits and three tries: on AlmaLinux the first dnf
+  # install of a job once took almost 14 minutes, and once ran until the job's time limit.
   install:
     name: install (${{ matrix.image }})
     runs-on: ubuntu-24.04
@@ -122,7 +124,7 @@ jobs:
           IMAGE: ${{ matrix.image }}
         run: |
           docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/test/package-install.sh:/package-install.sh:ro" \
-            "$IMAGE" sh -c '. /etc/os-release; echo "$PRETTY_NAME"; exec sh /package-install.sh rpm'
+            -v "$PWD/tools/dnf.sh:/dnf.sh:ro" "$IMAGE" sh -c '. /etc/os-release; echo "$PRETTY_NAME"; exec sh /package-install.sh rpm'
 
   # The oldest Python the helpers support (README, Requirements): the helper tests on 3.8.
   python-min:

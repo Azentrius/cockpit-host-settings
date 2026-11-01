@@ -5,8 +5,9 @@
 #
 #   sh test/package-install.sh deb|rpm
 #
-# This build's package is in /dist. Installs it with the distribution's own dependencies (the
-# versions it took are printed) and checks: the files and their modes, the token file and the
+# This build's package is in /dist, tools/dnf.sh is /dnf.sh (dnf with time limits and three
+# tries). Installs it with the distribution's own dependencies (the versions it took are
+# printed) and checks: the files and their modes, the token file and the
 # watchdog's (empty: no watchdog), the notifier's own user and state folder, a run of the notifier as that user without a channel, the
 # status verb as nobody; then removes the package: its files and state go, the token file stays.
 # No Cockpit or systemd runs there.
@@ -20,7 +21,7 @@ case $kind in
         apt-get install -y -qq /dist/*.deb > /dev/null
         dpkg-query -W cockpit-bridge python3 systemd iproute2 ;;
     rpm)
-        dnf install -y -q /dist/*.rpm
+        sh /dnf.sh install -y -q /dist/*.rpm
         rpm -q cockpit-bridge python3 systemd iproute ;;
     *) echo "deb or rpm, not $kind" >&2; exit 64 ;;
 esac
