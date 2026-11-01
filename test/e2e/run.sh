@@ -39,7 +39,7 @@ mkdir -p "$out"
 here=$(cd "$(dirname "$0")" && pwd)
 report=$out/report.md
 helper=/usr/lib/cockpit-host-settings/host-settings.py
-# The version the Azentrius servers run (public-host); raise both together. With the registry,
+# The version the Azentrius servers run; raise both together. With the registry,
 # as Podman takes no short names without asking.
 ntfy_image=docker.io/binwiederhier/ntfy:v2.32.0
 base=http://127.0.0.1:8090
