@@ -12,14 +12,18 @@ verbs of the Azentrius add-ons on this host (they work without root, as the
 status contract asks), tells what changed through ntfy and/or the local MTA,
 and writes its state to /var/lib/cockpit-host-settings. The ntfy token comes
 from systemd as the credential ntfy.token (LoadCredential=); nothing here
-writes it anywhere. With a watchdog set up (credential heartbeat.conf), every
-run that holds the lock ends with a signal to it: success once the run is done
-and its state saved, failure when it could not run or a message could not be
-sent (lib/hsheartbeat.py). Formats and steps: docs/INTERNALS.md.
+writes it anywhere. Each channel keeps its own health (lib/hschannels.py): a
+channel that did not accept a message or a test stays failed until it accepts
+one again with the settings set now, also through runs with nothing to send.
+With a watchdog set up (credential heartbeat.conf), every run that holds the
+lock ends with a signal to it: success once the run is done and its state
+saved, failure when it could not run or a channel set up is failed
+(lib/hsheartbeat.py). Formats and steps: docs/INTERNALS.md.
 
 Exit codes: 0 done (a message that could not be sent is no error: it is in
 the state and the status, and the watchdog is told), 1 failed, 64 wrong call,
-75 another run holds the lock (no signal: the run that holds it gives one).
+75 another run or test holds the lock (no signal: the run that holds it gives
+one).
 """
 
 import fcntl
@@ -34,6 +38,7 @@ import time
 # directory only, and no bytecode is written next to them.
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hschannels  # noqa: E402
 import hsheartbeat  # noqa: E402
 import hslib  # noqa: E402
 import hsnotify  # noqa: E402
@@ -69,6 +74,8 @@ class Env:
         self.host = socket.gethostname().split(".")[0] or "localhost"
         self.fqdn = None
         self.out = sys.stdout
+        # The journal of a test, whose standard output is its result.
+        self.err = sys.stderr
         # The result of a run for the watchdog: where it got to, and what do_run decided.
         self.stage = "config"
         self.outcome = None
@@ -192,6 +199,7 @@ def heartbeat_info(env):
         return None
     last = load(env.path("heartbeat.json"))
     return {"invalid": bool(conf.get("invalid")), "at": last.get("at"), "signal": last.get("signal"),
+            "why": last.get("why") if isinstance(last.get("why"), str) else None,
             "result": last.get("result") if isinstance(last.get("result"), dict) else None}
 
 
@@ -199,8 +207,32 @@ def write_status(env, last, cfg):
     if not last.get("run"):
         return
     info = {"channels": hslib.channels(cfg), "delivery": last.get("delivery"), "access": last.get("access"),
-            "run": last["run"], "heartbeat": heartbeat_info(env)}
+            "run": last["run"], "heartbeat": heartbeat_info(env),
+            "channel_health": hschannels.health(hschannels.records_of(last.get("channels")), cfg)}
     write_atomic(env.path("status.json"), hsstatus.status_file(info, hsstatus.version()), 0o644)
+
+
+def load_records(last, cfg, now, log):
+    """The records of the channels (lib/hschannels.py) from last.json, brought in line with the
+    settings and the last delivery; what changed goes to the journal (log)."""
+    records, notes = hschannels.reconcile(hschannels.records_of(last.get("channels")), cfg, last.get("delivery"), now)
+    for ch, what, detail in notes:
+        print(hschannels.note_text(ch, what, detail), file=log)
+    return records
+
+
+def take(records, channel, ok, reason, target, via, at, current, log):
+    """One result of a channel into its record; a failure that begins or ends goes to the journal
+    (log), the end once: the failure is gone then."""
+    before = (records.get(channel) or {}).get("failed")
+    what = hschannels.record(records, channel, ok, reason, target, via, at, current)
+    if what == "failed":
+        print(hschannels.note_text(channel, "failed", f"{via}, {reason}"), file=log)
+    elif what == "recovered":
+        print(hschannels.note_text(channel, "recovered", f"{via}, failing since {before['since']}"), file=log)
+    elif what == "stale":
+        print(hschannels.note_text(channel, "stale", None), file=log)
+    return what
 
 
 def deliver(env, cfg, token, msg):
@@ -223,6 +255,9 @@ def do_run(env):
     last = load(env.path("last.json"))
     if last.get("format") != hsnotify.FORMAT:
         last = {}
+    # Each channel's health, judged whether this run sends anything or not: what is known of it
+    # from earlier runs and tests, in line with the settings now.
+    records = load_records(last, cfg, now, env.out)
     lang = cfg["language"]
     env.stage = "collect"
     snapshot = hsnotify.collect(lang, now, env.runner, env.root, env.lstat)
@@ -254,7 +289,14 @@ def do_run(env):
             last["delivery"] = {"at": hslib.iso(now), "summary": summary, "changes": count, "title": msg["title"],
                                 "results": results}
             told = results
-            # Nothing went out: the same changes are told on the next run.
+            # Each channel's result into its record: a failure begins, or a success for the target
+            # set now ends one.
+            for ch, r in sorted(results.items()):
+                tg = hschannels.target_of(cfg, ch)
+                take(records, ch, r["ok"], r["reason"], tg, "run", hslib.iso(now), tg, env.out)
+            # Nothing went out: the same changes are told on the next run. Taken by one channel,
+            # they are told: the channel that failed does not get them again (no queue per
+            # channel), and stays failed until it accepts a message or a test.
             if any(r["ok"] for r in results.values()):
                 sent = new_sent
                 if summary:
@@ -274,25 +316,29 @@ def do_run(env):
             access = dict(hsnotify.access_of(steps, access), at=hslib.iso(now), target=target(cfg), full=False,
                           steps=steps)
     last.update(format=hsnotify.FORMAT, sent=sent, seen=seen_of(snapshot), access=access,
-                coverage=coverage[0] if coverage else None,
+                coverage=coverage[0] if coverage else None, channels=records,
                 run={"at": hslib.iso(now), "took_ms": int((time.monotonic() - started) * 1000),
                      "addons": len(snapshot), "bad_lines": bad})
     env.stage = "state"
     write_atomic(env.path("last.json"), last, 0o600)
     write_status(env, last, cfg)
     # The run is done and its state saved: now its result for the watchdog, decided here and not
-    # from the exit code (0 also when a message could not be sent). A message that did not reach
-    # every channel set up is a failure, even when another channel took it and it is not sent
-    # again; an add-on that cannot be read or a gap in what the profile expects is a finding,
-    # told through the messages, and no failure of the notifier.
+    # from the exit code (0 also when a message could not be sent). A channel set up that is
+    # failed makes it a failure: one that did not accept this run's message, even when another
+    # took it and it is not sent again, and one that failed before and has not accepted a
+    # message or a test since, also when this run had nothing to send. An add-on that cannot be
+    # read or a gap in what the profile expects is a finding, told through the messages, and no
+    # failure of the notifier.
     env.stage = "done"
-    failed = sorted(c for c, r in (told or {}).items() if not r.get("ok"))
-    env.outcome = (("failure", "delivery", [f"{c} {told[c]['reason']}" for c in failed]) if failed
-                   else ("success", None, None))
+    failing = hschannels.failing(records, cfg)
+    failed_now = any(not r.get("ok") for r in (told or {}).values())
+    env.outcome = (("failure", "delivery" if failed_now else "channel", [f"{c} {why}" for c, why in failing])
+                   if failing else ("success", None, None))
     env.saved = (last, cfg)
     bad_addons = sorted(p for p, a in snapshot.items() if a["kind"] in hsnotify.ERROR_KINDS)
     print(f"{len(snapshot)} add-ons" + (f", not readable: {', '.join(bad_addons)}" if bad_addons else "") +
-          ("" if told is None else ", message: " + ", ".join(f"{c} {r['reason']}" for c, r in sorted(told.items()))),
+          ("" if told is None else ", message: " + ", ".join(f"{c} {r['reason']}" for c, r in sorted(told.items()))) +
+          (", failing: " + ", ".join(f"{c} {why}" for c, why in failing) if failing else ""),
           file=env.out)
     return 0
 
@@ -343,24 +389,46 @@ def do_test(env, channel):
     cfg, _ = read_config(env.conf)
     token = read_token(env.token_file)
     lang = cfg["language"]
-    last = load(env.path("last.json"))
-    if last.get("format") != hsnotify.FORMAT:
-        last = {}
     if channel not in hslib.channels(cfg):
         result = {"at": hslib.iso(now), "channel": channel, "error": "not-set-up"}
-    elif channel == "ntfy":
+        write_atomic(env.path(f"test-{channel}.json"), result, 0o600)
+        json.dump(result, env.out, ensure_ascii=False)
+        env.out.write("\n")
+        return 0
+    tg = hschannels.target_of(cfg, channel)
+    access = None
+    if channel == "ntfy":
         steps = hsnotify.check_ntfy(cfg, token, lang, env.host, env.http)
         access = dict(hsnotify.access_of(steps), at=hslib.iso(now), target=target(cfg), full=True, steps=steps)
         result = {"at": hslib.iso(now), "channel": "ntfy", "target": target(cfg), "token": bool(token),
                   "steps": steps, "access": {k: access[k] for k in ("state", "anon_read", "anon_write")}}
-        last["access"] = access
-        if last.get("run"):
-            last["format"] = hsnotify.FORMAT
-            write_atomic(env.path("last.json"), last, 0o600)
-            write_status(env, last, cfg)
+        ok, reason = hschannels.check_outcome(steps)
     else:
-        result = {"at": hslib.iso(now), "channel": "mail",
-                  "result": hsnotify.send_mail(cfg, hsnotify.test_message(lang, env.host), env.domain(), env.smtp)}
+        r = hsnotify.send_mail(cfg, hsnotify.test_message(lang, env.host), env.domain(), env.smtp)
+        result = {"at": hslib.iso(now), "channel": "mail", "target": tg, "result": r}
+        ok, reason = r["ok"], r["reason"]
+    # The channel's health, under the lock (no run in between), with last.json and the settings
+    # read now: the result counts only for the target it was made with, and only while that is
+    # the one set up. A success for it ends a known failure, also without a new finding.
+    last = load(env.path("last.json"))
+    if last.get("format") != hsnotify.FORMAT:
+        last = {}
+    try:
+        now_cfg, _ = read_config(env.conf)
+    except ConfigError:
+        now_cfg = None
+    if now_cfg is not None:
+        records = load_records(last, now_cfg, now, env.err)
+        what = take(records, channel, ok, reason, tg, "test", hslib.iso(now), hschannels.target_of(now_cfg, channel),
+                    env.err)
+        if access is not None and target(now_cfg) == access["target"]:
+            last["access"] = access
+        last.update(format=hsnotify.FORMAT, channels=records)
+        write_atomic(env.path("last.json"), last, 0o600)
+        write_status(env, last, now_cfg)
+        result["health"] = hschannels.state_of(records.get(channel), hschannels.target_of(now_cfg, channel))
+        if what == "recovered":
+            result["recovered"] = True
     write_atomic(env.path(f"test-{channel}.json"), result, 0o600)
     json.dump(result, env.out, ensure_ascii=False)
     env.out.write("\n")

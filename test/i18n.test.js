@@ -55,6 +55,8 @@ t("every key the page asks for exists", () => {
         "reason.": JSON.parse(js.match(/const REASONS = (\[[^\]]*\])/)[1]).concat(["http"]),
         "limits.": ["contract", "offline", "content", "mail", "server"],
         "mail.": ["noMta", "sendmailOnly", "testOk", "testFailed", "testOkNow", "testFailedNow"],
+        "chan.ok.": ["run", "test"],
+        "chan.again.": ["run", "test"],
         "btn.": ["refresh", "loading"],
         "cov.": JSON.parse(js.match(/const COVERAGES = (\[[^\]]*\])/)[1]),
         "role.": ["web", "database", "build", "bastion"],
