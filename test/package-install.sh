@@ -34,6 +34,7 @@ test "$(stat -c %a /usr/lib/cockpit-host-settings/hslib.py)" = 644
 test "$(stat -c "%a %U" /etc/cockpit-host-settings/ntfy.token)" = "600 root"
 test "$(stat -c "%a %U %s" /etc/cockpit-host-settings/heartbeat.conf)" = "600 root 0"
 test "$(stat -c %a /usr/lib/cockpit-host-settings/hsheartbeat.py)" = 644
+test "$(stat -c %a /usr/lib/cockpit-host-settings/hschannels.py)" = 644
 uid=$(getent passwd cockpit-host-settings | cut -d: -f3)
 test -n "$uid"
 test "$(stat -c %U /var/lib/cockpit-host-settings)" = cockpit-host-settings

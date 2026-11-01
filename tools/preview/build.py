@@ -7,9 +7,10 @@
 
 Scenarios: fresh (nothing set up, no target profile), ready (ntfy and e-mail, the timer on, four
 add-ons read, the target profile of a web server with one check left out, a watchdog in Uptime
-Kuma), open (the topic is open without a login, the last message did not go out everywhere, the
-last signal did not reach the watchdog), nomta (only a sendmail command, no mail server on
-localhost:25). admin=0 shows the summary without
+Kuma), open (the topic is open without a login, ntfy did not accept the last message and is
+failing since, the last signal did not reach the watchdog), nomta (only a sendmail command, no
+mail server on localhost:25, so e-mail failed its test and is failing). admin=0 shows the summary
+without
 administrative access. Cockpit's base1/cockpit.js is replaced by cockpit-stub.js, which answers
 the page's calls from these scenarios; the dialogs run against it too. Nothing touches a real
 server. The output directory is generated and git-ignored.
@@ -44,7 +45,7 @@ WEB_PROFILE = dict(NO_PROFILE, set=True, roles=["web"], expect=hslib.resolve_exp
 FRESH = {
     "root": True, "config": {"ntfy_url": None, "ntfy_topic": None, "mail_to": None, "language": "en"}, "bad_lines": [],
     "token": False, "timer": "inactive", "next": None, "running": False, "host": "web1",
-    "smtp": {"listening": True, "sendmail": True}, "last": None, "check": None, "test_mail": None,
+    "smtp": {"listening": True, "sendmail": True}, "last": None, "channels": {}, "check": None, "test_mail": None,
     "docs": "https://docs.ntfy.sh/install/", "profile": NO_PROFILE,
 }
 TARGET = "https://ntfy.example.com/cockpit-web1"
@@ -91,7 +92,11 @@ READY = dict(FRESH, **{
     "heartbeat": BEAT,
     "check": {"at": "2026-10-19T09:00:00Z", "channel": "ntfy", "target": TARGET, "token": True, "steps": STEPS,
               "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok"}},
-    "test_mail": {"at": "2026-10-18T09:05:00Z", "channel": "mail", "result": {"ok": True, "code": None, "reason": "sent"}},
+    "test_mail": {"at": "2026-10-18T09:05:00Z", "channel": "mail", "target": "ops@example.com",
+                  "result": {"ok": True, "code": None, "reason": "sent"}},
+    # Each channel as `show` judges it (lib/hschannels.py, health()).
+    "channels": {"ntfy": {"state": "ok", "at": "2026-10-19T18:30:00Z", "via": "run", "recovered": None},
+                 "mail": {"state": "ok", "at": "2026-10-19T18:30:00Z", "via": "run", "recovered": None}},
 })
 OPEN = copy.deepcopy(READY)
 OPEN["last"]["access"].update(state="warning", anon_read="warning", anon_write="warning")
@@ -99,14 +104,19 @@ OPEN["check"]["steps"] = [dict(s, result="warning", reason="readable" if s["id"]
                           if s["id"] in ("anon-read", "anon-write") else s for s in STEPS]
 OPEN["check"]["steps"][-1] = {"id": "token", "result": "info", "code": 200, "reason": "can-read"}
 OPEN["last"]["delivery"]["results"]["ntfy"] = {"ok": False, "code": 403, "reason": "rejected"}
+OPEN["channels"]["ntfy"] = {"state": "failed", "since": "2026-10-19T18:30:00Z", "at": "2026-10-19T18:30:00Z", "via": "run",
+                            "reason": "rejected"}
 OPEN["heartbeat"]["last"]["result"] = {"ok": False, "code": None, "reason": "timeout", "attempts": 3}
 NOMTA = copy.deepcopy(READY)
 NOMTA["smtp"] = {"listening": False, "sendmail": True}
-NOMTA["test_mail"] = {"at": "2026-10-19T18:50:00Z", "channel": "mail", "result": {"ok": False, "code": None, "reason": "no-mta"}}
+NOMTA["test_mail"] = {"at": "2026-10-19T18:50:00Z", "channel": "mail", "target": "ops@example.com",
+                      "result": {"ok": False, "code": None, "reason": "no-mta"}}
+NOMTA["channels"]["mail"] = {"state": "failed", "since": "2026-10-19T18:50:00Z", "at": "2026-10-19T18:50:00Z", "via": "test",
+                             "reason": "no-mta"}
 
 
 def main():
-    info = {"channels": ["ntfy", "mail"], "delivery": {"at": "2026-10-19T18:30:00Z", "results": {"ntfy": {"ok": False, "reason": "rejected"}}},
+    info = {"channels": ["ntfy", "mail"], "channel_health": OPEN["channels"],
             "access": {"state": "ok"}, "run": {"at": "2026-10-19T19:00:00Z", "addons": 4},
             "heartbeat": {"invalid": False, "at": BEAT["last"]["at"], "signal": "success", "result": BEAT["last"]["result"]}}
     status = hsstatus.status_file(info, hsstatus.version())

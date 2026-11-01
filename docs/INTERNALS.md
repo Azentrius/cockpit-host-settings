@@ -5,7 +5,7 @@
 | What | Path | Owner, mode |
 |---|---|---|
 | The page | `/usr/share/cockpit/host-settings/` | root, 0644 |
-| The helpers | `/usr/lib/cockpit-host-settings/` (`host-settings.py`, `host-settings-notify.py` 0755; `hslib.py`, `hsnotify.py`, `hsstatus.py`, `hsproc.py`, `hsheartbeat.py` 0644) | root |
+| The helpers | `/usr/lib/cockpit-host-settings/` (`host-settings.py`, `host-settings-notify.py` 0755; `hslib.py`, `hsnotify.py`, `hsstatus.py`, `hsproc.py`, `hsheartbeat.py`, `hschannels.py` 0644) | root |
 | The units | `cockpit-host-settings-notify.service`, `.timer`, `cockpit-host-settings-test@.service` | root |
 | The user | `cockpit-host-settings` (`/usr/lib/sysusers.d/cockpit-host-settings.conf`) | |
 | The settings | `/etc/cockpit-host-settings/notify.conf` | root, 0644 |
@@ -35,7 +35,7 @@ the watchdog's file and the user.
 | `host-settings.py set language en\|de` | require | |
 | `host-settings.py token set` (token on standard input) | require | |
 | `host-settings.py token remove` | require | empties the file |
-| `host-settings.py check ntfy` | require | starts `cockpit-host-settings-test@ntfy.service`, waits, prints `RESULT {json}` |
+| `host-settings.py check ntfy` | require | starts `cockpit-host-settings-test@ntfy.service`, waits, prints `RESULT {json}`; the result counts for the channel's health (below, "Channel health") |
 | `host-settings.py test mail` | require | the same with `@mail` |
 | `host-settings.py run` | require | starts `cockpit-host-settings-notify.service`, waits |
 | `host-settings.py install timer`, `remove timer` | require | needs a channel or a watchdog; `remove` writes the "switched off" status and, with a watchdog, says that it will raise the alarm |
@@ -76,6 +76,8 @@ lock), 77 needs root. `HOST_SETTINGS_LANG=de|en` selects the language of its mes
   "host": "web1",
   "smtp": {"listening": true, "sendmail": true},
   "last": {"baseline_at": "…", "run": {…}, "delivery": {…}, "access": {…}, "seen": {…}, "coverage": […]},
+  "channels": {"ntfy": {"state": "ok", "at": "…", "via": "test", "recovered": null},
+               "mail": {"state": "failed", "since": "…", "at": "…", "via": "run", "reason": "no-mta"}},
   "check": {…},
   "test_mail": {…},
   "docs": "https://docs.ntfy.sh/install/",
@@ -90,8 +92,11 @@ lock), 77 needs root. `HOST_SETTINGS_LANG=de|en` selects the language of its mes
 ```
 
 `smtp.listening` comes from `ss -Hltn`: something listens on port 25 of the loopback (or of every
-address); `null` when `ss` failed. `last` is `last.json` without `sent` and without the steps of
-the daily check; `check` and `test_mail` are the files of the test unit. `heartbeat` says whether a watchdog is set up (`invalid`: the file says something that does not
+address); `null` when `ss` failed. `last` is `last.json` without `sent`, `channels` and the steps
+of the daily check; `channels` is the health of each channel set up, judged against the settings
+set now (`hschannels.health()`, below, "Channel health"; never a target), with a delivery of 0.2.0
+taken in as the next run takes it and nothing written; `check` and `test_mail` are the files of
+the test unit. `heartbeat` says whether a watchdog is set up (`invalid`: the file says something that does not
 hold), its adapter, whether its address is encrypted and whether it is this host itself, and
 `heartbeat.json` and `test-heartbeat.json` (below); never the address. `profile` is what
 `profile show` prints (below): `expect` resolved from the roles, each skip `active` or ended now,
@@ -121,7 +126,8 @@ set_at = 2026-10-25T10:00:00Z
   catalog does not count at all. Of `roles` and `set_at` the last valid line counts.
 - `expect`: one add-on (`image-updates`) or one check of an add-on (`security/exposure`) per line,
   beyond the roles. As Status Board reads it, a check makes its add-on expected (and with it every
-  check of the add-on); it is no gap of its own when the add-on does not report that check.
+  check of the add-on), and the add-on must report exactly that check: one it does not report is
+  a gap of its own (below, "Coverage").
 - `skip`: `ADDON/CHECK[ until YYYY-MM-DD]: REASON`, one check of an add-on per line (a later line
   for the same check counts instead); the reason is one line of text, cleaned and cut to 200
   characters, and required. A skip ends on its day at 00:00 UTC, as an acceptance does. An add-on
@@ -183,6 +189,8 @@ ntfy is set up when both `ntfy_url` and `ntfy_topic` are there, e-mail when `mai
 
 `host-settings-notify.py run`, as `cockpit-host-settings-notify.service` every 5 minutes:
 
+0. **The channels' records** from `last.json`, brought in line with the settings set now and with
+   the last delivery (below, "Channel health").
 1. **Find the add-ons** as Status Board does for other hosts: `/usr/share/cockpit/*/manifest.json`
    with the section `azentrius.status`, folders that are package names only, never this add-on's
    own. Only the first element of the command counts, and only when it matches the contract's
@@ -233,17 +241,19 @@ ntfy is set up when both `ntfy_url` and `ntfy_topic` are there, e-mail when `mai
    them as told.
 6. **Send** one message for all changes of the run, to every channel set up. Only when at least
    one channel took it, the new `sent` is kept (and `baseline_at` set); otherwise the same
-   changes are sent again on the next run.
+   changes are sent again on the next run. A channel that did not take it does not get it again
+   (there is no queue per channel); each channel's result goes into its record.
 7. **Once a day**, with ntfy set up: read the topic without a login (below, steps reach, tls,
    anon-read; nothing is published). A new server or topic makes the check due at once.
 8. Write `last.json` (0600) and `status.json` (0644).
-9. **With a watchdog**, its signal: success or failure as "The watchdog" below decides, and its
+9. **With a watchdog**, its signal: success or failure as "The watchdog" below decides (a channel
+   set up that is failed makes it a failure, whether this run sent anything or not), and its
    answer in `heartbeat.json` (0600), then `status.json` again with it.
 
 Exit codes of `host-settings-notify.py`: 0 done (a message that could not be sent is no error;
 the watchdog gets a failure), 1 failed (the previous files stay; the watchdog gets a failure), 64
 wrong call, 75 another run or test holds the lock (`/var/lib/cockpit-host-settings/.lock`; no
-signal at all). A `notify.conf` that is there but cannot be read stops the run (1); a missing one
+signal at all, and a test changes nothing). A `notify.conf` that is there but cannot be read stops the run (1); a missing one
 is the defaults, as before.
 
 ### Findings
@@ -323,14 +333,20 @@ read. Without a profile the notifier does nothing with it, as before.
 With a profile (`hsnotify.profile_coverage()`), it is read as Status Board reads it: every entry
 of `expect` makes its add-on expected (`security/exposure` as well as `security`), and every check
 of an expected add-on is expected, unless the add-on reports it as not applicable or a skip that
-runs leaves it out; a check named in `expect` is no gap of its own when the add-on does not report
-it. An expected add-on that is not installed is `missing` (`unsupported` when it is installed in a
-version without a status entry); Host Settings itself counts as checked. The keys in `sent`:
+runs leaves it out. A check named in `expect` that the add-on's valid answer does not report (it
+sends no `checks`, or not that id, a misspelled one included) is a gap of its own:
+`hslib.not_reported_checks()`, the twin of the board's `notReportedChecks()`, makes a check of
+state `unsupported` for it, with the id as its title, and the add-on's coverage takes it into
+account like any other check. While the add-on is not installed, installed without the status
+entry, unreadable or without access, its own gap stands for its checks and none is made up; an
+add-on expected alone is judged as before. An expected add-on that is not installed is `missing`
+(`unsupported` when it is installed in a version without a status entry); Host Settings itself
+counts as checked. The keys in `sent`:
 
 | Key | What | Its coverage |
 |---|---|---|
-| `PKG@` | an expected add-on | `missing`, `unsupported`, `noaccess`, `unreadable`; for a valid answer `checked` while its checks speak for themselves, else what its items say |
-| `PKG@CHECK` | a check of an expected add-on that applies | the check's coverage |
+| `PKG@` | an expected add-on | `missing`, `unsupported`, `noaccess`, `unreadable`; for a valid answer `checked` while its own checks speak for themselves, else what its items say |
+| `PKG@CHECK` | a check of an expected add-on that applies, or a check named in `expect` that the add-on does not report | the check's coverage; `unsupported` for one not reported |
 
 Package names and check ids have no `@`, so these keys never meet `PKG#`, `PKG#ID`, `PKG#ID/FID`.
 An entry is `{level, coverage, at, last, label, title}`, `level` `lost` or `ok`, kept for every
@@ -339,15 +355,23 @@ messages, only for what the profile expects:
 
 | Coverage now | Told before | Message |
 |---|---|---|
-| `failed`, `noaccess`, `unconfigured`, `unreadable`, `missing` | OK | `lost`: "Check no longer possible" |
+| `failed`, `noaccess`, `unconfigured`, `unreadable`, `missing`, `unsupported` | OK | `lost`: "Check no longer possible" |
 | `checked` | lost | `regained`: "Check possible again" |
-| `partial`, `stale`, `unchecked`, `unsupported` | either | none: what was told stays |
+| `partial`, `stale`, `unchecked` | either | none: what was told stays |
 | not applicable (a skip runs, the add-on says so), no longer expected | either | none: the key is forgotten |
+
+`unsupported` is an add-on installed in a version without the status entry, a check the add-on
+cannot run on this system, or a check named in `expect` that the add-on does not report. Up to
+0.2.0 it kept what was told; after the update each such gap is told once, as one that the memory
+holds as OK.
 
 - The same change of the same key waits for the hour against flapping (`ok>lost`, `lost>ok`), and
   every change of a run goes into its one message, as for items and findings.
 - While an expected add-on cannot be judged (not installed, exit 77, unreadable), what was told
-  about its checks stays as it was.
+  about its checks stays as it was, a check it did not report included.
+- A check that comes back `checked` and in time is told once as possible again. Neither that nor
+  its loss resolves a finding or makes one new: findings change only with their lists (above,
+  "Findings").
 - A change of `PKG@` is not told in a run that tells about the add-on itself (its status is not
   readable or readable again, it is no longer installed), though it is remembered.
 - The first run after a profile is set up finds its keys missing from `sent`: the gaps of that
@@ -372,9 +396,10 @@ messages, only for what the profile expects:
   it reported can no longer be checked. An expected add-on or check (coverage):
   `Check no longer possible · LABEL · CHECK TITLE` and why ("the check failed", "nothing is
   readable without root", "the check is not set up (its timer is off, or it never ran)", "the
-  status cannot be read", "the add-on is not installed"; for a check with the add-on's reason
-  after a colon), or `Check possible again · LABEL · CHECK TITLE`; for the add-on itself without
-  the check. The title of one such change: `HOST: LABEL, check no longer possible` or
+  status cannot be read", "the add-on is not installed", "this version of the add-on reports no
+  status", "the check is not supported on this system", "the expected check is not reported" with
+  the check's id as its title; for a check with the add-on's reason after a colon), or
+  `Check possible again · LABEL · CHECK TITLE`; for the add-on itself without the check. The title of one such change: `HOST: LABEL, check no longer possible` or
   `HOST: LABEL, check possible again`. At most 20
   blocks and 3800 bytes (ntfy turns longer messages into attachments), then "and N more"; the
   footer `Host Settings on HOST`.
@@ -422,13 +447,102 @@ the last full check. `test-ntfy.json`:
 ```json
 {"at": "…", "channel": "ntfy", "target": "https://ntfy.example.com/cockpit-web1", "token": true,
  "steps": [{"id": "reach", "result": "ok", "code": 200, "reason": "answered"}, …],
- "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok"}}
+ "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok"},
+ "health": "ok", "recovered": true}
 ```
 
-The page shows it only while `target` is the server and topic set now. The answers are those of
+The page shows it only while `target` is the server and topic set now. `health` is the channel's
+state after the check (below), `recovered` is there when the check ended a failure. "Send a test
+message" writes `test-mail.json` the same way: `{at, channel: "mail", target: ADDRESS, result:
+{ok, code, reason}, health, recovered}`; the page shows it only while `target` is the address set
+now (a file of 0.2.0 has no `target` and is not shown). The answers are those of
 ntfy 2.11 and 2.32 in the job `e2e`: 403 for what a login does not allow, with or without a token.
 `/v1/account` answers 200 but does not list what `ntfy access` grants, so the token's rights are
 found out by reading with it.
+
+### Channel health
+
+`lib/hschannels.py`. Each channel set up keeps a record in `last.json` (`channels`); its health is
+judged in every run, whether the run has something to send or not, and after every test of the
+page:
+
+| State | When | Its item in the status | The watchdog |
+|---|---|---|---|
+| `ok` | it accepted the last message or a test with the settings set now | ok | success |
+| `failed` | from a message or a test it did not accept, until it accepts one again with the settings set now | warning | failure |
+| `unknown` | it has accepted nothing with the settings set now: never, not since the update, or not since its target changed | none ("not confirmed"), never ok | success |
+
+Accepted means that the ntfy server answered with 2xx (for "Check connection" the step `publish`)
+or that the local mail server took the message. It does not mean that anyone read it: neither Host
+Settings nor the watchdog can know that. A run, a channel accepting a message and a person taking
+note are three different things.
+
+- **A result belongs to its target**: the server and topic of ntfy (`URL/TOPIC`), the address of
+  e-mail, kept as they are (`last.json` is 0600, and root sees them in the settings anyway). Never
+  the token, nor a hash of it: a new token is the same target. A run's results belong to the
+  settings it read. A test reads `notify.conf` again before it writes: a result whose target is no
+  longer the one set up (the settings changed while it ran) is not counted at all, and the journal
+  says so. A success for another target never confirms the one set now.
+- **A failure stays** until the channel accepts a message of a run or a test for the target set
+  now. A run with nothing to send changes nothing, also when the cause is gone (the mail server is
+  back). A new target is no repair: the failure stays until the new one accepts something. A
+  success that ends a failure is its one recovery: `recovered` in the record, one line in the
+  journal (`channel mail: accepted again (test, failing since ...)`), the item of the channel
+  names it, and the watchdog sees it as the next run's success after the failures.
+- **A channel taken out of the settings** is no longer counted, its failure neither. The next run
+  or test records `removed` (with `failed_since` when it was failing) and says in the journal that
+  this is a change of the settings, not a repair; no recovery is recorded. Set up again, the
+  channel starts anew, unknown. Taken out and set up again between two runs counts as a new target.
+- **Nothing is sent again to one channel.** A message that one channel took is told: the channel
+  that failed does not get it later (there is no queue per channel), and its record shows since
+  when it failed. A message that no channel took is sent again on the next run, as before, and
+  nothing of it counts as told.
+- **Tests and the lock.** "Check connection" and "Send a test message" run in the test unit as
+  the notifier's user and take the notifier's lock (`/var/lib/cockpit-host-settings/.lock`), as a
+  run does: no run is in between, and while a run holds it the test ends with 75 and changes
+  nothing. After its requests the test reads `last.json`, takes its result in and writes
+  `last.json` (a temporary file in the same folder, `fsync`, `rename`, so it is never half
+  written) and `status.json`. Before the first run it writes `last.json` all the same (`format`,
+  `channels`, `access`), but no `status.json`. The helper's own lock
+  (`/run/cockpit-host-settings.lock`) guards the settings, not the state; that a test reads the
+  settings again is what keeps a change of them during a test apart. A test of the watchdog has
+  nothing to do with the channels.
+
+The record of a channel, times as ISO 8601, `via` `run` or `test`:
+
+```json
+"channels": {
+  "ntfy": {"ok": {"at": "2026-11-01T10:00:00Z", "via": "run", "target": "https://ntfy.example.com/cockpit-web1"}},
+  "mail": {"failed": {"since": "2026-11-01T10:00:00Z", "at": "2026-11-01T10:10:00Z", "via": "test", "reason": "no-mta",
+                      "target": "ops@example.com"},
+           "ok": {"at": "2026-10-31T08:00:00Z", "via": "run", "target": "ops@example.com"},
+           "recovered": {"at": "2026-10-30T09:00:00Z", "via": "test", "since": "2026-10-30T08:00:00Z", "reason": "no-mta"}}
+}
+```
+
+| Field | What |
+|---|---|
+| `failed` | the failure that has not ended: since when, the last failed try, how, the reason word of ntfy or e-mail (above), its target |
+| `ok` | the last time it accepted something: when, how, its target |
+| `recovered` | the last failure that ended: when, how, since when it had failed, its reason |
+| `removed` | `{at, failed_since}`: taken out of the settings (`failed_since` null when it was not failing) |
+| `reset_at` | set up again after a removal |
+
+What does not hold (a hand edit) is left out when the records are read (`records_of()`).
+
+**Format, update, going back.** `last.json` keeps format 1: `channels` is a new key, as the keys
+of findings and coverage were, and a file of another format is still started anew. 0.2.0 and
+0.1.0 kept no records, only the results of the last message (`delivery.results`). The first run or
+test of this version takes them in and makes nothing up: a channel that did not take that message
+is failed from its time on, without a target; one that took it has a success without a target,
+which confirms nothing (unknown, not ok) and ends no failure. `show` judges the same way before
+that first run and writes nothing. Restarts change nothing: every run is a new process that reads
+the records. Going back to 0.2.0 works: it reads format 1 on, keeps `channels` as they are (it
+updates the file it read) and writes its own `delivery`. When this version comes back, a
+`delivery` newer than everything a channel's record knows is from that time and is taken in the
+same way: a failure is kept (with its first `since` when the channel was failing already), and a
+success without a target does not replace a confirmation with one. Going back to 0.1.0 is not
+tested: it knows neither findings nor coverage keys.
 
 ## The watchdog
 
@@ -482,8 +596,8 @@ What the helper takes (`hsheartbeat.normalize`, exit 64 with the reason otherwis
 
 GET for Uptime Kuma: 1.x takes only GET on the push URL, 2.x any method. The reason is one of our
 own texts, never an add-on's: "the settings could not be read", "reading the add-ons failed", "a
-message could not be sent (ntfy timeout, mail no-mta)", "the state could not be saved", "the run
-failed".
+message could not be sent (ntfy timeout, mail no-mta)", "a channel has not worked since it failed
+(mail no-mta)", "the state could not be saved", "the run failed".
 
 What an answer means (`hsheartbeat.judge`); a 2xx alone is not enough:
 
@@ -510,9 +624,11 @@ could not be sent) and never in a `finally`:
 
 | The run | Signal |
 |---|---|
-| done and `last.json` and `status.json` written, nothing to send or the message reached every channel set up | success |
+| done and `last.json` and `status.json` written, every channel set up `ok` or `unknown` (above, "Channel health") | success |
 | findings told correctly (a danger, an expected check no longer possible, an add-on whose status cannot be read) | success: they go out as messages; a gap in coverage is no failure of the notifier |
-| a message did not reach at least one channel set up (also when another took it and it is not sent again; delivery and its retry stay as they are) | failure, reason "a message could not be sent" with the channels |
+| a message did not reach at least one channel set up (also when another took it and it is not sent again; delivery and its retry stay as they are) | failure (`why` `delivery`), reason "a message could not be sent" with the channels that are failed |
+| nothing failed in this run, but a channel set up is failed: it did not accept an earlier message or test and has accepted nothing since with the settings set now, also when the run had nothing to send | failure (`why` `channel`), reason "a channel has not worked since it failed" with the channels, in every run until that channel accepts a message or a test |
+| a channel taken out of the settings | not counted: its failure ends without a recovery |
 | `notify.conf` there but not readable | failure ("the settings could not be read"), exit 1 |
 | collecting the add-ons ends with an exception | failure ("reading the add-ons failed"), exit 1 |
 | `last.json` or `status.json` cannot be written | failure ("the state could not be saved"), exit 1 |
@@ -527,8 +643,8 @@ The answer goes to `heartbeat.json`, a file of its own:
  "result": {"ok": true, "code": 200, "reason": "accepted", "attempts": 1}}
 ```
 
-A signal that does not get through changes nothing in `last.json`: no finding is reset, no message
-goes out again, the exit code stays the run's. The status shows it (item `heartbeat`, below), the
+A signal that does not get through changes nothing in `last.json`: no finding is reset, no
+channel's record changes, no message goes out again, the exit code stays the run's. The status shows it (item `heartbeat`, below), the
 page under Watchdog, the journal as `watchdog: success, accepted` or `watchdog: failure, not
 accepted: timeout`. The test signal writes `test-heartbeat.json` (`{at, channel: "heartbeat",
 adapter, result}` or `{at, channel, error: "not-set-up"|"invalid"}`), never `heartbeat.json`.
@@ -584,21 +700,33 @@ the timer the same way and keeps `heartbeat.conf`.
                         "items": [{"id": "failed", "title": "Failed runs", "state": "danger", "value": "2", "detail": null, "link": null, "stale": false}]}},
   "run": {"at": "…", "took_ms": 812, "addons": 4, "bad_lines": []},
   "delivery": {"at": "…", "summary": false, "changes": 1, "title": "…", "results": {"ntfy": {"ok": true, "code": 200, "reason": "sent"}}},
-  "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok", "at": "…", "target": "…", "full": true, "steps": […]}
+  "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok", "at": "…", "target": "…", "full": true, "steps": […]},
+  "channels": {"ntfy": {"ok": {"at": "…", "via": "run", "target": "https://ntfy.example.com/cockpit-web1"}}}
 }
 ```
 
-A file of another `format` is started anew (and the next run sends a summary again). The keys
+A file of another `format` is started anew (and the next run sends a summary again). `channels`
+holds the record of each channel (above, "Channel health"); it came without a new `format`, and
+how a file of 0.2.0 is taken in and how going back to 0.2.0 works is described there. The keys
 of findings came without a new `format`: a file of 0.1.0 holds only keys of add-ons and items,
 which are read as before (see "Findings" above). So did the coverage keys `PKG@` and `PKG@CHECK`
 in `sent` and `coverage`, what the last run found for each add-on and check the profile expects
 (`null` without a profile), for the page:
 
 ```json
-"coverage": [{"id": "security", "label": "Security Monitor", "coverage": "partial",
-              "gaps": [{"id": "containers", "title": "Container hardening", "coverage": "partial"}]},
-             {"id": "image-updates", "label": "Image Update Monitor", "coverage": "missing", "gaps": []}]
+"coverage": [{"id": "security", "label": "Security Monitor", "coverage": "unsupported",
+              "gaps": [{"id": "containers", "title": "Container hardening", "coverage": "partial"},
+                       {"id": "exposure", "title": "exposure", "coverage": "unsupported", "not_reported": true}]},
+             {"id": "image-updates", "label": "Image Update Monitor", "coverage": "missing", "gaps": []},
+             {"id": "security/exposure", "label": "Security Monitor", "coverage": "unsupported", "gaps": [],
+              "not_reported": true},
+             {"id": "security/fail2ban", "label": "Security Monitor", "coverage": "notapplicable", "gaps": [],
+              "reason": "fail2ban is not installed"}]
 ```
+
+`not_reported` marks a check named in `expect` that the add-on does not report, `reason` is the
+add-on's reason for a check it reports; the page shows either below the label. Both came without
+a new `format`: a page or a file without them reads as before.
 
 ## `status.json` and `host-settings.py status` (status contract)
 
@@ -608,9 +736,9 @@ the verb answers in the language asked for. Items, each with the link `#/notific
 | Item | State |
 |---|---|
 | `setup` | ok with the channels (value: their number), none without one |
-| `delivery` | ok when the last message went out everywhere, warning with the channels that failed and why, none before the first message |
+| `ntfy`, `mail` | one for each channel set up (they replace `delivery`, the last message, of 0.2.0): ok when it accepted the last message or a test with the settings set now (detail: when, and the failure it ended), warning from a failure until then (since when, why, and that runs with nothing to send do not end it), none while that is not known ("not confirmed", never shown as tested); never the target |
 | `access` | only with ntfy: warning when the topic is readable or writable without a login, ok when closed, none when not checked |
-| `heartbeat` | only with a watchdog: ok when it took the last signal (detail: when, and whether it was told of a failed run), warning when the signal did not get through (with the reason) or the settings do not hold, none before the first signal; never the address |
+| `heartbeat` | only with a watchdog: ok when it took the last signal (detail: when, and whether it was told of a failed run or of a failing channel), warning when the signal did not get through (with the reason) or the settings do not hold, none before the first signal; never the address |
 | `run` | ok (value: the add-ons read), none without a channel (the notifier tells nobody); `stale_after` 900 seconds, so the verb and the menu icon make it a warning when three runs are missed |
 
 Without `status.json` the verb answers "Not set up yet"; after `remove timer` the file says
@@ -653,9 +781,18 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   "Set up a watchdog" and "Change" take the URL in a password field and hand it to the helper on
   standard input; "Remove" and "Switch off" say first that the watchdog will raise the alarm. A
   watchdog alone enables "Set up the regular check".
+- Each channel's card has a row "Channel state" from `show`'s `channels` (`healthCell()`):
+  working (it accepted the last message or a test, and the failure that ended), failing (since
+  when, why, and that runs with nothing to send do not end it), or not confirmed. The overview is
+  a warning while a channel is failing and names it; the row "Last message" says which channel
+  accepted the last message. A note under the overview says that a run, a channel accepting a
+  message and someone reading it are three things. After "Check connection" and "Send a test
+  message" the dialog says when the test ended a failure, or that its result does not count
+  because the settings changed while it ran.
 - The target profile is a section of the Notifications tab (`renderProfile()`), with
   administrative access only: the roles, what is expected and why (every host, a role, added
-  here) with the coverage the notifier found last, the checks left out with reason and end. Each
+  here) with the coverage the notifier found last (and below it the add-on's reason, or "Expected
+  check is not reported"), the checks left out with reason and end. Each
   change opens the dialog: the roles as switches (from the catalog `show` sends), an add-on or
   check, a skip (the reason goes to the helper on standard input), a remove. Without
   administrative access the summary names the profile from the status answer, with no button.
@@ -663,8 +800,11 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
 ## Tests
 
 - `test/notify_test.py`: every answer in `test/fixtures/board/status` with the expectations of the
-  board's own `test/status.test.js` and the board's tests of the optional parts and of a complete
-  list (the shared answers `ext-complete-*.json`), its manifests;
+  board's own `test/status.test.js` and the board's tests of the optional parts, of a complete
+  list (the shared answers `ext-complete-*.json`) and of checks a profile names (the shared
+  answers `ext-expect-*.json`: not reported, misspelled, gone and back, not applicable, left out
+  until a day, an add-on that cannot be judged, an add-on expected alone, two of one add-on, an
+  update and a restart), its manifests;
   reading an add-on (trust, exit codes); changes, flapping, unreadable add-ons, removed ones;
   findings as sequences of answers (a second finding while the item is a danger, the same answer
   in the other language or order, lists that cannot say a finding is gone, resolved, again,
@@ -687,10 +827,19 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   every answer (also 200 bodies that say no and `{"ok": false}`), the tries and the budget;
   `hsnotify.http` against real sockets (a redirect not followed, a timeout, a TLS error, nobody
   listening); whole runs: success only once the state is saved, failure when a message did not go
-  out although the run exits 0, when the settings cannot be read, collecting aborts or the state
-  cannot be written, nothing when another run holds the lock, no request at all without a
-  watchdog, a signal that does not get through kept apart from the findings, the URL in no file,
-  output, status or argument; the status item by the board's rules.
+  out although the run exits 0 (and in the runs after it, while that channel has accepted
+  nothing), when the settings cannot be read, collecting aborts or the state cannot be written,
+  nothing when another run holds the lock, no request at all without a watchdog, a signal that
+  does not get through kept apart from the findings, the URL in no file, output, status or
+  argument; the status item by the board's rules.
+- `test/channels_test.py`: the health of each channel, as whole runs and tests of the page: one
+  channel of two failing (the status and the watchdog's signal), the runs after it with nothing to
+  send (no message twice, no recovery, also with the mail server back), a test or a later message
+  that heals that channel only and once (also "Check connection", which can fail ntfy as well), a
+  test whose settings changed while it ran, a new target that starts unknown, a channel taken out
+  and set up again, the `last.json` of 0.2.0, restarts, going back to 0.2.0 and forth, another
+  format, both channels failing (the summary and a change come again), the watchdog not reached,
+  a test while a run holds the lock, the file a test writes; `hschannels` on its own.
 - `test/page.test.js`, `test/files.test.js`, `test/i18n.test.js`: the page under jsdom, its files,
   its texts.
 - `tools/check-board-fixtures.sh`: `test/fixtures/board` is unchanged from Status Board
@@ -716,20 +865,34 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   ends with 0 and for settings that cannot be read, nothing from a run that loses the lock, an
   unknown push token, a 200 `OK (not found)`, a redirect; then, with the timer every 5 seconds, the
   timer stopped, the signals missed, the timer started, exactly one recovery, for both protocols),
-  with `KUMA_IMAGE` the same against a real Uptime Kuma, switching off, and looks for the token
-  and the watchdog's address in every file, the journal and every process's arguments. It also checks that
+  ntfy failing until "Check connection" after its address was set back (a run with nothing to
+  send in between stays a failure), e-mail failing while postfix is stopped and ntfy takes the
+  finding once, kept through runs with nothing to send (also once postfix is back) in `last.json`,
+  the status as nobody and the watchdog's signal, then "Send a test message" and exactly one
+  recovery (in the stand-in watchdog and in the journal), with `KUMA_IMAGE` the same against a real
+  Uptime Kuma, switching off, and looks for the token and the watchdog's address in every file,
+  the journal and every process's arguments. It also checks that
   Cockpit lists the page (`cockpit-bridge --packages`).
-- Job `upgrade` (`test/e2e/upgrade.sh`): the update from a release a server may run, with ntfy
-  and the stand-in add-on as in job `e2e`. The `.deb` of the release named in the workflow
-  (`PREVIOUS_*`: 0.1.0, downloaded by `test/e2e/release-asset.sh`, which checks it against the
-  SHA-256 pinned there and the release's `SHA256SUMS`) is set up as an admin does (ntfy, the token
-  on standard input, the timer on) and tells the stand-in's warning; then the package of this
-  build goes over it with apt. `notify.conf`, the token and the timer stay, `heartbeat.conf` is
-  there and empty (root, 0600), systemd runs the new units; the next run reads the old `last.json`
-  on (no message, no "OK again", no new summary); findings of the item told are taken as told
-  when no more severe, a danger among them is told once; a target profile set afterwards states
-  its gaps in one message and appears in the status as nobody; removing the package keeps
-  `/etc/cockpit-host-settings` and removes the state; the token is in no other file and no log.
+- Job `upgrade` (`test/e2e/upgrade.sh`, once from each release named in the workflow): the
+  update from a release a server may run, with ntfy and the stand-in add-on as in job `e2e`. The
+  `.deb` of that release (`PREVIOUS_*`: 0.1.0, `LATEST_*`: 0.2.0, downloaded by
+  `test/e2e/release-asset.sh`, which checks it against the SHA-256 pinned there and the release's
+  `SHA256SUMS`) is set up as an admin does (ntfy, e-mail with nothing on `localhost:25`, the token
+  on standard input, the timer on) and tells the stand-in's warning through ntfy only; then the
+  package of this build goes over it with apt. `notify.conf`, the token and the timer stay,
+  `heartbeat.conf` is there and empty (root, 0600), systemd runs the new units; the next run reads
+  the old `last.json` on (no message, no "OK again", no new summary) and keeps the failure of
+  e-mail from the old delivery without making ntfy confirmed; findings of the item told are taken
+  as told when no more severe, a danger among them is told once and confirms ntfy; a target
+  profile set afterwards states its gaps in one message and appears in the status as nobody; from
+  0.2.0 the test goes back to it (it reads `last.json` on without a message and keeps the
+  channels' records, and tells a change) and forth again (what 0.2.0 sent is taken in, the failure
+  of e-mail keeps its beginning, ntfy stays confirmed); e-mail taken out of the settings is
+  recorded as removed, not repaired; removing the package keeps `/etc/cockpit-host-settings` and
+  removes the state; the token is in no other file and no log. Until the release that raises the
+  version, this build carries the version of 0.2.0 itself: apt would see nothing to do, so
+  `dpkg -i` installs one package over the other, and the test checks that the notifier installed
+  is the one of the package meant.
 - Job `e2e-el` (`tools/vm.sh` and `test/e2e/run.sh` with the `.rpm`, suite `e2e`; suite `upgrade`
   runs `test/e2e/upgrade.sh` with the `.rpm` of the previous release first): the same tests in a Rocky
   Linux 9 or 10 VM under KVM on the runner, from a cloud image pinned by name and SHA-256, with

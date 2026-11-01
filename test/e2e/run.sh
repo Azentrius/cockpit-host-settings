@@ -24,6 +24,11 @@
 #     that say no (an unknown check, a redirect); the timer stopped, the signals stay away, the
 #     timer started again, exactly one recovery, for both protocols; with KUMA_IMAGE (job e2e) the
 #     same against a real Uptime Kuma in a container, its monitor made through its own API;
+#   - each channel on its own: ntfy takes a message while postfix is stopped; e-mail stays a
+#     failure in last.json, the status and the watchdog's signal through runs with nothing to
+#     send, also once postfix is back, and no message goes to ntfy twice; "Send a test message"
+#     ends it, and the next run is exactly one recovery (ntfy the same way, through "Check
+#     connection" after its address was set back);
 #   - the token and the watchdog's address are in no file but their own, in no log and in no
 #     process's arguments.
 # Writes OUT/report.md and the raw answers. Exit 1 at the first step that fails.
@@ -91,6 +96,24 @@ wait_seen() {
 }
 # The watchdog's last answer as the notifier saved it (heartbeat.json, root only).
 last_beat() { python3 -c "import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2], {}, {'d': d}))" /var/lib/cockpit-host-settings/heartbeat.json "$1"; }
+# A field of last.json (the notifier's, 0600; root reads it).
+last() { python3 -c "import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2], {}, {'d': d}))" /var/lib/cockpit-host-settings/last.json "$1"; }
+# The state of an item of the status, as nobody asks for it.
+item_state() { runuser -u nobody -- "$helper" status | field "[i['state'] for i in d['items'] if i['id'] == '$1']"; }
+# Whether something accepts connections on localhost:25 (yes or no), and waiting up to 20 seconds
+# for WANT.
+port25() { python3 -c 'import socket; s = socket.socket(); s.settimeout(2); print("no" if s.connect_ex(("127.0.0.1", 25)) else "yes")'; }
+wait_port25() {
+    for _ in $(seq 1 20); do [ "$(port25)" = "$1" ] && return 0; sleep 1; done
+    return 1
+}
+# postfix off and on again. On Debian and Ubuntu postfix.service only stands for the instance
+# postfix@-.service, which does the work; on the RHEL rebuilds postfix.service is the server.
+mta_stop() { systemctl stop postfix 'postfix@*' 2> /dev/null || true; }
+mta_start() {
+    systemctl start postfix
+    if systemctl cat postfix@-.service > /dev/null 2>&1; then systemctl start postfix@-.service; fi
+}
 # A test signal through the page's helper to the watchdog set up now: its answer.
 beat_test() {
     "$helper" heartbeat test > "$out/beat-test.txt" 2>&1 || { cat "$out/beat-test.txt"; fail "heartbeat test"; }
@@ -359,16 +382,26 @@ note "$(tr '\n' ' ' < "$out/beat-2-journal.txt")"
 [ "$(seen check-1 failure)" = 1 ] || fail "no failure signal for the message that did not reach ntfy"
 grep -q 'message: mail sent, ntfy network' "$out/beat-2-journal.txt" || fail "the message did not go out by e-mail only"
 grep -q 'watchdog: failure, accepted' "$out/beat-2-journal.txt" || fail "the run does not say it told the failure"
+# ntfy set back: a new address is no repair, and a run with nothing to send proves nothing. Only
+# "Check connection" with the address set now ends the failure; the next run is the recovery.
 "$helper" set ntfy "$base" cockpit-open > /dev/null
 run_notifier beat-3
-[ "$(seen check-1 recoveries)" = 1 ] || fail "the next good run is no recovery"
+note "ntfy set back, a run with nothing to send: failures $(seen check-1 failure) (expected 2), recoveries $(seen check-1 recoveries) (expected 0)"
+[ "$(seen check-1 failure)" = 2 ] && [ "$(seen check-1 recoveries)" = 0 ] || fail "a run with nothing to send ended the failure of ntfy"
+[ "$(item_state ntfy)" = "['warning']" ] || fail "the status does not show ntfy failing"
+"$helper" check ntfy > "$out/beat-check.txt" 2>&1 || { cat "$out/beat-check.txt"; fail "check ntfy"; }
+got=$(result < "$out/beat-check.txt" | field "(d.get('health'), d.get('recovered'))")
+note "Check connection: health, recovered: $got (expected ('ok', True))"
+[ "$got" = "('ok', True)" ] || fail "Check connection did not end the failure of ntfy"
+run_notifier beat-3b
+[ "$(seen check-1 recoveries)" = 1 ] || fail "the run after Check connection is no recovery"
 # The settings cannot be read by the notifier's user: the run fails, the watchdog is told.
 chmod 600 /etc/cockpit-host-settings/notify.conf
 systemctl reset-failed cockpit-host-settings-notify.service 2> /dev/null || true
 if systemctl start cockpit-host-settings-notify.service 2> /dev/null; then fail "a run without readable settings succeeded"; fi
 chmod 644 /etc/cockpit-host-settings/notify.conf
-note "settings not readable: failures $(seen check-1 failure) (expected 2), the reason: $(last_beat "d['why']")"
-[ "$(seen check-1 failure)" = 2 ] && [ "$(last_beat "d['why']")" = config ] || fail "no failure signal when the settings cannot be read"
+note "settings not readable: failures $(seen check-1 failure) (expected 3), the reason: $(last_beat "d['why']")"
+[ "$(seen check-1 failure)" = 3 ] && [ "$(last_beat "d['why']")" = config ] || fail "no failure signal when the settings cannot be read"
 # Another run holds the lock: the run that loses it gives no signal at all.
 before="$(seen check-1 success) $(seen check-1 failure)"
 flock /var/lib/cockpit-host-settings/.lock sleep 6 &
@@ -381,7 +414,53 @@ note "signals before and after the run that lost the lock: $before, $(seen check
 [ "$(seen check-1 success) $(seen check-1 failure)" = "$before" ] || fail "a run that lost the lock gave a signal"
 run_notifier beat-4
 [ "$(seen check-1 recoveries)" = 2 ] || fail "no recovery after the settings were readable again"
-ok "a message that reached e-mail only and settings that cannot be read are failures; a run without the lock says nothing"
+ok "a message that reached e-mail only and settings that cannot be read are failures; ntfy stays failed until Check connection; a run without the lock says nothing"
+
+next "each channel on its own: e-mail fails while ntfy takes the message, and stays failed until it accepts a test"
+# postfix stopped: nothing accepts mail on localhost:25. A new finding goes to ntfy only. The runs
+# after it have nothing to send: e-mail stays a failure, also once postfix is back, and ntfy gets
+# nothing twice. "Send a test message" ends it; the next run is exactly one recovery.
+failures=$(seen check-1 failure)
+back=$(seen check-1 recoveries)
+tests=$(grep -c 'test message' /var/mail/hsmail || true)
+mta_stop
+wait_port25 no || fail "something still accepts mail on localhost:25"
+echo warning > /var/lib/e2e-addon/state
+echo '[{"fid":"port.8080-tcp","state":"warning","title":"8080/tcp web"}]' > /var/lib/e2e-addon/findings
+run_notifier chan-1
+journalctl --no-pager -o cat -u cockpit-host-settings-notify.service | grep -E 'message:' | tail -n 1 > "$out/chan-1-journal.txt"
+note "$(cat "$out/chan-1-journal.txt")"
+grep -q 'message: mail no-mta, ntfy sent, failing: mail no-mta' "$out/chan-1-journal.txt" || fail "the message did not reach ntfy only"
+told=$(messages cockpit-open | grep -c '8080/tcp web' || true)
+[ "$told" = 1 ] || fail "ntfy did not get the new finding once"
+[ "$(seen check-1 failure)" = $((failures + 1)) ] || fail "no failure signal for the message e-mail did not accept"
+since=$(last "d['channels']['mail']['failed']['since']")
+note "last.json: e-mail failing since $since, $(last "d['channels']['mail']['failed']['reason']"); status: e-mail $(item_state mail), ntfy $(item_state ntfy)"
+[ "$(last "d['channels']['mail']['failed']['reason']")" = no-mta ] || fail "last.json does not keep the failure of e-mail"
+[ "$(item_state mail)" = "['warning']" ] && [ "$(item_state ntfy)" = "['ok']" ] || fail "the status does not show e-mail failing and ntfy working"
+run_notifier chan-2
+mta_start
+wait_port25 yes || fail "postfix did not come back"
+run_notifier chan-3
+note "two runs with nothing to send, postfix back for the second: failures $(seen check-1 failure) (expected $((failures + 3))), recoveries $(seen check-1 recoveries) (expected $back), messages naming the finding on ntfy $(messages cockpit-open | grep -c '8080/tcp web' || true) (expected 1)"
+[ "$(seen check-1 failure)" = $((failures + 3)) ] && [ "$(seen check-1 recoveries)" = "$back" ] || fail "a run with nothing to send ended the failure of e-mail"
+[ "$(messages cockpit-open | grep -c '8080/tcp web' || true)" = 1 ] || fail "ntfy got the finding twice"
+[ "$(last "d['channels']['mail']['failed']['since']")" = "$since" ] || fail "the failure of e-mail lost its beginning"
+[ "$(last_beat "d['why']")" = channel ] || fail "the signal does not say a channel is failing"
+"$helper" test mail > "$out/chan-test.txt" 2>&1 || { cat "$out/chan-test.txt"; fail "test mail"; }
+got=$(result < "$out/chan-test.txt" | field "(d['result']['reason'], d.get('health'), d.get('recovered'))")
+note "Send a test message: $got (expected ('sent', 'ok', True)); status: e-mail $(item_state mail)"
+[ "$got" = "('sent', 'ok', True)" ] || fail "the test message did not end the failure of e-mail"
+[ "$(item_state mail)" = "['ok']" ] || fail "the status does not show e-mail working again"
+for _ in $(seq 1 20); do [ "$(grep -c 'test message' /var/mail/hsmail || true)" -gt "$tests" ] && break; sleep 1; done
+[ "$(grep -c 'test message' /var/mail/hsmail || true)" -gt "$tests" ] || fail "the test message did not arrive"
+run_notifier chan-4
+run_notifier chan-5
+again=$(journalctl --no-pager -o cat -u 'cockpit-host-settings*' | grep -c 'channel mail: accepted again' || true)
+note "after the test, two runs: failures $(seen check-1 failure) (expected $((failures + 3))), recoveries $(seen check-1 recoveries) (expected $((back + 1))), recoveries in the journal $again (expected 1)"
+[ "$(seen check-1 recoveries)" = $((back + 1)) ] && [ "$(seen check-1 failure)" = $((failures + 3)) ] || fail "not exactly one recovery"
+[ "$again" = 1 ] || fail "the journal does not name exactly one recovery of e-mail"
+ok "e-mail failed while ntfy took the finding once; runs with nothing to send kept the failure, also with postfix back; the test message ended it, one recovery"
 
 next "the watchdog: Uptime Kuma's protocol; answers that say no"
 beat_set uptime-kuma "$dog/api/push/$kuma_id?status=up&msg=OK&ping="

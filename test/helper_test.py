@@ -174,7 +174,7 @@ class Status(Base):
         doc = json.loads(call(hs.do_status, ["--lang=en"], path, now)[1])
         self.assertEqual(doc["summary"], "Messages go to ntfy.", "not checked yet is no finding")
         self.assertEqual({i["id"]: i["state"] for i in doc["items"]},
-                         {"setup": "ok", "delivery": "none", "access": "none", "run": "ok"})
+                         {"setup": "ok", "ntfy": "none", "access": "none", "run": "ok"}, "a channel not confirmed is no finding")
         old = json.loads(call(hs.do_status, ["--lang", "de_DE"], path, now + 3600)[1])
         self.assertEqual({i["id"]: i["state"] for i in old["items"]}["run"], "warning")
         self.assertEqual(old["version"], hsstatus.version())
@@ -252,7 +252,37 @@ class Show(Base):
         self.assertNotIn("sent", doc["last"])
         self.assertNotIn("steps", doc["last"]["access"])
         self.assertEqual(doc["docs"], hslib.NTFY_DOCS)
+        self.assertEqual(doc["channels"], {"ntfy": {"state": "unknown"}}, "never accepted anything: unknown")
         self.assertEqual(call(hs.do_show, ["x"], self.conf)[0], 64)
+
+    def test_show_judges_each_channel_against_the_settings_set_now(self):
+        call(hs.do_set, ["ntfy", "https://ntfy.example.com", "cockpit-h"], self.conf, self.lock)
+        call(hs.do_set, ["mail", "ops@example.com"], self.conf, self.lock)
+        ss = lambda argv, limit=60, max_output=0: hsproc.Result(0, "")  # noqa: E731
+        # The last.json of 0.2.0: its delivery is taken in as the next run takes it, nothing written.
+        last = {"format": 1, "baseline_at": "x", "run": {"at": "2026-10-19T19:00:00Z", "addons": 2},
+                "delivery": {"at": "2026-10-19T18:50:00Z", "results": {"ntfy": {"ok": True, "reason": "sent"},
+                                                                        "mail": {"ok": False, "reason": "no-mta"}}}}
+        path = os.path.join(self.state, "last.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(last, f)
+        doc = json.loads(call(hs.do_show, [], self.conf, self.token, self.state, ss)[1])
+        self.assertEqual(doc["channels"], {"ntfy": {"state": "unknown"},
+                                           "mail": {"state": "failed", "since": "2026-10-19T18:50:00Z",
+                                                    "at": "2026-10-19T18:50:00Z", "via": "run", "reason": "no-mta"}})
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), last, "show writes nothing")
+        # Records of this version: a confirmation for another address does not count, never the target.
+        last["channels"] = {"ntfy": {"ok": {"at": "2026-10-19T19:00:00Z", "via": "test",
+                                            "target": "https://ntfy.example.com/cockpit-h"}},
+                            "mail": {"ok": {"at": "2026-10-19T19:00:00Z", "via": "run", "target": "old@example.com"}}}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(last, f)
+        out = call(hs.do_show, [], self.conf, self.token, self.state, ss)[1]
+        self.assertEqual(json.loads(out)["channels"], {"ntfy": {"state": "ok", "at": "2026-10-19T19:00:00Z", "via": "test",
+                                                                "recovered": None},
+                                                       "mail": {"state": "unknown"}})
+        self.assertNotIn("old@example.com", out)
 
     def test_smtp_listening(self):
         def ss(out, rc=0):

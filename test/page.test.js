@@ -57,7 +57,8 @@ t("a set-up server: channels, timer, last run and message, the check, the comman
     assert.ok(ov.includes("Every 5 minutes, next at"), ov);
     assert.ok(ov.includes("5 minutes ago: 3 add-ons read"), ov);
     assert.ok(ov.includes("35 minutes ago: server: Cron Jobs, Failed runs"), ov);
-    assert.ok(ov.includes("ntfy: sent") && ov.includes("e-mail: sent"), ov);
+    assert.ok(ov.includes("ntfy: accepted") && ov.includes("e-mail: accepted"), ov);
+    assert.ok(ov.includes("Whether someone read it, neither Host Settings nor the watchdog can tell."), ov);
     const ntfy = text(d.getElementById("hs-ntfy"));
     ["https://ntfy.example.com", "cockpit-server", "Set (readable by root only)", "Closed", "Last check",
      "Test message with the token", "The token may write to the topic and nothing more."].forEach((s) => assert.ok(ntfy.includes(s), s));
@@ -72,6 +73,8 @@ t("a set-up server: channels, timer, last run and message, the check, the comman
     const mail = text(d.getElementById("hs-mail"));
     assert.ok(mail.includes("A mail server accepts mail on localhost:25.") && mail.includes("ops@example.com"), mail);
     assert.ok(mail.includes("Test message handed over"), mail);
+    assert.ok(mail.includes("Channel state Working Accepted the last message on"), mail);
+    assert.ok(ntfy.includes("Channel state Working Accepted the last message on"), ntfy);
     const addons = text(d.getElementById("hs-addons"));
     assert.ok(addons.includes("Cron Jobs") && addons.includes("Failed runs (2)"), addons);
     assert.ok(addons.includes("Status not readable: the answer is not JSON"), addons);
@@ -106,9 +109,66 @@ t("an open topic and a message that did not go out are warnings", async () => {
     assert.ok(text(page.d.querySelector("#hs-ntfy .az-card__header")).includes("Topic open"));
     const failed = ready();
     failed.last.delivery.results.ntfy = { ok: false, code: 403, reason: "rejected" };
+    failed.channels.ntfy = { state: "failed", since: "2026-10-19T18:30:00Z", at: "2026-10-19T18:30:00Z", via: "run", reason: "rejected" };
     page = await open({ view: failed });
-    assert.ok(text(page.d.getElementById("hs-overview")).includes("ntfy: refused (token or rights)"));
+    const ov = text(page.d.getElementById("hs-overview"));
+    assert.ok(ov.includes("ntfy: refused (token or rights)"), ov);
+    assert.ok(ov.includes("Failing since a message or a test did not go through: ntfy; see below."), ov);
     assert.strictEqual(page.d.querySelector("#hs-overview .az-card__header .az-label").dataset.state, "warning");
+    assert.ok(text(page.d.getElementById("hs-ntfy")).includes("Channel state Failing Since"), "the channel says so itself");
+});
+
+t("each channel on its own: failing until it accepts again, unknown never shown as tested", async () => {
+    // The last message reached both, but e-mail failed in a test since: the overview follows the
+    // channels, not the last message.
+    const view = ready();
+    view.channels.mail = { state: "failed", since: "2026-10-19T18:40:00Z", at: "2026-10-19T18:50:00Z", via: "test", reason: "no-mta" };
+    view.channels.ntfy = { state: "unknown" };
+    let page = await open({ view });
+    const ov = text(page.d.getElementById("hs-overview"));
+    assert.ok(ov.includes("Failing since a message or a test did not go through: e-mail;"), ov);
+    assert.ok(ov.includes("e-mail: accepted"), "the last message as it was");
+    const mail = text(page.d.getElementById("hs-mail"));
+    assert.ok(mail.includes("Failing Since") && mail.includes("no mail server on localhost:25") &&
+              mail.includes("Runs with nothing to send do not end this"), mail);
+    const ntfy = text(page.d.getElementById("hs-ntfy"));
+    assert.ok(ntfy.includes("Not confirmed It has not accepted a message or a test with these settings yet."), ntfy);
+    assert.ok(!ntfy.includes("Working"), "unknown is not shown as working");
+    // Recovered by a test: named once with the failure it ended.
+    const back = ready();
+    back.channels.mail = { state: "ok", at: "2026-10-19T19:00:00Z", via: "test", recovered: { since: "2026-10-19T18:40:00Z", reason: "no-mta" } };
+    page = await open({ view: back });
+    const again = text(page.d.getElementById("hs-mail"));
+    assert.ok(again.includes("Accepted the test message on") && again.includes("after failing since"), again);
+    assert.strictEqual(page.d.querySelector("#hs-overview .az-card__header .az-label").dataset.state, "ok");
+    // The last test message to another address is not shown for the address set now.
+    const moved = ready({ config: Object.assign({}, ready().config, { mail_to: "other@example.com" }) });
+    page = await open({ view: moved });
+    assert.ok(!text(page.d.getElementById("hs-mail")).includes("Test message handed over"));
+    // German.
+    page = await open({ view, language: "de" });
+    assert.ok(text(page.d.getElementById("hs-mail")).includes("Zustand des Kanals Gestört Seit"));
+    assert.ok(text(page.d.getElementById("hs-overview")).includes("Ob jemand sie gelesen hat, können weder Host Settings noch der Wächter feststellen."));
+});
+
+t("a test that ends a failure says so; one whose settings changed meanwhile counts for nothing", async () => {
+    const view = ready();
+    view.channels.mail = { state: "failed", since: "2026-10-19T18:40:00Z", at: "2026-10-19T18:50:00Z", via: "run", reason: "no-mta" };
+    const cases = [
+        [{ at: "2026-10-19T19:05:00Z", channel: "mail", target: "ops@example.com", result: { ok: true, code: null, reason: "sent" },
+           health: "ok", recovered: true }, "The channel works again: its failure has ended."],
+        [{ at: "2026-10-19T19:05:00Z", channel: "mail", target: "ops@example.com", result: { ok: true, code: null, reason: "sent" },
+           health: "failed" }, "the channel still counts as failing."],
+    ];
+    for (const [result, want] of cases) {
+        const page = await open({ view, onSpawn: (verb) => (verb === "test mail"
+            ? P.proc("", { chunks: ["Handing a test message to the local MTA\nRESULT " + JSON.stringify(result) + "\n"] }) : null) });
+        click(page, "hs-mail-test");
+        click(page, "hs-dialog-confirm");
+        await settle();
+        const outcome = text(page.d.getElementById("hs-dialog-outcome"));
+        assert.ok(outcome.includes("The mail server took the test message.") && outcome.includes(want), outcome);
+    }
 });
 
 t("set up ntfy: the dialog checks first, then calls set ntfy", async () => {
@@ -226,7 +286,7 @@ t("without administrative access: the summary", async () => {
     assert.ok(!d.getElementById("hs-summary").hidden);
     assert.ok(d.getElementById("hs-tab-notifications").hidden);
     assert.ok(text(d.getElementById("hs-status")).includes("Shown without administrative access"));
-    assert.ok(text(d.getElementById("hs-summary")).includes("Needs attention: Last message."));
+    assert.ok(text(d.getElementById("hs-summary")).includes("Needs attention: E-mail."));
 });
 
 t("German", async () => {
@@ -256,7 +316,7 @@ t("the menu icon: hidden at first, the summary of status.json, nothing from the 
     const page = boot({ hidden: true, statusFile: status });
     await settle();
     assert.deepStrictEqual(page.calls.spawn, [], "nothing runs while hidden");
-    assert.deepStrictEqual(page.calls.notes, [["notify", { page_status: { type: "warning", title: "Needs attention: Last message." } }]]);
+    assert.deepStrictEqual(page.calls.notes, [["notify", { page_status: { type: "warning", title: "Needs attention: E-mail." } }]]);
     page.hint(false);
     await settle();
     assert.deepStrictEqual(helperCalls(page), [["show", "try"]]);
@@ -314,6 +374,31 @@ t("the target profile: roles, what is expected and why, its coverage, the checks
     const deText = text(de.d.getElementById("hs-profile"));
     ["Sollprofil", "Jeder Server", "Hier hinzugefügt", "Nicht installiert", "Bewusst ausgelassen", "Endete am"].forEach((s) =>
         assert.ok(deText.includes(s), s + " in: " + deText));
+});
+
+t("the target profile: a check the add-on does not report says so, a check's own reason shows as text", async () => {
+    // security/exposure named in the profile, not reported by the Security Monitor (last.coverage
+    // as hsnotify.profile_coverage() writes it)
+    const unreported = withProfile();
+    unreported.last.coverage = P.COVERAGE.map((r) => (r.id === "security/exposure" ? Object.assign({}, r, { coverage: "unsupported", not_reported: true })
+        : r.id === "security" ? Object.assign({}, r, { coverage: "unsupported", gaps: [{ id: "exposure", title: "exposure", coverage: "unsupported", not_reported: true }] })
+            : r));
+    const page = await open({ view: unreported });
+    const card = page.d.getElementById("hs-profile");
+    const row = (c, what) => text([...c.querySelectorAll("tbody tr")].find((tr) => text(tr).startsWith(what)));
+    assert.strictEqual(row(card, "Security Monitor: exposure"), "Security Monitor: exposure security/exposure Added here Remove Not supported Expected check is not reported");
+    assert.ok(row(card, "Security Monitor security").endsWith("Not supported Not supported exposure Expected check is not reported"), row(card, "Security Monitor security"));
+    assert.ok(text(card.querySelector(".az-card__header")).includes("3 gaps"), "security, image-updates and the check not reported");
+    const de = await open({ view: unreported, language: "de" });
+    assert.ok(row(de.d.getElementById("hs-profile"), "Security Monitor: exposure").endsWith("Nicht unterstützt Erwartete Prüfung wird nicht gemeldet"));
+    // reported as not applicable: the add-on's reason, as text
+    const why = withProfile();
+    why.last.coverage = P.COVERAGE.map((r) => (r.id === "security/exposure" ? Object.assign({}, r, { coverage: "notapplicable", reason: "<b>no packet filter</b>" }) : r));
+    const other = await open({ view: why });
+    const card2 = other.d.getElementById("hs-profile");
+    assert.ok(row(card2, "Security Monitor: exposure").endsWith("Not applicable <b>no packet filter</b>"), row(card2, "Security Monitor: exposure"));
+    assert.strictEqual(card2.querySelector("b"), null, "no markup from the add-on");
+    assert.ok(text(card2.querySelector(".az-card__header")).includes("2 gaps"), "not applicable is no gap");
 });
 
 t("no profile yet: what it is, and a dialog with a switch per role", async () => {

@@ -102,6 +102,10 @@ EXPECT = {
     "ext-hostile.json": dict(state="danger", reported="warning", items=2, key="exposure", value="120"),
     "ext-hostile-profile.json": dict(state="ok", reported="ok", items=1, key="run"),
     "ext-incompatible-schema-2.json": dict(pkg="security", reason="schema", detail="2"),
+    # checks a host's profile names, shared with the board (the tests NamedChecks): Host Settings'
+    # profile, and a Security Monitor that reports its check ssh only
+    "ext-expect-host-settings.json": dict(state="ok", reported="ok", items=3, key="setup", value="1"),
+    "ext-expect-security-ssh.json": dict(state="ok", reported="ok", items=1, key="ssh", value=None, link="#/ssh"),
     # when a list of findings is complete, shared with the board (the tests Complete); what the
     # item says counts either way
     "ext-complete-total-1-empty.json": dict(state="danger", reported="danger", items=1, key="exposure", value="1",
@@ -1397,14 +1401,18 @@ class Coverage(unittest.TestCase):
         report, keys, hold = hsnotify.profile_coverage(p.profile, snap, NOW, p.have)
         self.assertEqual([(r["id"], r["coverage"], [g["id"] for g in r["gaps"]]) for r in report], [
             ("host-settings", "checked", []), ("update-gaps", "checked", []), ("security", "failed", ["containers"]),
-            ("cronjobs", "checked", []), ("image-updates", "missing", []), ("security/exposure", "checked", []),
-            ("cronjobs/cron", "notapplicable", [])])
+            ("cronjobs", "unsupported", ["cron"]), ("image-updates", "missing", []), ("security/exposure", "checked", []),
+            ("cronjobs/cron", "unsupported", [])])
         self.assertEqual(report[4]["label"], "Image Update Monitor", "the product name of one that is not installed")
-        # cronjobs/cron: Cron Jobs reports no checks, so the entry is no gap of its own
+        # cronjobs/cron: Cron Jobs reports no checks, so the check the profile names is not reported:
+        # a gap of its own; Cron Jobs itself is judged by its items, as before
+        self.assertEqual((report[6].get("not_reported"), report[3]["gaps"]), (True, [
+            {"id": "cron", "title": "cron", "coverage": "unsupported", "not_reported": True}]))
         self.assertEqual({k: v[0] for k, v in keys.items()}, {
             "update-gaps@": "checked", "security@": "checked", "security@exposure": "checked", "security@containers": "failed",
-            "cronjobs@": "checked", "image-updates@": "missing"})
-        self.assertEqual(keys["security@containers"][2:], ("Containers", "the Docker API did not answer"))
+            "cronjobs@": "checked", "cronjobs@cron": "unsupported", "image-updates@": "missing"})
+        self.assertEqual(keys["security@containers"][2:], ("Containers", "the Docker API did not answer", "failed"))
+        self.assertEqual(keys["cronjobs@cron"][2:], ("cron", None, "unreported"))
         self.assertEqual(hold, {"image-updates"})
         # installed in a version without a status entry: not supported, not missing
         report, keys, _ = hsnotify.profile_coverage(p.profile, snap, NOW, p.have | {"image-updates"})
@@ -1416,9 +1424,11 @@ class Coverage(unittest.TestCase):
         self.assertEqual([(r["id"], r["coverage"]) for r in report], [("host-settings", "checked"), ("image-updates/rollout", "missing")])
         self.assertEqual({k: v[0] for k, v in keys.items()}, {"image-updates@": "missing"})
         q.profile["expect"] = ["security/exposure"]
-        _, keys, _ = hsnotify.profile_coverage(q.profile, q.snapshot(checks=[("containers", "failed")]), NOW, q.have)
-        self.assertEqual({k: v[0] for k, v in keys.items()}, {"security@": "checked", "security@containers": "failed"},
-                         "exposure, which the add-on does not report, is no gap; its other checks are expected")
+        report, keys, _ = hsnotify.profile_coverage(q.profile, q.snapshot(checks=[("containers", "failed")]), NOW, q.have)
+        self.assertEqual({k: v[0] for k, v in keys.items()},
+                         {"security@": "checked", "security@containers": "failed", "security@exposure": "unsupported"},
+                         "exposure, which the add-on does not report, is a gap of its own; its other checks are expected")
+        self.assertEqual([(r["id"], r["coverage"], r.get("not_reported")) for r in report], [("security/exposure", "unsupported", True)])
 
     def test_an_expected_addon_goes_missing_and_comes_back_two_messages(self):
         p = Profiled()
@@ -1519,7 +1529,7 @@ class Coverage(unittest.TestCase):
         p.step(checks=[("exposure", "failed")])
         for _ in range(3):
             self.assertEqual(p.step(checks=[("exposure", "failed")]), [])
-        # partial, out of date or not supported keep what was told: no message either way
+        # partial or out of date keep what was told: no message either way
         self.assertEqual(p.step(checks=[("exposure", "partial")]), [])
         self.assertEqual(p.sent["security@exposure"]["level"], "lost")
         old_check = gaps_doc([("exposure", "checked")], hslib.iso(p.now - 7200), [{"id": "logins", "state": "ok", "title": "Logins"}])
@@ -1529,6 +1539,12 @@ class Coverage(unittest.TestCase):
         q = Profiled()
         q.step()
         self.assertEqual(q.step(checks=[("exposure", "partial")]), [], "partial was OK before: no loss")
+        # a check the add-on cannot run on this system is no longer possible: told once
+        events = q.step(checks=[("exposure", "unsupported")])
+        self.assertEqual(cov_told(events), [("security@exposure", "lost", "unsupported")])
+        self.assertEqual(hsnotify._line("en", events[0]),
+                         "Check no longer possible · Security Monitor · Exposure\nthe check is not supported on this system")
+        self.assertEqual(hsnotify._line("de", events[0]).splitlines()[1], "die Prüfung wird auf diesem System nicht unterstützt")
         self.assertEqual(q.step(checks=[("exposure", "unsupported")]), [])
 
     def test_without_a_profile_no_coverage_messages(self):
@@ -1586,6 +1602,232 @@ class Coverage(unittest.TestCase):
         self.assertEqual(p.step(), [])
         self.assertIn("image-updates@", p.sent)
         self.assertEqual(len(p.sent), hsnotify.MAX_KEYS)
+
+    def test_an_update_tells_an_expected_addon_without_a_status_once(self):
+        # 0.2.0 kept a gap "unsupported" without a message; it is told once after the update
+        sent = {"image-updates@": {"level": "ok", "coverage": "unsupported", "at": NOW - 86400, "last": {},
+                                   "label": "Image Update Monitor"}}
+        p = Profiled(roles=["web"], sent=sent)
+        p.have.add("image-updates")
+        events = p.step()
+        self.assertEqual(cov_told(events), [("image-updates@", "lost", "unsupported")])
+        self.assertEqual(hsnotify._line("en", events[0]),
+                         "Check no longer possible · Image Update Monitor\nthis version of the add-on reports no status")
+        self.assertEqual(hsnotify._line("de", events[0]).splitlines()[1], "diese Version des Add-ons meldet keinen Status")
+        self.assertEqual(p.step(), [])
+
+
+# ---------------------------------------------------------------------------
+# Checks a host's profile names (the board's tests "named checks", test/status.test.js), with the
+# shared answers ext-expect-*.json: Host Settings with a profile of the role build that expects its
+# four add-ons and the checks security/exposure, security/fail2ban, security/contaners (a
+# misspelling: the Security Monitor's check is "containers") and security/firewall, left out with a
+# reason until 2026-10-20; a Security Monitor that answers validly with its check ssh only. Cron
+# Jobs and Update Gaps answer without checks.
+
+GAPS_CMD = "/usr/lib/cockpit-update-gaps/gaps-status.py"
+IMG_CMD = "/usr/lib/cockpit-image-updates/diun-update.py"
+
+
+def read_board(pkg, cmd, name, now):
+    """An answer of the board's fixtures, read through read_addon() as the notifier reads it."""
+    return hsnotify.read_addon(pkg, None, ("command", cmd), "en", now, Runner({cmd: ok(board("status/" + name))}),
+                               lstat_of({cmd: (0o755, 0)}))
+
+
+def named_profile(expect=None):
+    """The profile of ext-expect-host-settings.json as profile.conf gives it to the notifier ({expect,
+    skip}, the end of a skip as its day); expect: other entries instead of its own."""
+    p = ext("ext-expect-host-settings.json")["profile"]
+    return {"expect": list(expect or p["expect"]),
+            "skip": [{"check": s["check"], "reason": s["reason"],
+                      "until": hslib.iso(s["until"])[:10] if s["until"] is not None else None} for s in p["skip"]]}
+
+
+class Named:
+    """A host with that profile, run after run: the Security Monitor answers with a shared answer (its
+    name), another result of its status verb, or is not installed (None)."""
+
+    def __init__(self, expect=None, sent=None, now=NOW):
+        self.profile = named_profile(expect)
+        self.sent, self.now = dict(sent or {}), now
+
+    def snapshot(self, security):
+        snap = {"cronjobs": read_board("cronjobs", CMD, "good-cronjobs-ok.json", self.now),
+                "update-gaps": read_board("update-gaps", GAPS_CMD, "good-update-gaps.json", self.now)}
+        if isinstance(security, str):
+            snap["security"] = read_board("security", SEC, security, self.now)
+        elif security is not None:
+            snap["security"] = read_sec(security, self.now)
+        return snap
+
+    def coverage(self, security="ext-expect-security-ssh.json"):
+        snap = self.snapshot(security)
+        return hsnotify.profile_coverage(self.profile, snap, self.now, set(snap)), snap
+
+    def step(self, after=300, security="ext-expect-security-ssh.json"):
+        self.now += after
+        cov, snap = self.coverage(security)
+        events, self.sent = hsnotify.changes(self.sent, snap, self.now, cov)
+        return events
+
+
+def cov_only(events):
+    """The coverage changes among the events (the add-ons' own items and findings are left out)."""
+    return cov_told([e for e in events if hsnotify.COVERAGE in e["key"]])
+
+
+NOT_REPORTED = "Check no longer possible · Security Monitor · {}\nthe expected check is not reported"
+
+
+class NamedChecks(unittest.TestCase):
+    def test_the_reviews_case_is_a_gap_told_once(self):
+        # the profile expects security/exposure, the Security Monitor answers validly with ssh only
+        profile = {"expect": ["security/exposure"], "skip": []}
+        snap = {"security": read_board("security", SEC, "ext-expect-security-ssh.json", NOW)}
+        cov = hsnotify.profile_coverage(profile, snap, NOW, {"security"})
+        self.assertEqual([(r["id"], r["coverage"], r.get("not_reported")) for r in cov[0]], [("security/exposure", "unsupported", True)])
+        events, sent = hsnotify.coverage_changes({}, cov, NOW)
+        self.assertEqual(cov_told(events), [("security@exposure", "lost", "unsupported")])
+        self.assertEqual(hsnotify._line("en", events[0]), NOT_REPORTED.format("exposure"))
+        self.assertEqual(hsnotify._line("de", events[0]),
+                         "Prüfung nicht mehr möglich · Security Monitor · exposure\ndie erwartete Prüfung wird nicht gemeldet")
+        msg = hsnotify.message("en", "web1", events=events)
+        self.assertEqual((msg["title"], msg["priority"], msg["tags"]), ("web1: Security Monitor, check no longer possible", 3, ["warning"]))
+        self.assertEqual(hsnotify.coverage_changes(sent, cov, NOW + 300)[0], [], "told once")
+        # the first message after setting up names it with the other gaps
+        summary = hsnotify.message("en", "web1", snapshot=snap, summary=True, gaps=events)
+        self.assertIn(NOT_REPORTED.format("exposure"), summary["body"])
+
+    def test_each_named_check_not_reported_is_a_gap_told_once(self):
+        n = Named()
+        (report, keys, hold), _ = n.coverage()
+        self.assertEqual([(r["id"], r["coverage"], [g["id"] for g in r["gaps"]], r.get("not_reported", False)) for r in report], [
+            ("host-settings", "checked", [], False), ("update-gaps", "checked", [], False),
+            ("security", "unsupported", ["exposure", "fail2ban", "contaners"], False), ("cronjobs", "checked", [], False),
+            ("security/exposure", "unsupported", [], True), ("security/fail2ban", "unsupported", [], True),
+            ("security/contaners", "unsupported", [], True), ("security/firewall", "notapplicable", [], False)])
+        self.assertTrue(all(g.get("not_reported") for g in report[2]["gaps"]))
+        self.assertEqual({k: v[0] for k, v in keys.items()}, {
+            "update-gaps@": "checked", "security@": "checked", "security@ssh": "checked", "security@exposure": "unsupported",
+            "security@fail2ban": "unsupported", "security@contaners": "unsupported", "cronjobs@": "checked"},
+            "the add-on once, each check it does not report on its own, firewall not while its skip runs")
+        self.assertEqual((keys["security@exposure"][2:], hold), (("exposure", None, "unreported"), set()))
+        events = n.step()
+        self.assertEqual(cov_only(events), [("security@contaners", "lost", "unsupported"), ("security@exposure", "lost", "unsupported"),
+                                            ("security@fail2ban", "lost", "unsupported")])
+        for _ in range(3):
+            self.assertEqual(cov_only(n.step()), [], "told once")
+
+    def test_a_check_never_reported_or_misspelled_is_told_with_its_id(self):
+        n = Named()
+        events = n.step(security="ext-good-security.json")
+        self.assertEqual(cov_only(events), [("security@contaners", "lost", "unsupported")], "contaners is not containers")
+        self.assertEqual([hsnotify._line("en", e) for e in events if e["key"] == "security@contaners"], [NOT_REPORTED.format("contaners")])
+
+    def test_a_check_that_goes_away_is_one_loss_and_its_return_one_message_findings_stay(self):
+        n = Named()
+        first = n.step(security="ext-good-security.json")
+        self.assertEqual(sorted(e["key"] for e in first if e["key"].startswith("security#")), [fkey(5432), fkey(6379)])
+        findings = {fkey(p): dict(n.sent[fkey(p)]) for p in (5432, 6379)}
+        # the answer of a Security Monitor that no longer reports exposure (nor fail2ban)
+        events = n.step(security="ext-expect-security-ssh.json")
+        self.assertEqual(told(events), [("security@exposure", "lost", "ok", "warning"), ("security@fail2ban", "lost", "ok", "warning")],
+                         "one loss per check, nothing about the findings")
+        self.assertEqual({k: n.sent[k] for k in findings}, findings, "the findings stay as they were")
+        self.assertEqual(n.step(security="ext-expect-security-ssh.json"), [])
+        # back, checked and in time: one message; the findings are not resolved by it (the complete
+        # list still has them)
+        events = n.step(security="ext-good-security.json")
+        self.assertEqual(told(events), [("security@exposure", "regained", "warning", "ok")])
+        self.assertEqual(hsnotify._line("en", events[0]), "Check possible again · Security Monitor · Reachable from the internet")
+        self.assertEqual({k: (n.sent[k]["status"], n.sent[k]["level"]) for k in findings}, {k: ("open", "danger") for k in findings})
+        self.assertEqual(n.step(security="ext-good-security.json"), [], "exactly one message")
+        self.assertNotIn("security@fail2ban", n.sent, "reported as not applicable again: forgotten without a message")
+
+    def test_an_explicit_not_applicable_keeps_its_reason(self):
+        (report, keys, _), _ = Named().coverage(security="ext-good-security.json")
+        row = next(r for r in report if r["id"] == "security/fail2ban")
+        self.assertEqual((row["coverage"], row.get("reason"), row.get("not_reported")), ("notapplicable", "fail2ban is not installed", None))
+        self.assertNotIn("security@fail2ban", keys, "it does not apply: no gap, and no success made up for it")
+        self.assertEqual(next(r for r in report if r["id"] == "security/exposure")["coverage"], "checked")
+
+    def test_a_skip_with_a_reason_holds_until_its_day(self):
+        until = hslib.parse_time("2026-10-20T00:00:00Z")
+        n = Named()
+        n.step()
+        n.now = until - 301
+        self.assertEqual(cov_only(n.step()), [], "left out while its skip runs")
+        self.assertNotIn("security@firewall", n.sent)
+        (report, _, _), _ = n.coverage()
+        self.assertEqual(next(r["coverage"] for r in report if r["id"] == "security/firewall"), "notapplicable")
+        events = n.step(after=1)
+        self.assertEqual(cov_only(events), [("security@firewall", "lost", "unsupported")], "on its day a gap again, told once")
+        self.assertEqual(cov_only(n.step()), [])
+
+    def test_a_missing_unreadable_or_locked_out_addon_keeps_its_own_gap(self):
+        for result, cov in ((None, "missing"), (hsproc.Result(77), "noaccess"), (hsproc.Result(64), "unreadable"), (ok("{"), "unreadable")):
+            with self.subTest(cov=cov, result=result):
+                n = Named()
+                (report, keys, hold), _ = n.coverage(security=result)
+                self.assertEqual(({k: v[0] for k, v in keys.items() if k.startswith("security@")}, hold), ({"security@": cov}, {"security"}),
+                                 "no gap of a check of an add-on that says nothing")
+                self.assertEqual([(r["id"], r["coverage"]) for r in report if r["id"].startswith("security")],
+                                 [("security", cov)] + [("security/" + c, cov) for c in ("exposure", "fail2ban", "contaners", "firewall")])
+                events = [e for e in n.step(security=result) if e["pkg"] == "security"]
+                self.assertEqual(len(events), 1, "one message about the add-on")
+                self.assertFalse(events[0]["key"].partition("@")[2], "not about a check")
+        # told before: the checks stay as they were while the add-on cannot be judged
+        n = Named()
+        n.step()
+        self.assertEqual(cov_only(n.step(security=None)), [("security@", "lost", "missing")])
+        self.assertEqual([n.sent["security@" + c]["level"] for c in ("exposure", "fail2ban", "contaners")], ["lost"] * 3)
+        self.assertEqual(cov_only(n.step(security=None)), [])
+
+    def test_an_addon_expected_alone_keeps_the_old_judgement(self):
+        (report, keys, _), snap = Named().coverage()
+        self.assertEqual([snap[p]["checks"] for p in ("cronjobs", "update-gaps")], [None, None], "answers without checks")
+        self.assertEqual([(r["id"], r["coverage"], r["gaps"]) for r in report if r["id"] in ("cronjobs", "update-gaps")],
+                         [("update-gaps", "checked", []), ("cronjobs", "checked", [])])
+        self.assertFalse([k for k in keys if k.startswith(("cronjobs@", "update-gaps@")) and not k.endswith("@")], "no check id made up")
+        # an answer without checks out of date: what its items say, as before, no message; a check
+        # named for it is a gap of its own besides
+        img = {"image-updates": read_board("image-updates", IMG_CMD, "good-image-updates-stale.json", NOW)}
+        _, keys, _ = hsnotify.profile_coverage({"expect": ["image-updates"], "skip": []}, img, NOW, set(img))
+        self.assertEqual({k: v[0] for k, v in keys.items()}, {"image-updates@": "stale"})
+        self.assertEqual(hsnotify.coverage_changes({}, (None, keys, set()), NOW)[0], [])
+        report, keys, _ = hsnotify.profile_coverage({"expect": ["image-updates/rollout"], "skip": []}, img, NOW, set(img))
+        self.assertEqual(({k: v[0] for k, v in keys.items()}, report[0]["coverage"]),
+                         ({"image-updates@": "stale", "image-updates@rollout": "unsupported"}, "unsupported"))
+
+    def test_two_named_checks_of_one_addon_are_two_gaps_the_addon_counts_once(self):
+        n = Named(expect=["security/exposure", "security/logins"])
+        (report, keys, _), _ = n.coverage()
+        self.assertEqual([(r["id"], r["coverage"], r.get("not_reported")) for r in report],
+                         [("security/exposure", "unsupported", True), ("security/logins", "unsupported", True)])
+        self.assertEqual(sorted(k for k in keys if k.startswith("security@")),
+                         ["security@", "security@exposure", "security@logins", "security@ssh"], "the add-on once")
+        events = [e for e in n.step() if hsnotify.COVERAGE in e["key"]]
+        self.assertEqual(cov_told(events), [("security@exposure", "lost", "unsupported"), ("security@logins", "lost", "unsupported")])
+        msg = hsnotify.message("en", "web1", events=events)
+        self.assertEqual((msg["title"], msg["body"].split("\n\n")[:2]),
+                         ("web1: 2 changes", [NOT_REPORTED.format("exposure"), NOT_REPORTED.format("logins")]))
+
+    def test_a_restart_or_an_update_tells_nothing_twice_and_keeps_the_findings(self):
+        n = Named()
+        n.step(security="ext-good-security.json")
+        findings = {fkey(p): dict(n.sent[fkey(p)]) for p in (5432, 6379)}
+        # the memory as 0.2.0 left it: no key for a check the add-on does not report
+        old = {k: v for k, v in n.sent.items() if k != "security@contaners"}
+        up = Named(sent=json.loads(json.dumps(old)), now=n.now)
+        self.assertEqual(told(up.step(security="ext-good-security.json")), [("security@contaners", "lost", "ok", "warning")],
+                         "the update tells that gap once, and nothing else")
+        self.assertEqual({k: up.sent[k] for k in findings}, findings, "the findings stay as they were")
+        # a restart: the memory read back from last.json, the same answers
+        again = Named(sent=json.loads(json.dumps(up.sent)), now=up.now)
+        self.assertEqual(again.step(security="ext-good-security.json"), [])
+        self.assertEqual(again.step(security="ext-good-security.json"), [])
+        self.assertEqual({k: again.sent[k] for k in findings}, findings)
 
 
 # ---------------------------------------------------------------------------

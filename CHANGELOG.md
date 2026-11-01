@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+A check that the target profile names counts only when its add-on reports it, a check that is not
+supported is no longer possible, and a channel that failed stays a failure until it works again: a
+run with nothing to send no longer makes it look fine.
+
+- **Named checks:** where the profile expects a check (`security/exposure`) and its add-on answers
+  without it, that check is a gap of its own: one message "Check no longer possible · Security
+  Monitor · exposure" with "the expected check is not reported", and one "Check possible again"
+  once the add-on reports it checked and in time. Until now such a check was taken as not
+  applicable and told nothing. Two such checks of one add-on are two gaps. A check the add-on
+  reports as not applicable keeps its reason, a skip that runs leaves the check out until its
+  day, and an add-on that is not installed, cannot be read or answers without access keeps its own
+  message, without a second one for its checks. An add-on expected alone is judged as before.
+  Neither message resolves a finding or makes one new.
+- **Not supported is no longer possible:** an expected check the add-on cannot run on this system
+  ("the check is not supported on this system") and an expected add-on installed in a version
+  without the status entry ("this version of the add-on reports no status") are told once as
+  well; up to 0.2.0 they kept what was told. After the update each such gap is told once; nothing
+  told before is told again, and the findings in `last.json` stay as they are.
+- **Page:** the target profile shows below the coverage of a check why it is not checked: "Expected
+  check is not reported", or the add-on's reason.
+- **Tests:** the shared answers of Status Board for named checks (`ext-expect-*.json`), taken over
+  byte for byte into `test/fixtures/board`, run through the notifier for every case.
+- **Fix, a failure forgotten by the next run:** when ntfy took a message and e-mail did not, the
+  watchdog heard of the failure once, and the next run, with nothing to send, signalled success
+  again. Now each channel keeps its own health in `last.json` (`channels`), judged in every run
+  whether it has something to send or not. A channel that did not accept a message or a test
+  stays failing, in the status and in the watchdog's signal ("a channel has not worked since it
+  failed"), until it accepts a message again or a test on the page ("Check connection", "Send a
+  test message"). That ends it once, with one recovery in the journal, in the status and at the
+  watchdog, and only for that channel. The channel that took the message does not get it twice.
+- **A result belongs to its target:** each result keeps the target it was made with (ntfy's server
+  and topic, the e-mail address; never the token). A test that ran with settings changed since, or
+  a new address, ends no failure, and a channel not confirmed with its settings shows as not
+  confirmed, never as working. A channel taken out of the settings no longer counts; that is
+  recorded as a change, not as a repair.
+- **Status:** the item "Last message" gives way to one item per channel, `ntfy` and `mail`. The
+  page shows each channel's state in its card, the overview names a failing channel, and the page
+  and the README tell a run, a channel accepting a message and a person reading it apart.
+- **`last.json`** keeps format 1. A file of 0.2.0 or 0.1.0 is read on: a channel that did not take
+  the last message stays failing, one that took it is not confirmed yet, since those versions
+  kept no target. Going back to 0.2.0 keeps the new records, and what 0.2.0 sent is taken in when
+  this version comes back. The update from 0.2.0, and back to it, is tested in CI as well.
+
 ## 0.2.0 – 2026-10-26
 
 Each finding is told on its own, a target profile says what a server is expected to check, and an

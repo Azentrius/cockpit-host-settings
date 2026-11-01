@@ -11,17 +11,21 @@ on:
 permissions:
   contents: read
 
-# The release the upgrade test (test/e2e/upgrade.sh) installs first: 0.1.0, the first one, the
-# oldest a server may run (before the watchdog, findings and target profiles), so the test goes
-# over every change of the settings and of last.json since. Its packages as its GitHub release
-# serves them, pinned by SHA-256 (test/e2e/release-asset.sh also checks them against the release's
-# SHA256SUMS).
+# The releases the upgrade test (test/e2e/upgrade.sh) installs first. PREVIOUS: 0.1.0, the first
+# one, the oldest a server may run (before the watchdog, findings and target profiles), so the test
+# goes over every change of the settings and of last.json since. LATEST: 0.2.0, the release before
+# the records of each channel in last.json; from it the test also goes back and forth again. Their
+# packages as their GitHub releases serve them, pinned by SHA-256 (test/e2e/release-asset.sh also
+# checks them against each release's SHA256SUMS).
 env:
   PREVIOUS_TAG: v0.1.0
   PREVIOUS_DEB: cockpit-host-settings_0.1.0-1_all.deb
   PREVIOUS_DEB_SHA256: 0449c2a216a5ce8475f2f57dbb0ba0d6bc464197abc64d8c2fba064d6d7ba3ae
   PREVIOUS_RPM: cockpit-host-settings-0.1.0-1.noarch.rpm
   PREVIOUS_RPM_SHA256: 295c86fa2f84b46cf9302baa062c8bf1cf64817e3e1d96a5e11d8d4e767f5a42
+  LATEST_TAG: v0.2.0
+  LATEST_DEB: cockpit-host-settings_0.2.0-1_all.deb
+  LATEST_DEB_SHA256: 01ed3858d4bd1302a222517a030ea4643e8fc2be4adec42c9ea5a1540656980a
 
 jobs:
   # Everything that runs without a server: lint, the offline tests, the packages (built twice to
@@ -138,7 +142,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/src" -w /src/test python:3.8-slim sh -ec '
             python3 --version
-            for t in notify_test.py run_test.py helper_test.py heartbeat_test.py; do
+            for t in notify_test.py run_test.py helper_test.py heartbeat_test.py channels_test.py; do
               python3 -B "$t" > "/tmp/$t.log" 2>&1 || { cat "/tmp/$t.log"; exit 1; }; echo "PASS $t"; done'
 
   # On this throw-away runner: the package with its real units, a real ntfy server (deny-all, a
@@ -185,16 +189,28 @@ jobs:
           name: e2e-session
           path: e2e-session/
 
-  # The update from the previous release (PREVIOUS_* above) on this throw-away runner
-  # (test/e2e/upgrade.sh): the .deb of that release set up with ntfy, the token and the timer tells
-  # a warning of the stand-in add-on; the package of this build goes over it with apt. Settings,
-  # token and timer stay, heartbeat.conf comes empty, last.json is read on without a message,
-  # findings of the item told are taken as told and a danger is told once, a target profile set
-  # afterwards works; removing the package keeps the settings and removes the state. The steps
-  # and the raw answers are in the artifact upgrade-session.
+  # The update from an earlier release (PREVIOUS_* and LATEST_* above) on this throw-away runner
+  # (test/e2e/upgrade.sh): the .deb of that release set up with ntfy, e-mail without a mail server,
+  # the token and the timer tells a warning of the stand-in add-on; the package of this build goes
+  # over it with apt. Settings, token and timer stay, heartbeat.conf comes empty, last.json is read
+  # on without a message and the failure of e-mail is kept, findings of the item told are taken as
+  # told and a danger is told once, a target profile set afterwards works; from 0.2.0 the test goes
+  # back to it and forth again; e-mail taken out is no longer counted; removing the package keeps
+  # the settings and removes the state. The steps and the raw answers are in the artifacts
+  # upgrade-session-*.
   upgrade:
+    name: upgrade (from ${{ matrix.version }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The version only names the job; the packages are the ones pinned above.
+        include:
+          - from: previous
+            version: 0.1.0
+          - from: latest
+            version: 0.2.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -204,10 +220,19 @@ jobs:
           sudo sh tools/apt-update.sh
           sudo apt-get install -y -qq --no-install-recommends rpm > /dev/null
           make packages
-      - name: The .deb of the previous release (test/e2e/release-asset.sh)
-        run: sh test/e2e/release-asset.sh "$GITHUB_REPOSITORY" "$PREVIOUS_TAG" "$PREVIOUS_DEB" "$PREVIOUS_DEB_SHA256" previous
-      - name: ntfy, the previous release set up, this build over it (test/e2e/upgrade.sh)
-        run: sudo env OUT="$PWD/upgrade-session" sh test/e2e/upgrade.sh "previous/$PREVIOUS_DEB" dist/*.deb
+      - name: The .deb of the earlier release (test/e2e/release-asset.sh)
+        env:
+          FROM: ${{ matrix.from }}
+        run: |
+          case $FROM in
+            previous) tag=$PREVIOUS_TAG deb=$PREVIOUS_DEB sum=$PREVIOUS_DEB_SHA256 ;;
+            latest) tag=$LATEST_TAG deb=$LATEST_DEB sum=$LATEST_DEB_SHA256 ;;
+            *) echo "unknown release $FROM"; exit 1 ;;
+          esac
+          sh test/e2e/release-asset.sh "$GITHUB_REPOSITORY" "$tag" "$deb" "$sum" previous
+          echo "$deb" > previous.name
+      - name: ntfy, the earlier release set up, this build over it (test/e2e/upgrade.sh)
+        run: sudo env OUT="$PWD/upgrade-session" sh test/e2e/upgrade.sh "previous/$(cat previous.name)" dist/*.deb
       - name: Report and logs
         if: always()
         run: |
@@ -221,7 +246,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: upgrade-session
+          name: upgrade-session-${{ matrix.from }}
           path: upgrade-session/
 
   # The same end-to-end test (suite e2e) and the same upgrade test (suite upgrade, the .rpm of the
