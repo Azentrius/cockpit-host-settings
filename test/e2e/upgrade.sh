@@ -95,6 +95,25 @@ install_package() {
         dnf install -y -q "$1" > /dev/null
     fi
 }
+# The notifier installed now is the one of the .deb FILE.
+installed_from() {
+    dpkg-deb --fsys-tarfile "$1" | tar -xO ./usr/lib/cockpit-host-settings/host-settings-notify.py |
+        cmp -s - /usr/lib/cockpit-host-settings/host-settings-notify.py
+}
+# Package FILE over the one installed, up or down. Until the release that raises the version, this
+# build carries the version of the latest release itself; apt would see nothing to do then, so dpkg
+# installs the .deb over it, with the files of the other package (checked).
+install_over() {
+    if [ "$kind" = deb ] && [ "$(version_of "$1")" = "$(installed)" ]; then
+        note "the same version $(installed) on both sides: dpkg installs $(basename "$1") over it"
+        DEBIAN_FRONTEND=noninteractive dpkg -i "$1" > /dev/null
+        installed_from "$1" || fail "the notifier installed is not the one of $(basename "$1")"
+    elif [ "$kind" = deb ]; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --allow-downgrades "$1" > /dev/null
+    else
+        dnf install -y -q "$1" > /dev/null 2>&1 || dnf downgrade -y -q "$1" > /dev/null
+    fi
+}
 
 next "ntfy: deny-all, a user with write access to its topic only, a reader"
 mkdir -p /tmp/ntfy-upgrade/lib
@@ -186,11 +205,13 @@ esac
 ok "summary on ntfy naming the warning; last.json holds it and the delivery e-mail did not take; the settings, the token (0600 root) and the timer on; heartbeat.conf as $before leaves it"
 
 next "the package of this build over it"
-install_package "$new"
+install_over "$new"
 after=$(installed)
 note "installed: $after (from $(basename "$new"))"
 [ "$after" = "$(version_of "$new")" ] || fail "the package of this build is not the one installed"
-[ "$after" != "$before" ] || fail "no upgrade: the same version"
+if [ "$after" = "$before" ] && { [ "$kind" != deb ] || installed_from "$old"; }; then
+    fail "no upgrade: the same version and the same notifier"
+fi
 sha256sum -c --quiet "$keep/settings.sha256" || fail "notify.conf or the token changed"
 test "$(stat -c '%a %U' "$conf/ntfy.token")" = "600 root" || fail "mode of ntfy.token after the upgrade"
 systemctl is-enabled --quiet "$timer" || fail "the timer is no longer enabled"
@@ -290,11 +311,7 @@ case $before in
         since=$(last "d['channels']['mail']['failed']['since']")
         ntfy_ok=$(last "d['channels']['ntfy']['ok']")
         before_count=$(count)
-        if [ "$kind" = deb ]; then
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --allow-downgrades "$old" > /dev/null
-        else
-            dnf downgrade -y -q "$old" > /dev/null
-        fi
+        install_over "$old"
         [ "$(installed)" = "$before" ] || fail "the previous release is not installed again"
         run_notifier back-1
         n=$(count)
@@ -308,7 +325,7 @@ case $before in
         [ "$(count)" = $((before_count + 1)) ] || fail "$before did not tell the change once"
         [ "$(last "(d['delivery']['results']['ntfy']['reason'], d['delivery']['results']['mail']['reason'])")" = "('sent', 'no-mta')" ] ||
             fail "the message of $before did not reach ntfy only"
-        install_package "$new"
+        install_over "$new"
         [ "$(installed)" = "$after" ] || fail "the package of this build is not installed again"
         run_notifier forth-1
         n=$(count)

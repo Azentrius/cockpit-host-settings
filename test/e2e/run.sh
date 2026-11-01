@@ -100,8 +100,20 @@ last_beat() { python3 -c "import json, sys; d = json.load(open(sys.argv[1])); pr
 last() { python3 -c "import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2], {}, {'d': d}))" /var/lib/cockpit-host-settings/last.json "$1"; }
 # The state of an item of the status, as nobody asks for it.
 item_state() { runuser -u nobody -- "$helper" status | field "[i['state'] for i in d['items'] if i['id'] == '$1']"; }
-# Whether something accepts connections on localhost:25 (yes or no).
+# Whether something accepts connections on localhost:25 (yes or no), and waiting up to 20 seconds
+# for WANT.
 port25() { python3 -c 'import socket; s = socket.socket(); s.settimeout(2); print("no" if s.connect_ex(("127.0.0.1", 25)) else "yes")'; }
+wait_port25() {
+    for _ in $(seq 1 20); do [ "$(port25)" = "$1" ] && return 0; sleep 1; done
+    return 1
+}
+# postfix off and on again. On Debian and Ubuntu postfix.service only stands for the instance
+# postfix@-.service, which does the work; on the RHEL rebuilds postfix.service is the server.
+mta_stop() { systemctl stop postfix 'postfix@*' 2> /dev/null || true; }
+mta_start() {
+    systemctl start postfix
+    if systemctl cat postfix@-.service > /dev/null 2>&1; then systemctl start postfix@-.service; fi
+}
 # A test signal through the page's helper to the watchdog set up now: its answer.
 beat_test() {
     "$helper" heartbeat test > "$out/beat-test.txt" 2>&1 || { cat "$out/beat-test.txt"; fail "heartbeat test"; }
@@ -411,8 +423,8 @@ next "each channel on its own: e-mail fails while ntfy takes the message, and st
 failures=$(seen check-1 failure)
 back=$(seen check-1 recoveries)
 tests=$(grep -c 'test message' /var/mail/hsmail || true)
-systemctl stop postfix
-[ "$(port25)" = no ] || fail "something still accepts mail on localhost:25"
+mta_stop
+wait_port25 no || fail "something still accepts mail on localhost:25"
 echo warning > /var/lib/e2e-addon/state
 echo '[{"fid":"port.8080-tcp","state":"warning","title":"8080/tcp web"}]' > /var/lib/e2e-addon/findings
 run_notifier chan-1
@@ -427,9 +439,8 @@ note "last.json: e-mail failing since $since, $(last "d['channels']['mail']['fai
 [ "$(last "d['channels']['mail']['failed']['reason']")" = no-mta ] || fail "last.json does not keep the failure of e-mail"
 [ "$(item_state mail)" = "['warning']" ] && [ "$(item_state ntfy)" = "['ok']" ] || fail "the status does not show e-mail failing and ntfy working"
 run_notifier chan-2
-systemctl start postfix
-for _ in $(seq 1 20); do [ "$(port25)" = yes ] && break; sleep 1; done
-[ "$(port25)" = yes ] || fail "postfix did not come back"
+mta_start
+wait_port25 yes || fail "postfix did not come back"
 run_notifier chan-3
 note "two runs with nothing to send, postfix back for the second: failures $(seen check-1 failure) (expected $((failures + 3))), recoveries $(seen check-1 recoveries) (expected $back), messages naming the finding on ntfy $(messages cockpit-open | grep -c '8080/tcp web' || true) (expected 1)"
 [ "$(seen check-1 failure)" = $((failures + 3)) ] && [ "$(seen check-1 recoveries)" = "$back" ] || fail "a run with nothing to send ended the failure of e-mail"

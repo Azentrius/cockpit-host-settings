@@ -860,7 +860,10 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   channels' records, and tells a change) and forth again (what 0.2.0 sent is taken in, the failure
   of e-mail keeps its beginning, ntfy stays confirmed); e-mail taken out of the settings is
   recorded as removed, not repaired; removing the package keeps `/etc/cockpit-host-settings` and
-  removes the state; the token is in no other file and no log.
+  removes the state; the token is in no other file and no log. Until the release that raises the
+  version, this build carries the version of 0.2.0 itself: apt would see nothing to do, so
+  `dpkg -i` installs one package over the other, and the test checks that the notifier installed
+  is the one of the package meant.
 - Job `e2e-el` (`tools/vm.sh` and `test/e2e/run.sh` with the `.rpm`, suite `e2e`; suite `upgrade`
   runs `test/e2e/upgrade.sh` with the `.rpm` of the previous release first): the same tests in a Rocky
   Linux 9 or 10 VM under KVM on the runner, from a cloud image pinned by name and SHA-256, with
