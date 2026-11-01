@@ -56,7 +56,7 @@
     <screenshot>
       <caption>ntfy with the commands for user, topic and token on the ntfy server</caption>
       <caption xml:lang="de">ntfy mit den Befehlen für Benutzer, Thema und Token auf dem ntfy-Server</caption>
-      <image type="source" width="1392" height="807">https://raw.githubusercontent.com/Azentrius/cockpit-host-settings/main/docs/img/ntfy.png</image>
+      <image type="source" width="1392" height="838">https://raw.githubusercontent.com/Azentrius/cockpit-host-settings/main/docs/img/ntfy.png</image>
     </screenshot>
     <screenshot>
       <caption>Check connection: reachable, encrypted, closed without a login</caption>
