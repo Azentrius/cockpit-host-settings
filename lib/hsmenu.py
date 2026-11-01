@@ -317,7 +317,7 @@ def view(env, exists=os.path.exists):
                         # An object for a key the package does not have makes the bridge serve an
                         # entry without a page; a null for it does nothing.
                         orphans.append({"scope": scope, "dir": p["folder"], "section": section, "key": key,
-                                        "phantom": isinstance(v, dict)})
+                                        "phantom": isinstance(v, dict), "value": _mark(sec, key)})
     folders = {p["folder"] for p in served}
     files = []
     for scope, folder, path in _override_files(env):
