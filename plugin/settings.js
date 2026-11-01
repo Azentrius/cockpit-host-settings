@@ -296,19 +296,51 @@
              h("p", { class: "hs-note", text: t("sum.intro") })]));
     }
 
+    // --- Channels ----------------------------------------------------------------
+    // What `show` says of each channel set up (lib/hschannels.py, health()): ok once it accepted
+    // the last message or a test with the settings set now, failed from a failure until it
+    // accepts again (a run with nothing to send changes nothing), unknown before that. Accepted:
+    // the ntfy server or the mail server took it; whether someone read it, nobody here knows.
+    function health(c) {
+        const all = (view && view.channels) || {};
+        const v = all[c];
+        return v && (v.state === "ok" || v.state === "failed") ? v : { state: "unknown" };
+    }
+    function failingChannels() { return channels().filter((c) => health(c).state === "failed"); }
+    // After a test: the channel works again (the test ended its failure), or the result belongs
+    // to settings changed while it ran and counts for nothing.
+    function recoveredLine(r) {
+        if (r && r.recovered) return h("p", { class: "hs-line", id: "hs-recovered" }, label("ok"), t("chan.recoveredNow"));
+        if (r && r.health === "failed" && (r.result ? r.result.ok : (r.steps || []).some((s) => s.id === "publish" && s.result === "ok"))) {
+            return h("p", { class: "hs-line" }, label("warning"), t("chan.stillFailedNow"));
+        }
+        return null;
+    }
+    function healthCell(c) {
+        const v = health(c);
+        if (v.state === "failed") {
+            return [label("warning", t("chan.failedLabel")),
+                    h("span", { text: t("chan.failed", { since: fmtDate(v.since), why: reasonText(v) }) })];
+        }
+        if (v.state === "ok") {
+            const via = v.via === "test" ? "test" : "run";
+            const text = v.recovered ? t("chan.again." + via, { when: fmtDate(v.at), since: fmtDate(v.recovered.since) })
+                : t("chan.ok." + via, { when: fmtDate(v.at) });
+            return [label("ok", t("chan.okLabel")), h("span", { text })];
+        }
+        return [label("none", t("chan.unknownLabel")), h("span", { text: t("chan.unknown") })];
+    }
+
     // --- Overview ----------------------------------------------------------------
     function delivery() { return view && view.last && view.last.delivery; }
-    function failed(d) {
-        return d && d.results ? Object.keys(d.results).sort().filter((c) => !d.results[c].ok) : [];
-    }
     function overviewState() {
         const chans = channels();
         if (!chans.length && !beatOn()) return ["none", t("ov.none")];
         if (view.timer !== "active") {
             return ["warning", chans.length ? t("ov.off", { channels: channelText(chans) }) : t("ov.offWatchdog")];
         }
-        const bad = failed(delivery());
-        if (bad.length) return ["warning", t("ov.failed")];
+        const bad = failingChannels();
+        if (bad.length) return ["warning", t("ov.failed", { channels: channelText(bad) })];
         if (beatState() === "warning") return ["warning", t("ov.watchdogFailed")];
         if (chans.indexOf("ntfy") >= 0 && accessState() === "warning") return ["warning", t("ov.open")];
         if (!chans.length) return ["none", t("ov.watchdogOnly")];
@@ -331,7 +363,7 @@
         if (!d) return h("span", { text: t("ov.noMessage") });
         const results = Object.keys(d.results || {}).sort().map((c) => {
             const r = d.results[c];
-            return label(r.ok ? "ok" : "warning", t("channel." + c) + ": " + (r.ok ? t("reason.sent") : reasonText(r)));
+            return label(r.ok ? "ok" : "warning", t("channel." + c) + ": " + (r.ok ? t("ov.accepted") : reasonText(r)));
         });
         return [h("span", { text: t("ov.message", { ago: ago(d.at), title: d.title || "" }) }), results];
     }
@@ -353,6 +385,8 @@
             ]),
             h("div", { class: "hs-actions" },
                 btn("az-btn--secondary", "redo", t("btn.runNow"), { id: "hs-run", disabled: view.timer === "missing" })),
+            // A run, a channel that accepts a message and a person who reads it are three things.
+            channels().length ? h("p", { class: "hs-note", id: "hs-ov-note", text: t("ov.note") }) : null,
         ]);
     }
 
@@ -420,6 +454,7 @@
                                    btn("az-btn--link", null, view.token ? t("btn.replaceToken") : t("btn.setToken"), { id: "hs-token-set" }),
                                    view.token ? btn("az-btn--link", null, t("btn.removeToken"), { id: "hs-token-remove" }) : null]],
                 [t("ntfy.access"), [label(accessState(), t("access." + accessState()))]],
+                [t("chan.label"), healthCell("ntfy")],
             ]),
             h("div", { class: "hs-actions" },
                 btn("az-btn--secondary", "check", t("btn.check"), { id: "hs-ntfy-check" }),
@@ -460,10 +495,12 @@
                 h("div", { class: "hs-actions" }, btn("az-btn--secondary", "plus", t("btn.setupMail"), { id: "hs-mail-set" })),
             ]);
         }
-        const test = view.test_mail && view.test_mail.channel === "mail" ? view.test_mail : null;
+        // The last test message, when it went to the address set now (0.2.0 kept no address).
+        const test = view.test_mail && view.test_mail.channel === "mail" && view.test_mail.target === c.mail_to
+            ? view.test_mail : null;
         const parts = [
             mtaLine(),
-            kv([[t("mail.to"), [code(c.mail_to)]]]),
+            kv([[t("mail.to"), [code(c.mail_to)]], [t("chan.label"), healthCell("mail")]]),
             h("div", { class: "hs-actions" },
                 btn("az-btn--secondary", "check", t("btn.testMail"), { id: "hs-mail-test" }),
                 btn("az-btn--link", null, t("btn.change"), { id: "hs-mail-change" }),
@@ -915,7 +952,7 @@
         "hs-ntfy-check": () => dlg.open({
             title: t("dlg.check.title"), desc: t("dlg.check.desc"), confirm: t("btn.check"),
             argv: () => ["check", "ntfy"],
-            outcome: (r) => (r && Array.isArray(r.steps) ? stepList(r.steps) : null),
+            outcome: (r) => (r && Array.isArray(r.steps) ? [stepList(r.steps), recoveredLine(r)] : null),
         }),
         "hs-mail-set": () => mailForm(t("dlg.mail.setTitle"), ""),
         "hs-mail-change": () => mailForm(t("dlg.mail.changeTitle"), cfg().mail_to),
@@ -924,8 +961,8 @@
         "hs-mail-test": () => dlg.open({
             title: t("dlg.test.title"), desc: t("dlg.test.desc", { to: cfg().mail_to || "" }), confirm: t("btn.send"),
             argv: () => ["test", "mail"],
-            outcome: (r) => (r && r.result ? h("p", { class: "hs-line" }, label(r.result.ok ? "ok" : "warning"),
-                t(r.result.ok ? "mail.testOkNow" : "mail.testFailedNow", { why: reasonText(r.result) })) : null),
+            outcome: (r) => (r && r.result ? [h("p", { class: "hs-line" }, label(r.result.ok ? "ok" : "warning"),
+                t(r.result.ok ? "mail.testOkNow" : "mail.testFailedNow", { why: reasonText(r.result) })), recoveredLine(r)] : null),
         }),
         "hs-lang": () => dlg.open({
             title: t("dlg.lang.title"), desc: t("dlg.lang.desc"), confirm: t("btn.save"),

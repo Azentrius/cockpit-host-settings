@@ -403,7 +403,10 @@ class Runs(unittest.TestCase):
         self.assertEqual(host.posts()[-1]["title"], "h: messages set up")
         self.assertEqual(host.dog.calls[-1]["url"], HC)
 
-    def test_one_channel_of_two_failing_is_a_failure_and_nothing_is_sent_twice(self):
+    def test_one_channel_of_two_failing_stays_a_failure_and_nothing_is_sent_twice(self):
+        # Until 0.2.0 the next run, with nothing to send, was a success, and the failure of e-mail
+        # was forgotten. Now e-mail stays failed until it accepts a message or a test
+        # (test/channels_test.py has every sequence).
         host = self.host(conf="ntfy_url = https://ntfy.example.com\nntfy_topic = cockpit-h\nmail_to = ops@example.com\n")
         host.smtp = Smtp(ConnectionRefusedError())
         self.run_host(host, smtp=host.smtp)
@@ -413,7 +416,9 @@ class Runs(unittest.TestCase):
         host.now += 300
         self.run_host(host, smtp=host.smtp)
         self.assertEqual(len(host.posts()), 1, "nothing is sent again")
-        self.assertEqual(host.dog.calls[-1]["url"], HC, "a run with nothing to send is a success")
+        self.assertEqual(host.dog.calls[-1]["url"], HC + "/fail", "a run with nothing to send does not forget the failure")
+        self.assertEqual(host.dog.calls[-1]["body"], b"Host Settings: a channel has not worked since it failed (mail no-mta)")
+        self.assertEqual(self.beat(host)["why"], "channel")
 
     def test_another_run_holds_the_lock_no_signal(self):
         host = self.host()

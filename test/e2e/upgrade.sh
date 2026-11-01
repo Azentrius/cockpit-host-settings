@@ -11,17 +11,23 @@
 #   sudo env OUT=upgrade-session sh test/e2e/upgrade.sh OLD.rpm NEW.rpm
 #
 # What it shows (docs/INTERNALS.md, "Tests"):
-#   - the previous release with ntfy, the token on standard input and the timer on tells the
-#     warning of the stand-in in its summary, and its last.json holds the warning as told;
+#   - the previous release with ntfy, e-mail (nothing on localhost:25), the token on standard
+#     input and the timer on tells the warning of the stand-in in its summary through ntfy, and
+#     its last.json holds the warning as told and the delivery that e-mail did not take;
 #   - after the upgrade notify.conf, the token and the timer are as they were, heartbeat.conf is
 #     there and empty (root, 0600), and systemd runs the new units;
 #   - the next run reads the old last.json on: no message, neither the warning again nor an "OK
-#     again" for it, and no new summary;
+#     again" for it, and no new summary; the failure of e-mail is kept (last.json, the status as
+#     nobody), ntfy is not made confirmed, since the previous release kept no target;
 #   - the stand-in then lists findings for the item: one no more severe than the warning told is
-#     taken as told without a message, a danger is told once, and a run without a change tells
-#     nothing;
+#     taken as told without a message, a danger is told once (ntfy is confirmed by it, e-mail
+#     stays failed), and a run without a change tells nothing;
 #   - a target profile set after the upgrade states its gaps in one message, and the status verb
 #     as nobody names it;
+#   - from 0.2.0 on (0.1.0 knows neither findings nor coverage): back to the previous release and
+#     forth again; each reads last.json on without a message, the previous release keeps the
+#     channels' records, and what it sent is taken in again without making up a target;
+#   - e-mail taken out of the settings is no longer counted, as a change and not a repair;
 #   - removing the package keeps the settings in /etc/cockpit-host-settings and removes the state;
 #     the token is in no file but its own and in no log.
 # Writes OUT/report.md and the raw answers. Exit 1 at the first step that fails.
@@ -75,6 +81,10 @@ run_notifier() {
 installed() {
     if [ "$kind" = deb ]; then dpkg-query -W -f '${Version}' cockpit-host-settings; else rpm -q --qf '%{VERSION}-%{RELEASE}' cockpit-host-settings; fi
 }
+# The state of an item of the status, as nobody asks for it.
+item_state() { runuser -u nobody -- "$helper" status | field "[i['state'] for i in d['items'] if i['id'] == '$1']"; }
+# Whether something accepts connections on localhost:25 (yes or no).
+port25() { python3 -c 'import socket; s = socket.socket(); s.settimeout(2); print("no" if s.connect_ex(("127.0.0.1", 25)) else "yes")'; }
 version_of() {
     if [ "$kind" = deb ]; then dpkg-deb -f "$1" Version; else rpm -qp --qf '%{VERSION}-%{RELEASE}' "$1"; fi
 }
@@ -83,6 +93,25 @@ install_package() {
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$1" > /dev/null
     else
         dnf install -y -q "$1" > /dev/null
+    fi
+}
+# The notifier installed now is the one of the .deb FILE.
+installed_from() {
+    dpkg-deb --fsys-tarfile "$1" | tar -xO ./usr/lib/cockpit-host-settings/host-settings-notify.py |
+        cmp -s - /usr/lib/cockpit-host-settings/host-settings-notify.py
+}
+# Package FILE over the one installed, up or down. Until the release that raises the version, this
+# build carries the version of the latest release itself; apt would see nothing to do then, so dpkg
+# installs the .deb over it, with the files of the other package (checked).
+install_over() {
+    if [ "$kind" = deb ] && [ "$(version_of "$1")" = "$(installed)" ]; then
+        note "the same version $(installed) on both sides: dpkg installs $(basename "$1") over it"
+        DEBIAN_FRONTEND=noninteractive dpkg -i "$1" > /dev/null
+        installed_from "$1" || fail "the notifier installed is not the one of $(basename "$1")"
+    elif [ "$kind" = deb ]; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --allow-downgrades "$1" > /dev/null
+    else
+        dnf install -y -q "$1" > /dev/null 2>&1 || dnf downgrade -y -q "$1" > /dev/null
     fi
 }
 
@@ -143,8 +172,13 @@ note "installed: $before (from $(basename "$old"))"
 getent passwd cockpit-host-settings > /dev/null || fail "no user cockpit-host-settings"
 ok "the stand-in in warning, cockpit-host-settings $before"
 
-next "set up as an admin does: ntfy, the token on standard input, the timer on"
+next "set up as an admin does: ntfy, e-mail, the token on standard input, the timer on"
+# E-mail with nothing on localhost:25: the previous release cannot hand its summary over, so its
+# last.json keeps a delivery that e-mail did not take.
+for unit in postfix exim4 sendmail; do systemctl stop "$unit" 2> /dev/null || true; done
+[ "$(port25)" = no ] || fail "something accepts mail on localhost:25"
 "$helper" set ntfy "$base" "$topic" > /dev/null
+"$helper" set mail hsmail@localhost > /dev/null
 printf '%s\n' "$token" | "$helper" token set > /dev/null
 "$helper" install timer > "$out/install.txt" 2>&1 || { cat "$out/install.txt"; fail "install timer"; }
 systemctl is-enabled --quiet "$timer" && systemctl is-active --quiet "$timer" || fail "the timer is not on"
@@ -153,22 +187,31 @@ grep -q 'messages set up' "$out/messages-before.json" || fail "no summary on ntf
 grep -q 'Warning · E2E Add-on · The thing' "$out/messages-before.json" || fail "the summary does not name the warning"
 told=$(last "d['sent']['e2e-addon#thing']['level']")
 baseline=$(last "d['baseline_at']")
-note "last.json of $before: the stand-in's item told as $told, baseline $baseline"
+delivered=$(last "(d['delivery']['results']['ntfy']['reason'], d['delivery']['results']['mail']['reason'])")
+note "last.json of $before: the stand-in's item told as $told, baseline $baseline, the summary to ntfy and e-mail: $delivered (expected ('sent', 'no-mta'))"
 [ "$told" = warning ] || fail "last.json does not hold the warning as told"
+[ "$delivered" = "('sent', 'no-mta')" ] || fail "the summary did not reach ntfy only"
+delivered_at=$(last "d['delivery']['at']")
 cp "$state/last.json" "$out/last-before.json"
 mkdir -p "$keep"
 chmod 700 "$keep"
 sha256sum "$conf/notify.conf" "$conf/ntfy.token" > "$keep/settings.sha256"
 test "$(stat -c '%a %U' "$conf/ntfy.token")" = "600 root" || fail "mode of ntfy.token"
-[ ! -e "$conf/heartbeat.conf" ] || fail "the previous release has a heartbeat.conf already"
-ok "summary on ntfy naming the warning; last.json holds it; the settings, the token (0600 root) and the timer on; no heartbeat.conf yet"
+# 0.1.0 had no watchdog and no heartbeat.conf; from 0.2.0 on the package makes an empty one.
+case $before in
+    0.1.*) [ ! -e "$conf/heartbeat.conf" ] || fail "the previous release has a heartbeat.conf already" ;;
+    *) [ "$(stat -c '%a %U %s' "$conf/heartbeat.conf")" = "600 root 0" ] || fail "heartbeat.conf of $before is not an empty file of root's" ;;
+esac
+ok "summary on ntfy naming the warning; last.json holds it and the delivery e-mail did not take; the settings, the token (0600 root) and the timer on; heartbeat.conf as $before leaves it"
 
 next "the package of this build over it"
-install_package "$new"
+install_over "$new"
 after=$(installed)
 note "installed: $after (from $(basename "$new"))"
 [ "$after" = "$(version_of "$new")" ] || fail "the package of this build is not the one installed"
-[ "$after" != "$before" ] || fail "no upgrade: the same version"
+if [ "$after" = "$before" ] && { [ "$kind" != deb ] || installed_from "$old"; }; then
+    fail "no upgrade: the same version and the same notifier"
+fi
 sha256sum -c --quiet "$keep/settings.sha256" || fail "notify.conf or the token changed"
 test "$(stat -c '%a %U' "$conf/ntfy.token")" = "600 root" || fail "mode of ntfy.token after the upgrade"
 systemctl is-enabled --quiet "$timer" || fail "the timer is no longer enabled"
@@ -196,7 +239,12 @@ note "messages before and after the run: $before_count, $after_count (expected t
 [ "$(last "d['sent']['e2e-addon#thing']['level']")" = warning ] || fail "the warning told is no longer in last.json"
 runuser -u nobody -- "$helper" status > "$out/status-after.json"
 note "status as nobody: $(field "(d['version'], d['state'], d['summary'])" < "$out/status-after.json")"
-ok "no message, no OK again, no new summary; the warning still told"
+failed=$(last "(d['channels']['mail']['failed']['reason'], d['channels']['mail']['failed']['since'], d['channels']['mail']['failed']['target'])")
+note "e-mail in last.json: $failed (expected ('no-mta', '$delivered_at', None)); status: e-mail $(item_state mail), ntfy $(item_state ntfy) (expected warning, none)"
+[ "$failed" = "('no-mta', '$delivered_at', None)" ] || fail "the failed delivery to e-mail of $before was not kept as it was"
+[ "$(item_state mail)" = "['warning']" ] || fail "the status does not show e-mail failing"
+[ "$(item_state ntfy)" = "['none']" ] || fail "ntfy is shown as confirmed, although $before kept no target"
+ok "no message, no OK again, no new summary; the warning still told; the failure of e-mail kept, ntfy not confirmed"
 
 next "findings for the item told: taken as told; a danger told once"
 echo '[{"fid":"port.5432-tcp","state":"warning","title":"5432/tcp postgres"}]' > /var/lib/e2e-addon/findings
@@ -219,6 +267,9 @@ note "after a danger was added: $n messages (expected $((before_count + 1))); na
 [ "$n" = $((before_count + 1)) ] || fail "the danger did not give exactly one message"
 [ "$second" = 1 ] || fail "the danger was not told"
 [ "$first" = 0 ] || fail "the finding taken over was told"
+note "status: ntfy $(item_state ntfy), e-mail $(item_state mail) (expected ok, warning); e-mail failing since $(last "d['channels']['mail']['failed']['since']")"
+[ "$(item_state ntfy)" = "['ok']" ] && [ "$(item_state mail)" = "['warning']" ] || fail "ntfy is not confirmed by the message it took, or e-mail no longer failing"
+[ "$(last "d['channels']['mail']['failed']['since']")" = "$delivered_at" ] || fail "the failure of e-mail lost its beginning"
 run_notifier findings-3
 n=$(count)
 note "after a run without a change: $n messages (expected $((before_count + 1)))"
@@ -248,6 +299,61 @@ n=$(count)
 note "after a run without a change: $n messages (expected $((before_count + 1)))"
 [ "$n" = $((before_count + 1)) ] || fail "a run without a change sent a message"
 ok "the profile's gaps in one message, the status as nobody with the profile, the next run told nothing"
+
+next "back to the previous release and forth"
+case $before in
+    0.1.*)
+        # 0.1.0 knows neither findings nor coverage: going back to it is not supported, and not
+        # tested.
+        note "not from $before: going back is tested from 0.2.0 on (job upgrade, the matrix entry for 0.2.0)"
+        ;;
+    *)
+        since=$(last "d['channels']['mail']['failed']['since']")
+        ntfy_ok=$(last "d['channels']['ntfy']['ok']")
+        before_count=$(count)
+        install_over "$old"
+        [ "$(installed)" = "$before" ] || fail "the previous release is not installed again"
+        run_notifier back-1
+        n=$(count)
+        note "$before again: messages $n (expected $before_count); format $(last "d['format']"), the channels' records kept: $(last "'channels' in d")"
+        [ "$n" = "$before_count" ] || fail "$before sent a message after going back"
+        [ "$(last "d['format']")" = 1 ] && [ "$(last "d['baseline_at']")" = "$baseline" ] || fail "$before started last.json anew"
+        [ "$(last "'channels' in d")" = True ] || fail "$before dropped the channels' records"
+        # A change $before tells: the danger gone from a complete list. ntfy takes it, e-mail not.
+        echo '[{"fid":"port.5432-tcp","state":"warning","title":"5432/tcp postgres"}]' > /var/lib/e2e-addon/findings
+        run_notifier back-2
+        [ "$(count)" = $((before_count + 1)) ] || fail "$before did not tell the change once"
+        [ "$(last "(d['delivery']['results']['ntfy']['reason'], d['delivery']['results']['mail']['reason'])")" = "('sent', 'no-mta')" ] ||
+            fail "the message of $before did not reach ntfy only"
+        install_over "$new"
+        [ "$(installed)" = "$after" ] || fail "the package of this build is not installed again"
+        run_notifier forth-1
+        n=$(count)
+        taken=$(last "d['channels']['mail']['failed']['at'] == d['delivery']['at']")
+        note "this build again: messages $n (expected $((before_count + 1))); e-mail failing since $(last "d['channels']['mail']['failed']['since']") (expected $since); ntfy confirmed as before: $(last "d['channels']['ntfy']['ok'] == $ntfy_ok"); the message of $before taken in: $taken"
+        [ "$n" = $((before_count + 1)) ] || fail "a message after coming back"
+        [ "$(last "d['channels']['mail']['failed']['since']")" = "$since" ] || fail "the failure of e-mail lost its beginning"
+        [ "$(last "d['channels']['ntfy']['ok'] == $ntfy_ok")" = True ] || fail "a message of $before without a target replaced the confirmation of ntfy"
+        [ "$(item_state mail)" = "['warning']" ] && [ "$(item_state ntfy)" = "['ok']" ] || fail "the status after coming back"
+        [ "$taken" = True ] || fail "the message of $before was not taken in"
+        ok "$before read last.json on and kept the channels' records; this build took in what it sent, the failure of e-mail kept its beginning"
+        ;;
+esac
+
+next "e-mail taken out of the settings: no longer counted, a change and not a repair"
+"$helper" unset mail > /dev/null
+run_notifier unset-mail
+removed=$(last "d['channels']['mail']")
+note "e-mail in last.json: $removed; the status names it: $(item_state mail) (expected [])"
+[ "$(last "sorted(d['channels']['mail'])")" = "['removed']" ] || fail "the removal is not recorded"
+[ "$(last "d['channels']['mail']['removed']['failed_since']")" = "$delivered_at" ] || fail "the removal does not say e-mail was failing"
+[ "$(item_state mail)" = "[]" ] || fail "e-mail still in the status"
+journalctl --no-pager -o cat -u "$service" | grep -q 'channel mail: removed from the settings while failing since' ||
+    fail "the journal does not name the removal"
+if journalctl --no-pager -o cat -u "$service" | grep -q 'channel mail: accepted again'; then fail "the removal was taken as a repair"; fi
+# notify.conf changed on purpose: the removal of the package must keep it as it is now.
+sha256sum "$conf/notify.conf" "$conf/ntfy.token" > "$keep/settings.sha256"
+ok "e-mail removed while failing: recorded as such, no longer in the status, no recovery"
 
 next "remove the package"
 if [ "$kind" = deb ]; then

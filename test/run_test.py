@@ -124,7 +124,7 @@ class Runs(unittest.TestCase):
         self.assertEqual(last["delivery"]["results"]["ntfy"]["reason"], "network")
         self.assertNotIn("cronjobs#failed", last["sent"])
         status = host.file("status.json")
-        self.assertEqual({i["id"]: i["state"] for i in status["items"]}["delivery"], "warning")
+        self.assertEqual({i["id"]: i["state"] for i in status["items"]}["ntfy"], "warning")
         host.http.answers[("POST", "https://ntfy.example.com/", "auth")] = (200, "{}")
         host.now += 300
         host.run()
@@ -409,8 +409,10 @@ class WithProfile(unittest.TestCase):
 
 
 class OwnStatus(unittest.TestCase):
+    OK = {"state": "ok", "at": "2026-10-19T18:00:00Z", "via": "run", "recovered": None}
+
     def info(self, **kw):
-        base = {"channels": ["ntfy"], "delivery": {"at": "2026-10-19T18:00:00Z", "results": {"ntfy": {"ok": True}}},
+        base = {"channels": ["ntfy"], "channel_health": {"ntfy": self.OK},
                 "access": {"state": "ok", "anon_read": "ok", "anon_write": "ok"},
                 "run": {"at": "2026-10-19T19:00:00Z", "addons": 4}}
         base.update(kw)
@@ -420,9 +422,13 @@ class OwnStatus(unittest.TestCase):
         return {i["id"]: i["state"] for i in doc["items"]}
 
     def test_passes_the_boards_rules(self):
+        failed = {"state": "failed", "since": "2026-10-19T17:00:00Z", "at": "2026-10-19T18:00:00Z", "via": "run"}
         for info in (self.info(), self.info(channels=[]), self.info(access={"anon_read": "warning"}),
-                     self.info(delivery={"at": "2026-10-19T18:00:00Z", "results": {"ntfy": {"ok": False, "reason": "rejected"},
-                                                                                   "mail": {"ok": False, "reason": "http-502"}}})):
+                     self.info(channels=["ntfy", "mail"], channel_health={"ntfy": dict(failed, reason="rejected"),
+                                                                          "mail": dict(failed, reason="http-502")}),
+                     self.info(channels=["ntfy", "mail"], channel_health={"ntfy": {"state": "unknown"}}),
+                     self.info(channel_health={"ntfy": dict(self.OK, via="test", recovered={"since": "2026-10-19T17:00:00Z",
+                                                                                           "reason": "no-mta"})})):
             for lang in ("en", "de"):
                 doc = hsstatus.localize(hsstatus.status_file(info, "0.1.0"), lang, NOW)
                 good, st = hslib.validate_status(json.dumps(doc), "host-settings")
@@ -435,19 +441,32 @@ class OwnStatus(unittest.TestCase):
 
     def test_items(self):
         doc = hsstatus.document(self.info(), "en", "0.1.0")
-        self.assertEqual(self.states(doc), {"setup": "ok", "delivery": "ok", "access": "ok", "run": "ok"})
+        self.assertEqual(self.states(doc), {"setup": "ok", "ntfy": "ok", "access": "ok", "run": "ok"})
         self.assertEqual(doc["summary"], "Messages go to ntfy.")
+        self.assertEqual([i["detail"] for i in doc["items"] if i["id"] == "ntfy"],
+                         ["Accepted the last message on 19 Oct at 18:00 UTC."])
         doc = hsstatus.document(self.info(channels=["ntfy", "mail"], access={"anon_write": "warning"}), "de", "0.1.0")
         self.assertEqual(self.states(doc)["access"], "warning")
         self.assertEqual(doc["summary"], "Braucht Aufmerksamkeit: Schutz des Themas.")
         self.assertIn("Nachrichten hineinschicken", [i for i in doc["items"] if i["id"] == "access"][0]["detail"])
-        doc = hsstatus.document(self.info(channels=["mail"], delivery=None, access=None), "en", "0.1.0")
+        # A channel without a record is not confirmed: none, never ok.
+        self.assertEqual((self.states(doc)["mail"], [i["detail"] for i in doc["items"] if i["id"] == "mail"]),
+                         ("none", ["Nicht bestätigt: Mit den jetzigen Einstellungen hat der Kanal noch keine Nachricht und "
+                                   "keinen Test angenommen."]))
+        doc = hsstatus.document(self.info(channels=["mail"], channel_health={}, access=None), "en", "0.1.0")
         self.assertNotIn("access", self.states(doc))
-        self.assertEqual(self.states(doc)["delivery"], "none")
-        bad = hsstatus.document(self.info(delivery={"at": "x", "results": {"ntfy": {"ok": False, "reason": "rejected"}}}),
-                                "en", "0.1.0")
-        self.assertEqual([i["detail"] for i in bad["items"] if i["id"] == "delivery"],
-                         ["Could not be sent: ntfy (refused (token or rights))."])
+        self.assertEqual(self.states(doc)["mail"], "none")
+        bad = hsstatus.document(self.info(channel_health={"ntfy": {"state": "failed", "since": "2026-10-19T17:00:00Z",
+                                                                   "at": "2026-10-19T18:00:00Z", "via": "run",
+                                                                   "reason": "rejected"}}), "en", "0.1.0")
+        self.assertEqual(bad["summary"], "Needs attention: ntfy.")
+        self.assertEqual([i["detail"] for i in bad["items"] if i["id"] == "ntfy"],
+                         ["Failing since 19 Oct at 17:00 UTC: refused (token or rights). Runs with nothing to send do "
+                          "not end this; the next message it accepts, or a test in Host Settings, does."])
+        again = hsstatus.document(self.info(channel_health={"ntfy": dict(self.OK, via="test", recovered={
+            "since": "2026-10-19T17:00:00Z", "reason": "rejected"})}), "de", "0.1.0")
+        self.assertEqual([i["detail"] for i in again["items"] if i["id"] == "ntfy"],
+                         ["Hat die Testnachricht am 19.10. um 18:00 UTC angenommen, nach Fehlern seit 19.10. um 17:00 UTC."])
         self.assertEqual(hsstatus.document(self.info(channels=[]), "en", "0.1.0")["summary"], "Not set up yet.")
 
     def test_an_old_run_is_a_warning(self):

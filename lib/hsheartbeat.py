@@ -59,6 +59,7 @@ WHY = {
     "config": "the settings could not be read",
     "collect": "reading the add-ons failed",
     "delivery": "a message could not be sent",
+    "channel": "a channel has not worked since it failed",
     "state": "the state could not be saved",
     "error": "the run failed",
 }

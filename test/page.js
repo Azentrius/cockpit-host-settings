@@ -53,7 +53,7 @@ function fresh(extra) {
     return Object.assign({
         root: true, config: { ntfy_url: null, ntfy_topic: null, mail_to: null, language: "en" }, bad_lines: [],
         token: false, timer: "inactive", next: null, running: false, host: "server",
-        smtp: { listening: false, sendmail: false }, last: null, check: null, test_mail: null,
+        smtp: { listening: false, sendmail: false }, last: null, channels: {}, check: null, test_mail: null,
         docs: "https://docs.ntfy.sh/install/", profile: noProfile(),
     }, extra || {});
 }
@@ -83,15 +83,18 @@ function ready(extra) {
                          { id: "publish", result: "ok", code: 200, reason: "sent" }, { id: "anon-read", result: "ok", code: 403, reason: "protected" },
                          { id: "anon-write", result: "ok", code: 403, reason: "protected" }, { id: "token", result: "ok", code: 200, reason: "write-only" }],
                  access: { state: "ok", anon_read: "ok", anon_write: "ok" } },
-        test_mail: { at: "2026-10-19T18:10:00Z", channel: "mail", result: { ok: true, code: null, reason: "sent" } },
+        test_mail: { at: "2026-10-19T18:10:00Z", channel: "mail", target: "ops@example.com", result: { ok: true, code: null, reason: "sent" } },
+        // Each channel as `show` judges it (lib/hschannels.py, health()).
+        channels: { ntfy: { state: "ok", at: "2026-10-19T18:30:00Z", via: "run", recovered: null },
+                    mail: { state: "ok", at: "2026-10-19T18:30:00Z", via: "run", recovered: null } },
     }, extra || {}));
 }
 // What `host-settings.py status --lang xx` says.
 function statusDoc(lang) {
     return {
         schema: 1, addon: "host-settings", label: "Host Settings", version: "0.1.0", checked_at: "2026-10-19T19:00:00Z",
-        state: "warning", summary: lang === "de" ? "Braucht Aufmerksamkeit: Letzte Nachricht." : "Needs attention: Last message.",
-        items: [{ id: "delivery", state: "warning", title: lang === "de" ? "Letzte Nachricht" : "Last message", detail: "ntfy (" + EVIL + ")",
+        state: "warning", summary: lang === "de" ? "Braucht Aufmerksamkeit: E-Mail." : "Needs attention: E-mail.",
+        items: [{ id: "mail", state: "warning", title: lang === "de" ? "E-Mail" : "E-mail", detail: "Failing since (" + EVIL + ")",
                   checked_at: "2026-10-19T19:00:00Z", stale_after: 900, link: "#/notifications" }],
     };
 }

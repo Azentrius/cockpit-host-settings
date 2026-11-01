@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-A check that the target profile names counts only when its add-on reports it, and a check that is
-not supported is no longer possible.
+A check that the target profile names counts only when its add-on reports it, a check that is not
+supported is no longer possible, and a channel that failed stays a failure until it works again: a
+run with nothing to send no longer makes it look fine.
 
 - **Named checks:** where the profile expects a check (`security/exposure`) and its add-on answers
   without it, that check is a gap of its own: one message "Check no longer possible · Security
@@ -23,6 +24,26 @@ not supported is no longer possible.
   check is not reported", or the add-on's reason.
 - **Tests:** the shared answers of Status Board for named checks (`ext-expect-*.json`), taken over
   byte for byte into `test/fixtures/board`, run through the notifier for every case.
+- **Fix, a failure forgotten by the next run:** when ntfy took a message and e-mail did not, the
+  watchdog heard of the failure once, and the next run, with nothing to send, signalled success
+  again. Now each channel keeps its own health in `last.json` (`channels`), judged in every run
+  whether it has something to send or not. A channel that did not accept a message or a test
+  stays failing, in the status and in the watchdog's signal ("a channel has not worked since it
+  failed"), until it accepts a message again or a test on the page ("Check connection", "Send a
+  test message"). That ends it once, with one recovery in the journal, in the status and at the
+  watchdog, and only for that channel. The channel that took the message does not get it twice.
+- **A result belongs to its target:** each result keeps the target it was made with (ntfy's server
+  and topic, the e-mail address; never the token). A test that ran with settings changed since, or
+  a new address, ends no failure, and a channel not confirmed with its settings shows as not
+  confirmed, never as working. A channel taken out of the settings no longer counts; that is
+  recorded as a change, not as a repair.
+- **Status:** the item "Last message" gives way to one item per channel, `ntfy` and `mail`. The
+  page shows each channel's state in its card, the overview names a failing channel, and the page
+  and the README tell a run, a channel accepting a message and a person reading it apart.
+- **`last.json`** keeps format 1. A file of 0.2.0 or 0.1.0 is read on: a channel that did not take
+  the last message stays failing, one that took it is not confirmed yet, since those versions
+  kept no target. Going back to 0.2.0 keeps the new records, and what 0.2.0 sent is taken in when
+  this version comes back. The update from 0.2.0, and back to it, is tested in CI as well.
 
 ## 0.2.0 – 2026-10-26
 

@@ -54,6 +54,7 @@ from datetime import datetime, timezone
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hschannels  # noqa: E402
 import hsheartbeat  # noqa: E402
 import hslib  # noqa: E402
 import hsproc  # noqa: E402
@@ -310,6 +311,11 @@ def do_show(rest, conf=CONF, token=TOKEN, state_dir=STATE_DIR, run=hsproc.run, p
         "host": hostname(), "smtp": {"listening": smtp_listening(run), "sendmail": os.path.exists("/usr/sbin/sendmail")},
         "last": {k: last.get(k) for k in ("baseline_at", "run", "delivery", "access", "seen", "coverage")}
         if last else None,
+        # Each channel set up as the notifier knows it, judged against the settings set now (a
+        # result for another target does not count, a delivery of 0.2.0 is taken in as the next
+        # run takes it): ok, failed or unknown; never the target. Nothing is written here.
+        "channels": hschannels.health(hschannels.reconcile(hschannels.records_of(last.get("channels")), cfg,
+                                                           last.get("delivery"), time.time())[0], cfg),
         "check": read_json(os.path.join(state_dir, "test-ntfy.json")),
         "test_mail": read_json(os.path.join(state_dir, "test-mail.json")),
         "docs": hslib.NTFY_DOCS,

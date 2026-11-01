@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """The status contract of the Azentrius add-ons (schema 1) for Host Settings
-itself: whether messages are set up, whether the last one went out, whether
-the ntfy topic is closed to anyone without a login, whether the watchdog took
-the last signal, and when the notifier last ran. Status Board reads it through
+itself: whether messages are set up, whether each channel accepted the last
+message or test (a failure stays until it accepts again), whether the ntfy
+topic is closed to anyone without a login, whether the watchdog took the last
+signal, and when the notifier last ran. Status Board reads it through
 `host-settings.py status --lang xx`.
 
 Lives in /usr/lib/cockpit-host-settings (root-owned). Standard library only,
@@ -38,10 +39,14 @@ T = {
         "setup.title": "Channels",
         "setup.ok": "Messages about the add-ons of this host go to {channels}.",
         "setup.none": "No channel is set up: set up ntfy or e-mail in Host Settings.",
-        "delivery.title": "Last message",
-        "delivery.none": "No message sent yet.",
-        "delivery.ok": "Sent on {when}.",
-        "delivery.failed": "Could not be sent: {list}.",
+        "ntfy.title": "ntfy", "mail.title": "E-mail",
+        "chan.ok.run": "Accepted the last message on {when}.",
+        "chan.ok.test": "Accepted the test message on {when}.",
+        "chan.again.run": "Accepted a message again on {when}, after failing since {since}.",
+        "chan.again.test": "Accepted the test message on {when}, after failing since {since}.",
+        "chan.failed": "Failing since {since}: {why}. Runs with nothing to send do not end this; the next "
+                       "message it accepts, or a test in Host Settings, does.",
+        "chan.unknown": "Not confirmed: it has not accepted a message or a test with the settings set now.",
         "access.title": "Protection of the topic",
         "access.none": "Not checked yet: “Check connection” in Host Settings.",
         "access.ok": "Closed to anyone without a login.",
@@ -52,6 +57,7 @@ T = {
         "heartbeat.none": "Set up; no signal sent yet.",
         "heartbeat.ok": "The watchdog took the last signal on {when}.",
         "heartbeat.told": "The watchdog was told on {when} that a run failed.",
+        "heartbeat.toldChannel": "The watchdog was told on {when} that a channel is failing.",
         "heartbeat.failed": "The last signal did not reach the watchdog: {why}.",
         "heartbeat.invalid": "The watchdog's settings do not hold: set it up again in Host Settings.",
         "summary.watchdog": "No channel: only a watchdog gets a signal after every run.",
@@ -82,10 +88,15 @@ T = {
         "setup.title": "Kanäle",
         "setup.ok": "Nachrichten über die Add-ons dieses Hosts gehen an {channels}.",
         "setup.none": "Kein Kanal eingerichtet: Richten Sie ntfy oder E-Mail in Host Settings ein.",
-        "delivery.title": "Letzte Nachricht",
-        "delivery.none": "Noch keine Nachricht verschickt.",
-        "delivery.ok": "Verschickt am {when}.",
-        "delivery.failed": "Ließ sich nicht verschicken: {list}.",
+        "ntfy.title": "ntfy", "mail.title": "E-Mail",
+        "chan.ok.run": "Hat die letzte Nachricht am {when} angenommen.",
+        "chan.ok.test": "Hat die Testnachricht am {when} angenommen.",
+        "chan.again.run": "Hat am {when} wieder eine Nachricht angenommen, nach Fehlern seit {since}.",
+        "chan.again.test": "Hat die Testnachricht am {when} angenommen, nach Fehlern seit {since}.",
+        "chan.failed": "Gestört seit {since}: {why}. Läufe ohne Nachricht beenden das nicht; die nächste "
+                       "angenommene Nachricht oder ein Test in Host Settings beendet es.",
+        "chan.unknown": "Nicht bestätigt: Mit den jetzigen Einstellungen hat der Kanal noch keine Nachricht und keinen "
+                        "Test angenommen.",
         "access.title": "Schutz des Themas",
         "access.none": "Noch nicht geprüft: „Verbindung prüfen“ in Host Settings.",
         "access.ok": "Ohne Anmeldung geschlossen.",
@@ -96,6 +107,7 @@ T = {
         "heartbeat.none": "Eingerichtet; noch kein Signal verschickt.",
         "heartbeat.ok": "Der Wächter hat das letzte Signal am {when} angenommen.",
         "heartbeat.told": "Der Wächter erfuhr am {when}, dass ein Lauf fehlschlug.",
+        "heartbeat.toldChannel": "Der Wächter erfuhr am {when}, dass ein Kanal gestört ist.",
         "heartbeat.failed": "Das letzte Signal erreichte den Wächter nicht: {why}.",
         "heartbeat.invalid": "Die Einstellungen des Wächters stimmen nicht: Richten Sie ihn in Host Settings neu ein.",
         "summary.watchdog": "Kein Kanal: Nur ein Wächter bekommt nach jedem Lauf ein Signal.",
@@ -160,10 +172,24 @@ def channels_text(lang, chans):
     return t(lang, "and").join(t(lang, "channel." + c) for c in chans)
 
 
+def channel_text(lang, v):
+    """The detail of a channel's item from its health (lib/hschannels.py, health())."""
+    if v.get("state") == "failed":
+        return t(lang, "chan.failed", since=when(lang, hslib.parse_time(v["since"])), why=reason_text(lang, v))
+    if v.get("state") == "ok":
+        via = "test" if v.get("via") == "test" else "run"
+        r = v.get("recovered")
+        if r:
+            return t(lang, "chan.again." + via, when=when(lang, hslib.parse_time(v["at"])),
+                     since=when(lang, hslib.parse_time(r["since"])))
+        return t(lang, "chan.ok." + via, when=when(lang, hslib.parse_time(v["at"])))
+    return t(lang, "chan.unknown")
+
+
 def items_of(info, lang):
-    """The items for what the notifier knows (`info`): channels, delivery {at, results},
-    access {state, anon_read, anon_write} or None, run {at, addons}, heartbeat {invalid, at,
-    signal, result} or None (no watchdog)."""
+    """The items for what the notifier knows (`info`): channels, channel_health {channel: view}
+    (lib/hschannels.py, health()), access {state, anon_read, anon_write} or None, run {at,
+    addons}, heartbeat {invalid, at, signal, why, result} or None (no watchdog)."""
     at = info["run"]["at"]
     chans = info.get("channels") or []
     out = []
@@ -180,16 +206,15 @@ def items_of(info, lang):
     else:
         out.append(item("setup", "none", t(lang, "setup.none")))
 
-    d = info.get("delivery")
-    if not d or not d.get("results"):
-        out.append(item("delivery", "none", t(lang, "delivery.none")))
-    else:
-        bad = [(c, r) for c, r in sorted(d["results"].items()) if not r.get("ok")]
-        if bad:
-            lst = ", ".join(f"{t(lang, 'channel.' + c)} ({reason_text(lang, r)})" for c, r in bad)
-            out.append(item("delivery", "warning", t(lang, "delivery.failed", list=lst)))
-        else:
-            out.append(item("delivery", "ok", t(lang, "delivery.ok", when=when(lang, hslib.parse_time(d["at"])))))
+    # Each channel set up, judged whether the last run sent anything or not: ok once it accepted
+    # the last message or a test with the settings set now (accepted by the ntfy server or the
+    # mail server, which says nothing about anyone reading it), a warning from a failure until it
+    # accepts again, none while that is not known.
+    health = info.get("channel_health") or {}
+    for c in chans:
+        v = health.get(c) or {"state": "unknown"}
+        state = {"ok": "ok", "failed": "warning"}.get(v.get("state"), "none")
+        out.append(item(c, state, channel_text(lang, v)))
 
     if "ntfy" in chans:
         a = info.get("access") or {}
@@ -214,8 +239,9 @@ def items_of(info, lang):
         elif not r or sent_at is None:
             out.append(item("heartbeat", "none", t(lang, "heartbeat.none")))
         elif r.get("ok"):
-            out.append(item("heartbeat", "ok", t(lang, "heartbeat.told" if hb.get("signal") == "failure" else "heartbeat.ok",
-                                                 when=when(lang, sent_at))))
+            key = "heartbeat.ok" if hb.get("signal") != "failure" else \
+                "heartbeat.toldChannel" if hb.get("why") == "channel" else "heartbeat.told"
+            out.append(item("heartbeat", "ok", t(lang, key, when=when(lang, sent_at))))
         else:
             out.append(item("heartbeat", "warning", t(lang, "heartbeat.failed", why=reason_text(lang, r))))
 

@@ -61,6 +61,12 @@ second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
   priority, warnings with the default one, "OK again" with a low one.
 - **E-mail:** handed to the mail server of the server itself on `localhost:25` (postfix or exim,
   for example), which delivers or relays it.
+- **Keeps each channel's health:** ntfy and e-mail are judged on their own, also in runs with
+  nothing to send. A channel that did not accept a message or a test stays failing until it
+  accepts a message again, or a test on the page ("Check connection", "Send a test message"),
+  with the settings set now; neither a run with nothing to send nor a new address alone ends it.
+  A channel not yet confirmed with its settings is shown as not confirmed, never as working; one
+  taken out of the settings no longer counts.
 - **Checks the way to ntfy** ("Check connection"): the server answers, the connection is
   encrypted, the token may publish, the topic is closed to anyone without a login for reading
   and, on request, for sending, and the token may not read.
@@ -78,13 +84,15 @@ second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
 - **Tells an external watchdog that it works** (optional): after every run a signal to
   [Healthchecks](https://healthchecks.io/) or a push monitor of
   [Uptime Kuma](https://github.com/louislam/uptime-kuma), success once the run is done and its
-  state saved, failure when it could not run or a message did not reach every channel. The
-  watchdog raises the alarm when a failure comes or the signals stop, so a notifier that hangs,
-  fails or is switched off does not go unnoticed.
+  state saved, failure when it could not run or a channel set up is failing, in every run until
+  that channel accepts a message or a test again. The watchdog raises the alarm when a failure
+  comes or the signals stop, so a notifier that hangs, fails or is switched off does not go
+  unnoticed.
 - **Reports its own state** through the status contract: Status Board shows whether messages are
-  set up, whether the last one went out, whether the topic is closed, whether the watchdog took
-  the last signal and when the notifier last ran, and reads the server's target profile from it;
-  Cockpit's menu shows it as an icon.
+  set up, whether each channel works (it accepted the last message or a test, it is failing since
+  a given time, or it is not confirmed yet), whether the topic is closed, whether the watchdog
+  took the last signal and when the notifier last ran, and reads the server's target profile from
+  it; Cockpit's menu shows it as an icon.
 
 ## What it does not do
 
@@ -114,7 +122,15 @@ Host Settings on web1
 ```
 
 Several changes in one run come as one message ("web1: 3 changes"). A message that could not go
-out on any channel is sent again on the next run.
+out on any channel is sent again on the next run. One that a channel took is not sent again, also
+not to a channel that failed: that channel misses it and stays failing until it accepts a message
+or a test.
+
+A run, a channel that accepts a message and a person who reads it are three different things. A
+run reads the add-ons every 5 minutes and sends a message only when something changed. A channel
+has accepted a message when the ntfy server or the mail server of this server took it. Whether
+anyone read it, neither Host Settings nor the watchdog can tell: a quiet watchdog says that the
+notifier runs and its channels accept messages, not that someone took note.
 
 ## How it works
 
@@ -125,11 +141,12 @@ out on any channel is sent again on the next run.
   `/var/lib/cockpit-host-settings`.
 - With a watchdog set up, each run that holds the notifier's lock ends with its signal: success
   only after the state is written, failure when the settings cannot be read, the add-ons cannot be
-  collected, the state cannot be written or a message did not reach every channel. A run that
-  finds another one running sends nothing.
+  collected, the state cannot be written or a channel set up is failing. A run that finds another
+  one running sends nothing.
 - "Check connection", "Send a test message" and "Send a test signal" run in
   `cockpit-host-settings-test@ntfy.service`, `@mail.service` and `@heartbeat.service`, as the same
-  user as the notifier.
+  user as the notifier and under its lock. The result of the first two counts for the channel's
+  health, for the address it was made with.
 - The page calls only the fixed verbs of `/usr/lib/cockpit-host-settings/host-settings.py`: the
   settings in `/etc/cockpit-host-settings/notify.conf`, the token, the watchdog, the timer, a run
   now, the checks, the target profile in `/etc/cockpit-host-settings/profile.conf`.
@@ -179,7 +196,7 @@ system by itself.
 
 | | Systems | What is checked |
 |---|---|---|
-| **Tested** | Ubuntu 24.04 (GitHub runner) with systemd, ntfy 2.32 in Docker and postfix | the package with its real units, listed by Cockpit (job `e2e`): the page's commands on the ntfy server as shown, "Check connection" against a topic closed without a login and an open one, the first run's summary through ntfy and e-mail, a change told once, a run without a change silent, a target profile's gaps and an expected add-on that goes away told once each, the status as `nobody` with the profile, switching off, the token in no file but its own and in no log, removing the package |
+| **Tested** | Ubuntu 24.04 (GitHub runner) with systemd, ntfy 2.32 in Docker and postfix | the package with its real units, listed by Cockpit (job `e2e`): the page's commands on the ntfy server as shown, "Check connection" against a topic closed without a login and an open one, the first run's summary through ntfy and e-mail, a change told once, a run without a change silent, a target profile's gaps and an expected add-on that goes away told once each, e-mail failing while ntfy takes a message and staying a failure until a test message, the status as `nobody` with the profile, switching off, the token in no file but its own and in no log, removing the package; the update from 0.1.0 and 0.2.0 and back to 0.2.0 (job `upgrade`) |
 | **Tested** | Rocky Linux 9.8 and 10.2 (for RHEL 9 and 10) in a VM with SELinux enforcing, ntfy 2.32 in Podman and postfix | the same as job `e2e`, with the `.rpm` and the distribution's Cockpit, and no SELinux denial from before the install to after the removal (job `e2e-el`, `tools/vm.sh`) |
 | **Tested** | Python 3.8 and 3.12 | the notifier, the helper and the status against Status Board's own test answers (job `python-min` and `make check`) |
 | **Checked** | four Ubuntu servers (24.04 and 26.04) | the status verbs of Cron Jobs, Image Update Monitor, Update Gaps and Security Monitor answer as an unprivileged user without network |
@@ -322,7 +339,12 @@ Removing the package removes its state and keeps the settings, the token and the
   here (`heartbeat remove`) or the package.
 - The watchdog: its last answer on the page and in Status Board (item "Watchdog"); "not taken"
   with the reason (the watchdog does not know the check, too many signals, a redirect, no answer,
-  certificate not valid). It never changes what the messages tell.
+  certificate not valid). It never changes what the messages tell, nor a channel's health.
+- A channel shown as failing: fix the cause, then "Check connection" (ntfy) or "Send a test
+  message" (e-mail), or `sudo … check ntfy` and `sudo … test mail`. A run with nothing to send
+  does not end it, nor does a new address alone; until then the watchdog gets a failure after
+  every run. Taking the channel out of the settings stops it from counting, without calling it
+  repaired.
 - A topic shown as open: set `auth-default-access: deny-all` on the ntfy server and give the
   server's user write access to its topic only, then "Check connection" again.
 
@@ -378,6 +400,9 @@ The screenshots in `docs/img` come from the CI artifact `screenshots` of the tes
 - The watchdog is tested against Uptime Kuma 2.5.7 (in CI, its push monitor made through its own
   API) and against a stand-in for Healthchecks' pinging API, not against Healthchecks itself. For
   Uptime Kuma 1.x the push URL is the same and the signal a GET, as 1.x needs, but untested.
+- A message that one channel accepted is not sent again to a channel that failed (there is no
+  queue per channel): that channel misses it, and stays failing until it accepts a message or a
+  test. Retries, grouping of alarms, quiet times for maintenance and escalation are not there.
 - The tab for Cockpit's own settings is not there yet.
 
 ## License
