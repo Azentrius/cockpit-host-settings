@@ -23,8 +23,8 @@ Playwright drives Chromium through Cockpit's own login on https://localhost:9090
 H1 (with a Status Board that has the rule, notReportedChecks in lib/status.js): the profile of
 this host expects security/suite-unreported (core.py, step 12), which Security Monitor does not
 report. In 1 that is a warning task of this host's coverage that names the check as not reported;
-in 3, with "Only what needs attention" on, this host's Security Monitor tile is a warning and its
-coverage line names the check. Without the rule this is noted and not checked, unless the version
+in 3, with "Only what needs attention" on, this host's Security Monitor tile stays and its
+coverage line names the check as not reported. Without the rule this is noted and not checked, unless the version
 manifest requires "h1".
 
 A missing prerequisite (finding 6379/tcp not open, no e2e-peer, no user) fails the test.
@@ -347,9 +347,10 @@ def main():
                     if (!t) return null; const l = t.querySelector('.sb-tile__head .az-label');
                     const h = t.closest('[data-host]'); const f = h ? h.querySelector('.sb-host__figure') : null;
                     return { cls: l ? l.className : '', line: f ? f.innerText.trim() : null }; }""")
-                check(bool(mine) and "az-label--warning" in mine.get("cls", "") and UNREPORTED in (mine.get("line") or ""),
-                      "H1: with the switch on, this host's Security Monitor is a warning and its coverage line names %s"
-                      % UNREPORTED, mine)
+                # The tile itself is a danger here (finding 6379/tcp); the gap is in the coverage line.
+                check(bool(mine) and "%s not reported" % UNREPORTED in (mine.get("line") or ""),
+                      "H1: with the switch on, this host's Security Monitor stays and its coverage line names %s as not "
+                      "reported" % UNREPORTED, mine)
             summary = b.evaluate("() => (document.querySelector('#coverage') || {}).innerText || ''")
             note("the board's coverage: " + " ".join(summary.split())[:300])
         shot(page, "hosts-only-notable")

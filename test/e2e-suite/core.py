@@ -69,6 +69,7 @@ import copy
 import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -374,7 +375,8 @@ def run_line():
     seen = []
     for _ in range(25):
         seen += journal_new()
-        found = [line for line in seen if " add-ons" in line]
+        # Not systemd's "Finished ..." line, whose unit description names the add-ons as well.
+        found = [line for line in seen if re.match(r"[0-9]+ add-ons\b", line)]
         if found:
             return found[-1]
         time.sleep(0.2)
