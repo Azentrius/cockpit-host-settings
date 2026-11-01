@@ -25,7 +25,7 @@
     // --- Configuration -----------------------------------------------------
     // The one place for the version (SemVer). index.html loads every script and
     // stylesheet with ?v=VERSION; tools/check-version.sh keeps them in step.
-    const VERSION = "0.2.0";
+    const VERSION = "0.3.0";
     const HELPER = "/usr/lib/cockpit-host-settings/host-settings.py";
     const STATUS_PATH = "/var/lib/cockpit-host-settings/status.json";
     const NTFY_DOCS = "https://docs.ntfy.sh/install/";

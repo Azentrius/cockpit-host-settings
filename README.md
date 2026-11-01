@@ -2,20 +2,25 @@
 
 A [Cockpit](https://cockpit-project.org) add-on that sends a message through
 [ntfy](https://ntfy.sh), e-mail or both when an Azentrius add-on on a server needs attention: when
-a finding turns to a warning or a danger, and when it is OK again. It reads what
+a finding turns to a warning or a danger, when it is OK again, and when a check the server's
+target profile expects can no longer be made. It reads what
 [Cron Jobs](https://github.com/Azentrius/cockpit-cronjobs),
 [Image Update Monitor](https://github.com/Azentrius/cockpit-image-update-monitor),
 [Update Gaps](https://github.com/Azentrius/cockpit-update-gaps),
 [Security Monitor](https://github.com/Azentrius/cockpit-security-monitor) and any other add-on with
 the shared status contract report on the same server, the way
-[Status Board](https://github.com/Azentrius/cockpit-status-board) shows them.
+[Status Board](https://github.com/Azentrius/cockpit-status-board) shows them, and gives Status
+Board the target profile. An external watchdog can get a signal after every run, so that a
+notifier that stops is noticed.
 
 Host Settings is installed on every server. Its notifier runs as a user of its own, never as
-root. The page sets up the channels, shows what the ntfy server needs for this server and checks
-that the topic is closed to anyone without a login. It has one tab so far, Notifications; a
+root. The page sets up the channels, the target profile and the watchdog, shows what the ntfy
+server needs for this server and checks that the topic is closed to anyone without a login. A
+channel that accepted a message, or a quiet watchdog, shows that the notifier works, not that
+someone read the message (see [Messages](#messages)). It has one tab so far, Notifications; a
 second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
 
-![Overview with the regular check and the last message, ntfy with the last check of the connection](docs/img/overview.png)
+![Overview with the regular check and the last message, ntfy with the channel's state and the last check of the connection](docs/img/overview.png)
 
 | ![The same page in the dark theme](docs/img/overview-dark.png) | ![The page on a phone](docs/img/mobile.png) |
 |---|---|

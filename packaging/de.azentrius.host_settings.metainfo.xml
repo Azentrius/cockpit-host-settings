@@ -6,29 +6,37 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>Apache-2.0</project_license>
   <name>Host Settings</name>
-  <summary>Messages through ntfy or e-mail when an Azentrius add-on on a server needs attention</summary>
-  <summary xml:lang="de">Nachrichten per ntfy oder E-Mail, wenn ein Azentrius-Add-on auf einem Server Aufmerksamkeit braucht</summary>
+  <summary>Target profile, watchdog and ntfy or e-mail messages on findings and coverage gaps</summary>
+  <summary xml:lang="de">Sollprofil, Wächter und Nachrichten per ntfy oder E-Mail zu Befunden und Prüflücken</summary>
   <description>
     <p>
       Every 5 minutes the notifier reads the status of the Azentrius add-ons on the server,
       through the status contract they share, and sends a message through ntfy, e-mail or both
-      when a finding turns to a warning or a danger, and when it is OK again. The messages hold
-      only what the add-ons report and the server's name. The page sets up the channels, shows
-      the commands the ntfy server needs for this server's user, topic and token, and checks that
-      the topic is closed to anyone without a login. An external watchdog (Healthchecks or Uptime
-      Kuma) can get a signal after every run, so that a notifier that stops or fails is noticed.
-      The notifier runs as a user of its own, never as root.
+      when a finding turns to a warning or a danger, and when it is OK again. With a target profile
+      (the server's roles and the add-ons and checks they expect) it also tells when an expected
+      check can no longer be made, and when it can again; Status Board reads the profile from it.
+      The messages hold only what the add-ons report and the server's name. The page sets up the
+      channels and the profile, shows the commands the ntfy server needs for this server's user,
+      topic and token, checks that the topic is closed to anyone without a login, and shows whether
+      each channel accepted its last message. An external watchdog (Healthchecks or Uptime Kuma)
+      can get a signal after every run, so that a notifier that stops or fails is noticed. Neither
+      the watchdog nor a channel can tell whether someone read a message. The notifier runs as a
+      user of its own, never as root.
     </p>
     <p xml:lang="de">
       Alle 5 Minuten liest der Notifier den Status der Azentrius-Add-ons auf dem Server über den
       gemeinsamen Status-Vertrag und schickt eine Nachricht per ntfy, E-Mail oder beides, wenn ein
-      Befund zur Warnung oder Gefahr wird und wenn er wieder in Ordnung ist. Die Nachrichten
-      enthalten nur, was die Add-ons melden, und den Namen des Servers. Die Seite richtet die Kanäle
-      ein, zeigt die Befehle, die der ntfy-Server für Benutzer, Thema und Token dieses Servers
-      braucht, und prüft, dass das Thema ohne Anmeldung geschlossen ist. Ein externer Wächter
-      (Healthchecks oder Uptime Kuma) kann nach jedem Lauf ein Signal bekommen, damit ein Notifier,
-      der ausfällt oder scheitert, bemerkt wird. Der Notifier läuft als eigener Benutzer, nie als
-      root.
+      Befund zur Warnung oder Gefahr wird und wenn er wieder in Ordnung ist. Mit einem Sollprofil
+      (die Rollen des Servers und die Add-ons und Prüfungen, die sie erwarten) meldet er auch, wenn
+      eine erwartete Prüfung nicht mehr möglich ist und wenn sie wieder möglich ist; Status Board
+      liest das Profil von ihm. Die Nachrichten enthalten nur, was die Add-ons melden, und den
+      Namen des Servers. Die Seite richtet die Kanäle und das Profil ein, zeigt die Befehle, die der
+      ntfy-Server für Benutzer, Thema und Token dieses Servers braucht, prüft, dass das Thema ohne
+      Anmeldung geschlossen ist, und zeigt, ob jeder Kanal seine letzte Nachricht angenommen hat.
+      Ein externer Wächter (Healthchecks oder Uptime Kuma) kann nach jedem Lauf ein Signal bekommen,
+      damit ein Notifier, der ausfällt oder scheitert, bemerkt wird. Ob jemand eine Nachricht
+      gelesen hat, können weder der Wächter noch ein Kanal sagen. Der Notifier läuft als eigener
+      Benutzer, nie als root.
     </p>
   </description>
   <extends>org.cockpit_project.cockpit</extends>
@@ -41,8 +49,8 @@
   <!-- The pictures come from tools/preview/shoot.py (CI artifact "screenshots"), kept in docs/img/. -->
   <screenshots>
     <screenshot type="default">
-      <caption>Overview and ntfy: the regular check, the last message, the last connection check</caption>
-      <caption xml:lang="de">Überblick und ntfy: Prüfung, letzte Nachricht, letzte Verbindungsprüfung</caption>
+      <caption>Overview and ntfy: the regular check, the last message, the channel's state and its last check</caption>
+      <caption xml:lang="de">Überblick und ntfy: Prüfung, letzte Nachricht, Kanalzustand und letzte Prüfung</caption>
       <image type="source" width="1440" height="1000">https://raw.githubusercontent.com/Azentrius/cockpit-host-settings/main/docs/img/overview.png</image>
     </screenshot>
     <screenshot>
