@@ -20,9 +20,17 @@ Playwright drives Chromium through Cockpit's own login on https://localhost:9090
      shows none of them either.
   5. No JavaScript error and no failed request of the board's or Security Monitor's files.
 
+H1 (with a Status Board that has the rule, notReportedChecks in lib/status.js): the profile of
+this host expects security/suite-unreported (core.py, step 12), which Security Monitor does not
+report. In 1 that is a warning task of this host's coverage that names the check as not reported;
+in 3, with "Only what needs attention" on, this host's Security Monitor tile is a warning and its
+coverage line names the check. Without the rule this is noted and not checked, unless the version
+manifest requires "h1".
+
 A missing prerequisite (finding 6379/tcp not open, no e2e-peer, no user) fails the test.
-Environment: ADMIN_USER, ADMIN_PW, PLAIN_USER, PLAIN_PW. Writes the screenshots, assertions.md and
-assertions.json to the folder given; exit 1 if a check failed.
+Environment: ADMIN_USER, ADMIN_PW, PLAIN_USER, PLAIN_PW, MANIFEST (the version manifest of the
+run). Writes the screenshots, assertions.md, assertions.json and scenarios.json to the folder
+given; exit 1 if a check failed.
 
     python3 test/e2e-suite/ui.py OUT/ui
 """
@@ -51,12 +59,17 @@ ROW = "sm-port-tcp-6379"
 LINK = "#/exposure/6379-tcp"
 # What only administrative access shows: the public address and the chains of the rules.
 PROTECTED = ("203.0.113.10", "ufw-user-input", "ufw-before-input")
+BOARD_RULES = "/usr/share/cockpit/status-board/lib/status.js"
+PROFILE = "/etc/cockpit-host-settings/profile.conf"
+UNREPORTED = "suite-unreported"              # core.py, step 12
+GAP_HERE = "localhost/security/coverage"
 os.makedirs(OUT, exist_ok=True)
 
 checks = []
 problems = []
 shots = [0]
 LAST = {"page": None}
+scenarios = {}
 
 
 def check(ok, what, detail=""):
@@ -219,6 +232,32 @@ def prerequisites():
     return all(c["ok"] for c in checks if "check" in c)
 
 
+def h1_board():
+    """True when the board's part of H1 is checked: Status Board has the rule and the profile
+    expects security/suite-unreported. Without the rule it is noted, or fails when the version
+    manifest requires h1; a profile without the expectation fails (core.py step 12 sets it)."""
+    try:
+        with open(E.get("MANIFEST", ""), encoding="utf-8") as f:
+            required = json.load(f).get("required_scenarios") or []
+    except (OSError, ValueError):
+        required = []
+    what = "H1 on the board, a check the profile names that the add-on does not report"
+    if "notReportedChecks" not in read(BOARD_RULES):
+        if "h1" in required:
+            scenarios["h1-board"] = {"result": "failed", "what": what, "why": "required, not supported"}
+            check(False, "%s: the Status Board of this run has the rule (the version manifest requires h1)" % what)
+        else:
+            scenarios["h1-board"] = {"result": "not supported", "what": what,
+                                     "why": "the Status Board of this run does not have the rule; not required by the manifest"}
+            note("%s: not checked, the Status Board of this run does not have the rule (not required by the manifest)" % what)
+        return False
+    expected = any(line.split("=", 1)[-1].strip() == "security/" + UNREPORTED
+                   for line in read(PROFILE).splitlines() if line.strip().startswith("expect"))
+    scenarios["h1-board"] = {"result": "running", "what": what}
+    check(expected, "prerequisite of H1: the profile expects security/%s (core.py, step 12)" % UNREPORTED, read(PROFILE))
+    return expected
+
+
 def main():
     hostname = read("/proc/sys/kernel/hostname").strip()
     with sync_playwright() as p:
@@ -248,8 +287,13 @@ def main():
         g = keys.get(GAP) or {}
         check(g.get("group") == "warning" and "Security Monitor" in g.get("title", ""),
               "e2e-peer: Security Monitor missing although its profile expects it, a warning task", g)
-        here = keys.get("localhost/security/coverage") or {}
+        here = keys.get(GAP_HERE) or {}
         check(g.get("title") and here.get("title") != g.get("title"), "on this host Security Monitor is not missing", here)
+        h1 = h1_board()
+        if h1:
+            check(here.get("group") == "warning" and UNREPORTED in here.get("title", "") and "not reported" in here.get("title", ""),
+                  "H1: this host's coverage task, a warning, names %s as not reported" % UNREPORTED, here)
+            note("H1: the task: %s / %s / %s" % (here.get("title"), here.get("detail"), here.get("sub")))
         shot(page, "tasks-admin")
 
         # 2. The jump into the open frame, to the port.
@@ -298,6 +342,14 @@ def main():
             line = b.evaluate("""() => { const s = document.querySelector('[data-host="e2e-peer"] .sb-host__figure');
                 return s ? s.innerText.trim() : null; }""")
             check(bool(line) and "Security Monitor" in line, "and its coverage line names the gap", line)
+            if h1:
+                mine = b.evaluate("""() => { const t = document.querySelector('[data-key="localhost/security"]');
+                    if (!t) return null; const l = t.querySelector('.sb-tile__head .az-label');
+                    const h = t.closest('[data-host]'); const f = h ? h.querySelector('.sb-host__figure') : null;
+                    return { cls: l ? l.className : '', line: f ? f.innerText.trim() : null }; }""")
+                check(bool(mine) and "az-label--warning" in mine.get("cls", "") and UNREPORTED in (mine.get("line") or ""),
+                      "H1: with the switch on, this host's Security Monitor is a warning and its coverage line names %s"
+                      % UNREPORTED, mine)
             summary = b.evaluate("() => (document.querySelector('#coverage') || {}).innerText || ''")
             note("the board's coverage: " + " ".join(summary.split())[:300])
         shot(page, "hosts-only-notable")
@@ -345,6 +397,11 @@ check(not problems, "no JavaScript error and no failed request of the board's or
 with open(os.path.join(OUT, "assertions.json"), "w", encoding="utf-8") as fh:
     json.dump(checks, fh, indent=1, ensure_ascii=False)
 failed = [c for c in checks if "check" in c and not c["ok"]]
+for s in scenarios.values():
+    if s["result"] == "running":
+        s["result"] = "failed" if any("H1" in c["check"] for c in failed) else "passed"
+with open(os.path.join(OUT, "scenarios.json"), "w", encoding="utf-8") as fh:
+    json.dump(scenarios, fh, indent=1, ensure_ascii=False)
 md = ["## E2E-1, step 10 (real Cockpit)", "",
       "%d checks, %d failed." % (sum(1 for c in checks if "check" in c), len(failed)), "",
       "| Check | Result |", "|---|---|"]

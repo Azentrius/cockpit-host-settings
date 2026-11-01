@@ -351,11 +351,16 @@ The screenshots in `docs/img` come from the CI artifact `screenshots` of the tes
    (`tools/check-version.sh` checks that the three agree).
 2. Merge to `main`.
 3. On GitHub: Actions › **release** › Run workflow (branch `main`). The workflow checks the version,
-   waits for the test workflow of that commit to pass, runs the tests, builds the `.deb`, the `.rpm`
+   waits for the test workflow and the shared suite (workflow `e2e-suite`, the three products
+   together) of that commit to pass, runs the tests, builds the `.deb`, the `.rpm`
    and the source archive `cockpit-host-settings-X.Y.Z.tar.gz` with `SHA256SUMS` and a signed build
    provenance, and creates the tag `vX.Y.Z` with a release whose notes come from `CHANGELOG.md`.
 4. packages.azentrius.com takes the packages from the release within an hour
    ([Azentrius/packages](https://github.com/Azentrius/packages)); it leaves pre-releases out.
+5. Put the released commit into the shared suite's combination,
+   `test/e2e-suite/suite-manifest.json` (a pull request here; the same after a release of Status
+   Board or Security Monitor), then move the pin of `suite.yml` in their `e2e-suite.yml` to the
+   merged commit (see `docs/INTERNALS.md`, "The shared suite").
 
 ## Known limits
 

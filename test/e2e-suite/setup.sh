@@ -20,8 +20,8 @@
 #     0600) and nowhere else;
 #   - a public address on a dummy interface (pub0 203.0.113.10/24): the "internet" of the scan,
 #     as in Security Monitor's own e2e job;
-#   - UFW on: incoming denied, 5432/tcp and 6379/tcp allowed (the ACCEPT rules the test's
-#     listeners will meet), with nothing listening there yet;
+#   - UFW on: incoming denied, 5432/tcp, 6379/tcp and 3306/tcp allowed (the ACCEPT rules the
+#     test's listeners will meet), with nothing listening there yet;
 #   - /run/sshd made at boot (the line Security Monitor names for a socket-activated sshd), so
 #     that the scan reads `sshd -T` every time;
 #   - the helpers of the test in /usr/local/lib/e2e-suite.
@@ -52,7 +52,7 @@ die() { echo "setup.sh: $*"; exit 1; }
 step "The helpers of the test"
 install -d -m 700 "$run"
 install -d -m 755 "$lib"
-install -m 755 "$here/listen.py" "$here/security_stub.py" "$here/no_packet_filter.sh" "$lib/"
+install -m 755 "$here/listen.py" "$here/security_stub.py" "$here/no_packet_filter.sh" "$here/smtp_sink.py" "$lib/"
 
 step "Two Cockpit users"
 # The runner image sets the runner's XDG folders for everyone in /etc/environment: with
@@ -170,6 +170,7 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw allow 5432/tcp comment 'e2e-suite listener A'
 ufw allow 6379/tcp comment 'e2e-suite listener B'
+ufw allow 3306/tcp comment 'e2e-suite listener C'
 ufw --force enable
 ufw status verbose
 ip -br addr

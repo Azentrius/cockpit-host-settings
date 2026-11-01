@@ -1,8 +1,9 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: Apache-2.0
-"""E2E-1, steps 1 to 9: Security Monitor's real scan and Host Settings' real notifier against a
-real ntfy server, on a throw-away machine prepared by test/e2e-suite/setup.sh (CI, workflow
-e2e-suite; never a server). As root:
+"""E2E-1, steps 1 to 9 and 11 to 13: Security Monitor's real scan and Host Settings' real notifier
+against a real ntfy server, on a throw-away machine prepared by test/e2e-suite/setup.sh (CI,
+reusable workflow suite.yml; never a server). Step 10 is test/e2e-suite/ui.py, which runs after
+this script and sees the state it leaves. As root:
 
     sudo env MANIFEST=OUT/manifest.json python3 -B test/e2e-suite/core.py OUT/core
 
@@ -35,8 +36,30 @@ real unit), every run of the notifier the page's "run" verb (the real unit, as i
   9. The stand-in answers for Security Monitor with a list that is not a list, then with a total
      the list does not reach (both with the item OK): no message, B stays open, A stays
      resolved; the real answer again: no message.
+ 11. No access: the stand-in ends with exit 77 (Security Monitor's status verb without access):
+     one message "Check no longer possible" for Security Monitor, which the profile expects;
+     nothing resolved, A and B as before. The real answer again: one message "Check possible
+     again", B still open, nothing told twice.
+ 12. H1, a check the profile names that the add-on does not report: the profile expects
+     security/suite-unreported, which Security Monitor never reports. With a Host Settings that
+     has the rule (hslib.not_reported_checks): one message "Check no longer possible", the
+     expected check is not reported; last.json has the gap with its check id; B as before; an
+     unchanged run: no message. The expectation stays for step 10, where a Status Board with
+     the rule shows the gap as a task.
+ 13. H5, two channels, one failing: e-mail set up next to ntfy, with no mail server on port 25.
+     Listener C (3306/tcp, a third port UFW allows) is a new finding: ntfy takes its one message,
+     e-mail fails; the status item of e-mail is a warning and the run's outcome names the failing
+     channel. An unchanged run: no message to ntfy, e-mail still failed, the outcome still names
+     it. Then a mail server (smtp_sink.py) and "Send a test message": e-mail recovers, once, by
+     the test; the next run sends nothing to either channel, names no failing channel and
+     records no second recovery. E-mail is taken out again, C closed and scanned.
 
-Writes to OUT: assertions.md and assertions.json; messages.json (every message on the topic);
+Steps 12 and 13 need a Host Settings with those rules. Without them the step notes so and checks
+nothing of the rule, unless the version manifest of the run requires the scenario
+(required_scenarios: "h1", "h5"; test/e2e-suite/suite-manifest.json), then it fails.
+
+Writes to OUT: assertions.md and assertions.json; scenarios.json (which of the scenarios h1 and
+h5 ran, passed, failed or were not supported); messages.json (every message on the topic);
 status/ (the status answers of both add-ons as nobody, at each point); last/ (last.json at each
 point); scan/ (what each scan found for the test ports, and its sources); stub/ (what the
 stand-in answered); environment.json. No credential is written there. Exit 1 when a check
@@ -69,15 +92,24 @@ SCAN_UNIT = "cockpit-security-scan.service"
 SCAN_DROPIN = "/run/systemd/system/cockpit-security-scan.service.d/e2e-suite.conf"
 NOTIFY_DROPIN = "/run/systemd/system/cockpit-host-settings-notify.service.d/e2e-suite.conf"
 STUB_ANSWER = LIB + "/stub-answer.json"
+STUB_EXIT = LIB + "/stub-exit"
 FLAP = 3600                                  # hsnotify.FLAP
 PATH = "/usr/sbin:/usr/bin:/sbin:/bin"       # the scan's PATH (secproc.PATH)
 PACKAGES = ("cockpit-security-monitor", "cockpit-host-settings", "cockpit-status-board")
 A = (5432, "port.5432-tcp")
 B = (6379, "port.6379-tcp")
+C = (3306, "port.3306-tcp")
+HS_LIB = "/usr/lib/cockpit-host-settings"
+UNREPORTED = "suite-unreported"              # a check id Security Monitor never reports (step 12)
+MAIL_TO = "suite@example.org"                # step 13: e-mail goes to localhost:25 whatever the address
+MAIL_DIR = RUN + "/mail"                     # what smtp_sink.py took
+SMTP_UNIT = "e2e-suite-smtp"
 
 checks = []
 current = {"n": 0, "title": ""}
 counter = {"n": 0}
+scenarios = {}
+required = set()
 
 
 class StepFailed(Exception):
@@ -111,8 +143,43 @@ def check(ok, what, detail=""):
 
 
 def done():
-    if any(not c["ok"] for c in checks if c["step"] == current["n"] and "check" in c):
+    failed = any(not c["ok"] for c in checks if c["step"] == current["n"] and "check" in c)
+    for name, s in scenarios.items():
+        if s.get("step") == current["n"] and s.get("result") == "running":
+            s["result"] = "failed" if failed else "passed"
+    if failed:
         raise StepFailed(current["n"])
+
+
+def supported(name):
+    """Whether the packages of this run have the rule of scenario name: "h1" (Host Settings tells
+    a check the profile names that the add-on does not report, hslib.not_reported_checks) or "h5"
+    (Host Settings keeps each channel's health, hschannels.py)."""
+    if name == "h1":
+        try:
+            with open(HS_LIB + "/hslib.py", encoding="utf-8") as f:
+                return "def not_reported_checks(" in f.read()
+        except OSError:
+            return False
+    if name == "h5":
+        return os.path.exists(HS_LIB + "/hschannels.py")
+    return False
+
+
+def scenario(name, what):
+    """True when the step of scenario name runs its checks: the packages have the rule. Without
+    it the step notes so, or fails when the version manifest requires the scenario."""
+    if supported(name):
+        scenarios[name] = {"step": current["n"], "result": "running", "what": what}
+        return True
+    if name in required:
+        scenarios[name] = {"step": current["n"], "result": "failed", "what": what, "why": "required, not supported"}
+        check(False, "%s: the Host Settings of this run has the rule (the version manifest requires %s)" % (what, name))
+    else:
+        scenarios[name] = {"step": current["n"], "result": "not supported", "what": what,
+                           "why": "the Host Settings of this run does not have the rule; not required by the manifest"}
+        note("%s: not checked, the Host Settings of this run does not have the rule (not required by the manifest)" % what)
+    return False
 
 
 def save(rel, doc):
@@ -176,7 +243,7 @@ def scan(label):
         st = json.load(f)
     ports = {}
     for p in st.get("ports") or []:
-        if p.get("proto") == "tcp" and p.get("port") in (A[0], B[0]):
+        if p.get("proto") == "tcp" and p.get("port") in (A[0], B[0], C[0]):
             inet = ((p.get("reach") or {}).get("4") or {}).get("internet") or {}
             ports[p["port"]] = {"state": p.get("state"), "why": p.get("why"), "internet": inet.get("result"),
                                 "reason": inet.get("reason"), "path": inet.get("path")}
@@ -276,10 +343,55 @@ def stub(answer, why):
                           "BindReadOnlyPaths=%s/security_stub.py:%s\n" % (LIB, SM))
 
 
+def stub_exit(code, why):
+    """Security Monitor's status verb ends with code and prints nothing, for the notifier's unit
+    only."""
+    with open(STUB_EXIT, "w", encoding="utf-8") as f:
+        f.write("%d\n" % code)
+    os.chmod(STUB_EXIT, 0o644)
+    save("stub/%s.json" % name(why), {"exit": code})
+    dropin(NOTIFY_DROPIN, "[Service]\n# E2E-1 (test only): a stand-in for Security Monitor's status verb, one run\n"
+                          "BindReadOnlyPaths=%s/security_stub.py:%s\n" % (LIB, SM))
+
+
 def unstub():
     dropin(NOTIFY_DROPIN, None)
-    if os.path.exists(STUB_ANSWER):
-        os.unlink(STUB_ANSWER)
+    for path in (STUB_ANSWER, STUB_EXIT):
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def journal_new():
+    """The lines the notifier's unit wrote to the journal since the last call (a cursor file in
+    /run; the first call returns everything so far)."""
+    return run("journalctl", "--no-pager", "-o", "cat", "-u", NOTIFY_UNIT, "--cursor-file", RUN + "/journal.cursor",
+               ok=(0, 1)).splitlines()
+
+
+def run_line():
+    """The line of the run that just ended, as the notifier writes it to the journal: "N add-ons[,
+    not readable: ...][, message: CHANNEL RESULT, ...][, failing: CHANNEL WHY, ...]"."""
+    seen = []
+    for _ in range(25):
+        seen += journal_new()
+        found = [line for line in seen if " add-ons" in line]
+        if found:
+            return found[-1]
+        time.sleep(0.2)
+    return ""
+
+
+def channels(doc):
+    c = doc.get("channels")
+    return c if isinstance(c, dict) else {}
+
+
+def item_state(doc, iid):
+    return next((i.get("state") for i in doc.get("items") or [] if i.get("id") == iid), None)
+
+
+def mails():
+    return sorted(os.listdir(MAIL_DIR)) if os.path.isdir(MAIL_DIR) else []
 
 
 def packet_filter_tools():
@@ -347,7 +459,11 @@ def step0():
     want = {}
     if check(bool(MANIFEST) and os.path.exists(MANIFEST), "the version manifest of this run", MANIFEST):
         with open(MANIFEST, encoding="utf-8") as f:
-            want = {c.get("package"): c.get("version") for c in json.load(f).get("components", [])}
+            doc = json.load(f)
+        want = {c.get("package"): c.get("version") for c in doc.get("components", [])}
+        required.update(doc.get("required_scenarios") or [])
+        note("scenarios the manifest requires: %s; h1 supported: %s, h5 supported: %s"
+             % (sorted(required) or "none", supported("h1"), supported("h5")))
     got = {p: run("dpkg-query", "-W", "-f", "${Version}", p, ok=(0, 1)).strip() for p in PACKAGES}
     check(all(want.get(p) and got[p] == want[p] for p in PACKAGES), "installed: the packages of the manifest",
           {"installed": got, "manifest": want})
@@ -669,20 +785,181 @@ def step9():
     done()
 
 
+def step11():
+    begin(11, "No access (exit 77): one message, nothing resolved; back: one message")
+    keep = {k: brief(entry(last(), k)) for k in (key(A[1]), key(B[1]))}
+    stub_exit(77, "no-access")
+    try:
+        notify()
+    finally:
+        unstub()
+    new = topic.new("no-access")
+    check(len(new) == 1, "exactly one new message")
+    t = text(new[0]) if new else ""
+    check("Check no longer possible" in t and "Security Monitor" in t and "nothing is readable without root" in t,
+          "it says Security Monitor can no longer be checked: nothing is readable without root", t)
+    doc = last("no-access")
+    e = entry(doc, "security@") or {}
+    check(e.get("level") == "lost" and e.get("coverage") == "noaccess", "last.json: Security Monitor's coverage lost, noaccess",
+          {k: e.get(k) for k in ("level", "coverage")})
+    now = {k: brief(entry(doc, k)) for k in keep}
+    check(now == keep, "last.json: A and B as before (nothing resolved without access)", {"before": keep, "now": now})
+    notify()
+    new = topic.new("access-back")
+    check(len(new) == 1, "the real answer again: exactly one new message")
+    t = text(new[0]) if new else ""
+    check("Check possible again" in t and "Security Monitor" in t and "6379/tcp" not in t,
+          "it says Security Monitor can be checked again, and nothing about B", t)
+    doc = last("access-back")
+    e = entry(doc, "security@") or {}
+    check(e.get("level") == "ok", "last.json: Security Monitor's coverage ok again", {k: e.get(k) for k in ("level", "coverage")})
+    now = {k: brief(entry(doc, k)) for k in keep}
+    check(now == keep, "last.json: A and B still as before", {"before": keep, "now": now})
+    notify()
+    check(not topic.new("access-unchanged"), "unchanged: no message")
+    done()
+
+
+def step12():
+    begin(12, "H1: the profile expects a check Security Monitor does not report")
+    item = "security/" + UNREPORTED
+    reported = [c.get("id") for c in status(SM, "security", "en", "h1-before").get("checks") or []]
+    check(UNREPORTED not in reported, "Security Monitor does not report a check %s" % UNREPORTED, reported)
+    keep_b = brief(entry(last(), key(B[1])))
+    run(HS, "profile", "expect", "add", item)
+    expect = json.loads(run(HS, "profile", "show")).get("expect") or []
+    check(item in expect, "the profile expects %s" % item, expect)
+    note("the expectation stays for step 10 (the board)")
+    rule = scenario("h1", "H1, a check the profile names that the add-on does not report")
+    notify()
+    new = topic.new("h1-expected")
+    if not rule:
+        note("Host Settings without the rule: %d new message(s)" % len(new))
+        done()
+        return
+    check(len(new) == 1, "exactly one new message")
+    t = text(new[0]) if new else ""
+    check("Check no longer possible" in t and UNREPORTED in t and "the expected check is not reported" in t,
+          "it names the check: no longer possible, the expected check is not reported", t)
+    doc = last("h1-expected")
+    e = entry(doc, "security@" + UNREPORTED) or {}
+    check(e.get("level") == "lost" and e.get("coverage") == "unsupported",
+          "last.json: the check's own entry security@%s, lost, unsupported" % UNREPORTED,
+          {k: e.get(k) for k in ("level", "coverage", "title")})
+    row = coverage(doc, item) or {}
+    check(row.get("coverage") == "unsupported" and row.get("not_reported") is True,
+          "last.json: the coverage of %s is a gap, not reported" % item, row)
+    check(brief(entry(doc, key(B[1]))) == keep_b, "last.json: finding B as before", brief(entry(doc, key(B[1]))))
+    notify()
+    check(not topic.new("h1-unchanged"), "unchanged: no message")
+    e2 = entry(last("h1-unchanged"), "security@" + UNREPORTED) or {}
+    check(e2.get("level") == "lost" and e2.get("last") == e.get("last"), "last.json: still lost, told once",
+          {k: e2.get(k) for k in ("level", "last")})
+    done()
+
+
+def step13():
+    begin(13, "H5: two channels, e-mail fails; the failure stays until e-mail accepts again")
+    if not scenario("h5", "H5, the health of each channel"):
+        done()
+        return
+    check(not listening(25), "nothing listens on port 25 (no mail server yet)")
+    run(HS, "set", "mail", MAIL_TO)
+    note("e-mail set up next to ntfy (%s, by SMTP to localhost:25)" % MAIL_TO)
+    journal_new()
+    check(listener(C[0], True), "listener C on 203.0.113.10:3306")
+    sc = scan("C-open")
+    pc = sc["test_ports"].get(C[0]) or {}
+    check(pc.get("internet") == "open" and pc.get("state") == "danger", "the scan: 3306/tcp open from the internet, a danger", pc)
+    check((exposure(answers("C-open"))[3].get(C[1]) or {}).get("state") == "danger", "the status: finding C, a danger")
+    notify()
+    line = run_line()
+    note("the run: " + line)
+    new = topic.new("C")
+    check(len(new) == 1 and "3306/tcp" in text(new[0]), "ntfy took exactly one new message, about C",
+          [text(m) for m in new])
+    check(not mails(), "no mail server took anything")
+    doc = last("C-mail-failed")
+    ch = channels(doc)
+    failed = (ch.get("mail") or {}).get("failed") or {}
+    check(bool(failed.get("since")) and failed.get("target") == MAIL_TO, "last.json: e-mail failed, for %s" % MAIL_TO, ch.get("mail"))
+    check(bool((ch.get("ntfy") or {}).get("ok")) and not (ch.get("ntfy") or {}).get("failed"), "last.json: ntfy ok", ch.get("ntfy"))
+    check("failing: mail" in line, "the run's outcome (what a watchdog gets) names the failing e-mail", line)
+    hs = status(HS, "host-settings", "en", "C-mail-failed")
+    check(item_state(hs, "mail") == "warning" and item_state(hs, "ntfy") == "ok",
+          "Host Settings' status: e-mail a warning, ntfy OK", [(i.get("id"), i.get("state")) for i in hs.get("items") or []])
+
+    notify()
+    line = run_line()
+    note("the run: " + line)
+    check(not topic.new("unchanged-1"), "unchanged: no message to ntfy")
+    doc = last("unchanged-1")
+    f2 = (channels(doc).get("mail") or {}).get("failed") or {}
+    check(f2.get("since") == failed.get("since") and not (channels(doc).get("mail") or {}).get("recovered"),
+          "last.json: e-mail still failed since the same time, no recovery", channels(doc).get("mail"))
+    check("failing: mail" in line, "the run with nothing to send still names the failing e-mail", line)
+    check(item_state(status(HS, "host-settings", "en", "unchanged-1"), "mail") == "warning", "Host Settings' status: e-mail still a warning")
+
+    run("systemd-run", "--quiet", "--collect", "--unit", SMTP_UNIT, "/usr/bin/python3", "-I", LIB + "/smtp_sink.py", MAIL_DIR)
+    check(poll_true(lambda: listening(25), 10), "a mail server on 127.0.0.1:25 (smtp_sink.py)")
+    out = run(HS, "test", "mail", ok=(0, 1))
+    res = next((json.loads(x[7:]) for x in out.splitlines() if x.startswith("RESULT ")), {})
+    save("channels/%s.json" % name("test-mail"), res)
+    check((res.get("result") or {}).get("ok") is True, "Send a test message: e-mail accepted it", res.get("result"))
+    check(len(mails()) == 1, "the mail server took the test message", mails())
+    doc = last("test-mail")
+    m = channels(doc).get("mail") or {}
+    rec = m.get("recovered") or {}
+    check(not m.get("failed") and rec.get("via") == "test" and rec.get("since") == failed.get("since"),
+          "last.json: e-mail recovered by the test, from the failure of before", m)
+    check(item_state(status(HS, "host-settings", "en", "test-mail"), "mail") == "ok", "Host Settings' status: e-mail OK")
+
+    notify()
+    line = run_line()
+    note("the run: " + line)
+    check(not topic.new("unchanged-2"), "the next run: no message to ntfy")
+    check(len(mails()) == 1, "and none to e-mail (C is not sent again to the channel that failed)", mails())
+    m2 = channels(last("unchanged-2")).get("mail") or {}
+    check(not m2.get("failed") and m2.get("recovered") == rec, "last.json: e-mail OK, still the one recovery", m2)
+    check("failing:" not in line, "the run names no failing channel", line)
+
+    run(HS, "unset", "mail")
+    run("systemctl", "stop", SMTP_UNIT, ok=(0, 5))
+    check(listener(C[0], False), "listener C stopped, 3306/tcp closed")
+    sc = scan("C-closed")
+    check(C[0] not in sc["test_ports"], "the scan no longer finds 3306/tcp", sc["test_ports"])
+    note("e-mail taken out, the mail server stopped, C closed (the notifier does not run again before step 10)")
+    done()
+
+
+def poll_true(fn, seconds):
+    end = time.time() + seconds
+    while time.time() < end:
+        if fn():
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def report(complete):
     try:
         save("messages.json", messages())
     except (OSError, ValueError) as e:
         print("messages not read:", e)
     save("assertions.json", checks)
+    for s in scenarios.values():
+        if s.get("result") == "running":
+            s["result"] = "not finished"
+    save("scenarios.json", scenarios)
 
     def cell(s):
         return str(s).replace("|", "\\|").replace("\n", " ")
 
     failed = [c for c in checks if "check" in c and not c["ok"]]
-    md = ["## E2E-1, steps 1 to 9 (core path)", "",
+    md = ["## E2E-1, steps 1 to 9 and 11 to 13 (core path)", "",
           "%d checks, %d failed%s." % (sum(1 for c in checks if "check" in c), len(failed),
-                                       "" if complete else ", stopped before step 9 ended"), "",
+                                       "" if complete else ", stopped before step 13 ended"), "",
+          "Scenarios: " + (", ".join("%s %s" % (k, v["result"]) for k, v in sorted(scenarios.items())) or "none") + ".", "",
           "| Step | Check | Result |", "|---|---|---|"]
     for c in checks:
         if "check" in c:
@@ -698,7 +975,7 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     complete = False
     try:
-        for fn in (step0, step1, step2, step3, step4, step5, step6, step7, step8, step9):
+        for fn in (step0, step1, step2, step3, step4, step5, step6, step7, step8, step9, step11, step12, step13):
             fn()
         complete = True
     except StepFailed:
