@@ -80,7 +80,8 @@ MENU = {
         menu_entry("tools", "terminal", "systemd", "Terminal", None, {"label": "Console"}),
         menu_entry("tools", "index", "sosreport", "Diagnostic reports", None),
     ],
-    "orphans": [{"scope": "system", "dir": "users", "section": "menu", "key": "people", "phantom": True}],
+    "orphans": [{"scope": "system", "dir": "users", "section": "menu", "key": "people", "phantom": True,
+                 "value": {"order": 75, "label": "People"}}],
     "files": [
         {"scope": "system", "dir": "systemd", "path": "/etc/cockpit/systemd.override.json", "sha256": "a" * 64, "valid": True,
          "error": None, "foreign": 1, "served": True},

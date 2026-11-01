@@ -118,8 +118,8 @@ function menuEntry(section, key, dir, label, order, system, user, extra) {
 }
 const MENU_SHA = { systemd: "a".repeat(64), users: "b".repeat(64), storaged: "c".repeat(64), mine: "d".repeat(64) };
 // Cockpit's own pages and Host Settings. For all users: Logs hidden, Terminal renamed (and one more
-// setting in that file), a phantom entry in the file of users, the file of storaged not JSON. Just
-// for the user: Services moved up, and a null for a key that is gone.
+// setting in that file), a phantom entry in the file of users (an orphan with its value), the file
+// of storaged not JSON. Just for the user: Services moved up, and a null for a key that is gone.
 function menuShow(extra) {
     return Object.assign({
         user: "admin", uid: 1000, cut: false,
@@ -135,8 +135,8 @@ function menuShow(extra) {
             menuEntry("menu", "index", "host-settings", "Host Settings", 106),
         ],
         orphans: [
-            { scope: "system", dir: "users", section: "menu", key: "people", phantom: true },
-            { scope: "user", dir: "systemd", section: "menu", key: "gone", phantom: false },
+            { scope: "system", dir: "users", section: "menu", key: "people", phantom: true, value: { order: 75, label: "People" } },
+            { scope: "user", dir: "systemd", section: "menu", key: "gone", phantom: false, value: { hidden: true } },
         ],
         files: [
             { scope: "system", dir: "systemd", path: "/etc/cockpit/systemd.override.json", sha256: MENU_SHA.systemd, valid: true,

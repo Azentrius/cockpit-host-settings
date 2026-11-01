@@ -758,7 +758,8 @@ t("the draft: move, rename, hide and show; the dialog lists them and writes for 
     assert.ok(row(page, "users/menu/index").classList.contains("is-off"));
     press(page, rowButton("systemd/menu/logs", "show"));
     assert.ok(!row(page, "systemd/menu/logs").classList.contains("is-off"));
-    assert.ok(text(d.querySelector('#hs-menu tr[data-id="system/users/menu/people"]')).includes("Removed with the other changes of this file"));
+    assert.ok(!text(d.querySelector('#hs-menu tr[data-id="system/users/menu/people"]')).includes("Removed"),
+        "the setting for a key without an entry stays in the file of users");
     assert.deepStrictEqual(menuCalls(page), [["menu show", null, "message"]], "nothing runs before Save");
     assert.strictEqual(d.getElementById("hs-menu-count").textContent, "4 changes not saved");
     press(page, "#hs-menu-save");
@@ -768,7 +769,6 @@ t("the draft: move, rename, hide and show; the dialog lists them and writes for 
         "Rename Networking to Network",
         "Services before Accounts",
         "Hide Accounts",
-        "Also removes the setting for people (users, System): the editor cannot keep it when it writes this file",
         "Other settings in /etc/cockpit/systemd.override.json stay as they are.",
     ]);
     assert.strictEqual(d.getElementById("hs-dialog-note").textContent, "Runs with administrator privileges via Cockpit.");
@@ -783,7 +783,8 @@ t("the draft: move, rename, hide and show; the dialog lists them and writes for 
             networkmanager: { menu: { index: { label: "Network" } } },
             // Logs shown again; the name of Terminal, set before and not touched, stays.
             systemd: { menu: { services: { order: 55 } }, tools: { terminal: { label: "Shell" } } },
-            users: { menu: { index: null } },
+            // The setting for people, a key without an entry, keeps its value.
+            users: { menu: { index: null, people: { order: 75, label: "People" } } },
         },
     });
     assert.ok(!JSON.stringify(page.calls.spawn.map((c) => c.argv)).includes("Shell"), "the plan never in an argument");
@@ -871,6 +872,32 @@ t("settings for entries that do not exist: listed, removed on request", async ()
     click(page, "hs-dialog-confirm");
     await settle();
     assert.deepStrictEqual(JSON.parse(page.calls.inputs[0]), { base: { users: P.MENU_SHA.users }, set: {} });
+    // A change elsewhere in the file keeps each such setting with its value: null, order and label,
+    // never what else the file holds for it, which stays there anyway. Removed here, it goes.
+    const menu = P.menuShow();
+    menu.orphans.push({ scope: "system", dir: "users", section: "tools", key: "odd", phantom: false, value: { other: true } },
+                      { scope: "system", dir: "users", section: "menu", key: "old", phantom: false, value: { hidden: true } },
+                      { scope: "system", dir: "users", section: "menu", key: "more", phantom: true, value: { order: 4, other: true } });
+    const keep = await open({ location: ["cockpit"], menu });
+    press(keep, rowButton("users/menu/index", "hide"));
+    press(keep, '#hs-menu tr[data-id="system/users/menu/old"] [data-menu="drop"]');
+    press(keep, "#hs-menu-save");
+    assert.deepStrictEqual(changeList(keep), ["Hide Accounts", "Remove the setting for old (users, System)"]);
+    click(keep, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(JSON.parse(keep.calls.inputs[0]), {
+        base: { users: P.MENU_SHA.users },
+        set: { users: { menu: { index: null, people: { order: 75, label: "People" }, more: { order: 4 } } } },
+    });
+    // A key the helper does not take cannot be kept: the dialog says so.
+    const odd = P.menuShow();
+    odd.orphans.push({ scope: "system", dir: "users", section: "menu", key: "a.b", phantom: true, value: { order: 3 } });
+    const lost = await open({ location: ["cockpit"], menu: odd });
+    press(lost, rowButton("users/menu/index", "hide"));
+    assert.ok(text(lost.d.querySelector('#hs-menu tr[data-id="system/users/menu/a.b"]')).includes("Removed with the other changes of this file"));
+    press(lost, "#hs-menu-save");
+    assert.deepStrictEqual(changeList(lost), ["Hide Accounts",
+        "Also removes the setting for a.b (users, System): the editor cannot keep it when it writes this file"]);
 });
 
 t("a menu changed meanwhile: nothing written, read again, the changes kept", async () => {

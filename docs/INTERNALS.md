@@ -891,9 +891,9 @@ except that it does not check a manifest's `requires`.
     the only call of the dialog without administrative access) with the plan on standard input:
     for each package folder touched, `base` is the `sha256` of the scope's file from `menu show`
     (empty when there is none) and `set` is the editor's whole part of that file after the draft
-    (every hidden entry, order and name, and the null of a key without an entry), so what the draft
-    did not touch stays. A key without an entry that the file holds an object for cannot be kept
-    (`menu show` does not say its order and name): the dialog names it as removed. Exit 75: the
+    (every hidden entry, order and name, and those of the keys without an entry, from their `value`,
+    unless removed here), so what the draft did not touch stays. Only a key outside the helper's
+    pattern cannot be kept: the dialog names it as removed. Exit 75: the
     dialog says the menu changed meanwhile, the page reads it again and keeps the draft. After
     saving: `menu show` again, the draft cleared, and "Saved" with the hint to reload Cockpit (F5)
     and the button "Reload Cockpit" (`window.top.location.reload()`; when that throws, the hint

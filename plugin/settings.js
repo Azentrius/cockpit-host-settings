@@ -1215,11 +1215,13 @@
         }
     }
 
-    // What one scope's override does to an entry, as far as the editor manages it: {hidden: true},
-    // or the order and label it sets ({} for nothing). markOf() has the draft's for the scope
-    // being changed.
+    // What one scope's override does to an entry (or an orphan's value), as far as the editor
+    // manages it: {hidden: true}, or the order and label it sets ({} for nothing, or for only what
+    // the editor leaves alone). markOf() has the draft's for the scope being changed.
     function savedMark(e, scope) {
-        const m = e[scope];
+        return markFrom(e[scope]);
+    }
+    function markFrom(m) {
         if (!m || typeof m !== "object") return {};
         if (m.hidden === true) return { hidden: true };
         const out = {};
@@ -1404,10 +1406,10 @@
 
     // --- The plan of `menu apply` and the changes in words ---
     // For every package folder the draft touches: the checksum of the scope's file (empty when there
-    // is none) and the editor's whole part of it after the draft, every null, order and label of its
-    // entries and of the keys it has no entry for. What the plan cannot hold is named as lost: a
-    // setting for a key that is not there with an object (its order and label are not in
-    // `menu show`), or a key the helper does not take.
+    // is none) and the editor's whole part of it after the draft: every null, order and label of its
+    // entries, and of the keys it has no entry for (orphans, with their value from `menu show`)
+    // unless they were removed here. What the plan cannot hold, a key the helper does not take, is
+    // named as lost.
     function menuPlan(scope) {
         const touched = new Set();
         menuView.entries.forEach((e) => { if (draft.has(entryId(e))) touched.add(e.dir); });
@@ -1419,20 +1421,18 @@
             const f = menuFile(scope, dir);
             base[dir] = f && typeof f.sha256 === "string" ? f.sha256 : "";
             const part = {};
-            const put = (section, key, value) => { (part[section] = part[section] || {})[key] = value; };
-            menuView.entries.filter((e) => e.dir === dir).forEach((e) => {
-                const m = markOf(e, scope);
+            // Only null, order and label: what else the file says of a key stays there anyway.
+            const put = (x, m) => {
                 if (!hasMark(m)) return;
-                if (!KEY_RE.test(e.key)) { lost.push(e); return; }
+                if (!KEY_RE.test(x.key)) { lost.push(x); return; }
                 const value = {};
                 if ("order" in m) value.order = m.order;
                 if ("label" in m) value.label = m.label;
-                put(e.section, e.key, m.hidden ? null : value);
-            });
-            menuView.orphans.filter((o) => o.scope === scope && o.dir === dir && !dropped.has(orphanId(o))).forEach((o) => {
-                if (o.phantom !== true && KEY_RE.test(o.key)) put(o.section, o.key, null);
-                else lost.push(o);
-            });
+                (part[x.section] = part[x.section] || {})[x.key] = m.hidden ? null : value;
+            };
+            menuView.entries.filter((e) => e.dir === dir).forEach((e) => put(e, markOf(e, scope)));
+            menuView.orphans.filter((o) => o.scope === scope && o.dir === dir && !dropped.has(orphanId(o)))
+                .forEach((o) => put(o, markFrom(o.value)));
             if (Object.keys(part).length) set[dir] = part;
         });
         return { plan: { base, set }, lost, touched };
