@@ -189,9 +189,8 @@ jobs:
           persist-credentials: false
       - name: The package of this build, QEMU and cloud-init's seed tool
         run: |
-          sudo apt-get -o Acquire::http::Timeout=20 -o Acquire::Retries=3 update -qq
-          sudo apt-get -o Acquire::http::Timeout=20 -o Acquire::Retries=3 install -y -qq --no-install-recommends \
-            rpm qemu-system-x86 qemu-utils cloud-image-utils > /dev/null
+          sudo sh tools/apt-update.sh
+          sudo apt-get install -y -qq --no-install-recommends rpm qemu-system-x86 qemu-utils cloud-image-utils > /dev/null
           make packages
       - name: KVM for the runner's user
         run: |
