@@ -27,12 +27,21 @@ Status Board.
                                              that day if given; the reason on standard input (root)
   host-settings.py profile skip remove ADDON/CHECK (root)
   host-settings.py profile remove            no profile any more (root)
+  host-settings.py menu show                 Cockpit's menu: every entry and what the override files
+                                             change in it (no root; run as the user whose menu it is)
+  host-settings.py menu apply system|user    order, labels and hidden entries of Cockpit's menu, as a
+                                             plan in JSON on standard input: system for all users
+                                             (root), user just for the calling user (never as root)
 
 Everything else is a wrong call (exit 64). Every argument is checked here.
 The changes this helper makes are the settings in /etc/cockpit-host-settings
 (notify.conf and profile.conf 0644, ntfy.token and heartbeat.conf 0600, all
-root's; the profile keeps its previous version in profile.conf.bak) and the
-add-on's own timer; the token and the watchdog's URL never appear in an
+root's; the profile keeps its previous version in profile.conf.bak), the
+add-on's own timer, and the editor's part of Cockpit's manifest overrides
+(order, label and null of the menu entries; hsmenu.py): for all users in
+/etc/cockpit/<folder>.override.json (0644, root's; the previous versions in
+/var/lib/cockpit-host-settings/backup/menu), just for the calling user in
+~/.config/cockpit. The token and the watchdog's URL never appear in an
 argument, an output or a log. Sending and checking run in the add-on's
 services as their own user, never as root.
 
@@ -57,6 +66,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hschannels  # noqa: E402
 import hsheartbeat  # noqa: E402
 import hslib  # noqa: E402
+import hsmenu  # noqa: E402
 import hsproc  # noqa: E402
 import hsstatus  # noqa: E402
 
@@ -77,7 +87,8 @@ USAGE = ("usage: host-settings.py status [--lang en|de] | show | set ntfy URL TO
          "install timer | remove timer | heartbeat set healthchecks|uptime-kuma | heartbeat remove | "
          "heartbeat test | profile show | profile roles [ROLE ...] | "
          "profile expect add|remove ADDON[/CHECK] | profile skip add ADDON/CHECK [YYYY-MM-DD] | "
-         "profile skip remove ADDON/CHECK | profile remove")
+         "profile skip remove ADDON/CHECK | profile remove | menu show | menu apply system|user")
+MENU_BACKUP = STATE_DIR + "/backup/menu"
 ENV = {"PATH": hsproc.PATH, "LC_ALL": "C.UTF-8", "TZ": "UTC"}
 
 
@@ -706,6 +717,52 @@ def do_profile(rest, path=PROFILE, lock=LOCK, stdin=None, now=None):
 
 
 # ---------------------------------------------------------------------------
+# Cockpit's menu (hsmenu.py): show without root, apply system as root, apply user never as root
+
+MENU_DONE = {"written": ("geändert", "changed"), "removed": ("entfernt, nichts mehr darin", "removed, nothing left in it")}
+
+
+def do_menu(rest, env=None, stdin=None, backup=None, now=None, euid=None):
+    env = os.environ if env is None else env
+    if rest == ["show"]:
+        json.dump(hsmenu.view(env), sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    if len(rest) != 2 or rest[0] != "apply" or rest[1] not in ("system", "user"):
+        raise WRONG
+    scope = rest[1]
+    if scope == "system":
+        need_root()
+    elif (os.geteuid() if euid is None else euid) == 0:
+        # Else it would change root's own menu, not the one of the user who asked.
+        raise Fail(64, "„Nur für mich“ läuft ohne administrativen Zugriff, als der angemeldete Benutzer.",
+                   "\"Just for me\" runs without administrative access, as the user who is logged in.")
+    data = (stdin or sys.stdin.buffer).read(hsmenu.MAX_PLAN + 1)
+    try:
+        if len(data) > hsmenu.MAX_PLAN:
+            raise ValueError("size")
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise Fail(64, f"Der Plan fehlt oder ist kein JSON (höchstens {hsmenu.MAX_PLAN // 1024} KiB auf der "
+                       "Standardeingabe).",
+                   f"The plan is missing or not JSON (at most {hsmenu.MAX_PLAN // 1024} KiB on standard input).")
+    try:
+        done = hsmenu.apply_plan(scope, doc, env, write_text_atomic,
+                                 (backup or MENU_BACKUP) if scope == "system" else None, now)
+    except hsmenu.Refused as r:
+        raise Fail(r.code, r.de, r.en)
+    changed = [(path, what) for _, path, what in done if what != "unchanged"]
+    if not changed:
+        say(*UNCHANGED)
+    for path, what in changed:
+        de, en = MENU_DONE[what]
+        say(f"{path}: {de}.", f"{path}: {en}.")
+    if changed:
+        say("Wirksam, sobald Cockpit neu geladen wird.", "In effect once Cockpit is reloaded.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # The services (root)
 
 def journal_tail(unit, n=10):
@@ -837,6 +894,8 @@ def main(argv):
             return do_heartbeat(rest)
         if verb == "profile":
             return do_profile(rest)
+        if verb == "menu":
+            return do_menu(rest)
         raise WRONG
     except Fail as f:
         say(f.de, f.en, sys.stderr)

@@ -24,7 +24,8 @@ install:
 	install -d -m 755 $(CONF)
 	install -m 644 plugin/* $(PAGE)/
 	install -m 755 lib/host-settings.py lib/host-settings-notify.py $(HELPERS)/
-	install -m 644 lib/hslib.py lib/hsnotify.py lib/hsstatus.py lib/hsproc.py lib/hsheartbeat.py lib/hschannels.py $(HELPERS)/
+	install -m 644 lib/hslib.py lib/hsnotify.py lib/hsstatus.py lib/hsproc.py lib/hsheartbeat.py lib/hschannels.py \
+		lib/hsmenu.py $(HELPERS)/
 	install -m 644 systemd/*.service systemd/*.timer $(UNITS)/
 	install -m 644 packaging/cockpit-host-settings.sysusers $(SYSUSERS)/cockpit-host-settings.conf
 	if [ -z "$(DESTDIR)" ]; then sh packaging/scripts/configure; fi
