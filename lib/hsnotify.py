@@ -53,9 +53,10 @@ ERROR_KINDS = ("rejected", "untrusted", "manifest", "invalid", "missing", "faile
 # Package names and check ids have no "@", so these keys never meet "PKG#", "PKG#ID", "PKG#ID/FID".
 COVERAGE = "@"
 # The coverage of an expected add-on or check that makes it "no longer possible"; back to
-# "checked" it is "possible again". Every other gap (partial, stale, unchecked, unsupported)
-# keeps what was told.
-LOST = ("failed", "noaccess", "unconfigured", "unreadable", "missing")
+# "checked" it is "possible again". unsupported is an add-on installed in a version without the
+# status entry, a check the add-on cannot run on this system, or a check the profile names that
+# the add-on does not report. Every other gap (partial, stale, unchecked) keeps what was told.
+LOST = ("failed", "noaccess", "unconfigured", "unreadable", "missing", "unsupported")
 PRIORITY = {"danger": 4, "warning": 3, "ok": 2}
 TAGS = {"danger": "rotating_light", "warning": "warning", "ok": "white_check_mark"}
 
@@ -82,6 +83,9 @@ T = {
         "cov.failed": "the check failed", "cov.noaccess": "nothing is readable without root",
         "cov.unconfigured": "the check is not set up (its timer is off, or it never ran)",
         "cov.unreadable": "the status cannot be read", "cov.missing": "the add-on is not installed",
+        "cov.unsupported": "the check is not supported on this system",
+        "cov.nostatus": "this version of the add-on reports no status",
+        "cov.unreported": "the expected check is not reported",
         "stale": "out of date since {when}",
         "unreadable": "Status not readable", "readable": "status readable",
         "reason.not-json": "the answer is not JSON", "reason.not-object": "the answer is not an object",
@@ -127,6 +131,9 @@ T = {
         "cov.failed": "die Prüfung ist fehlgeschlagen", "cov.noaccess": "ohne root ist nichts lesbar",
         "cov.unconfigured": "die Prüfung ist nicht eingerichtet (ihr Timer ist aus, oder sie lief nie)",
         "cov.unreadable": "der Status lässt sich nicht lesen", "cov.missing": "das Add-on ist nicht installiert",
+        "cov.unsupported": "die Prüfung wird auf diesem System nicht unterstützt",
+        "cov.nostatus": "diese Version des Add-ons meldet keinen Status",
+        "cov.unreported": "die erwartete Prüfung wird nicht gemeldet",
         "stale": "veraltet seit {when}",
         "unreadable": "Status nicht lesbar", "readable": "Status lesbar",
         "reason.not-json": "die Antwort ist kein JSON", "reason.not-object": "die Antwort ist kein Objekt",
@@ -343,21 +350,29 @@ def profile_coverage(profile, snapshot, now, have=()):
 
       report  [{id, label, coverage, gaps}] in the order of expect, for the page: an add-on's
               coverage as the board judges it, with the checks the profile leaves out taken as
-              not applicable, and its checks with a gap [{id, title, coverage}]; for a check,
-              its own coverage when the add-on reports it, "notapplicable" when it does not or a
-              running skip leaves it out, the add-on's when the add-on cannot be judged
-      keys    {key: (coverage, label, title, note)}, what the messages compare: "PKG@" for each
-              expected add-on (missing, unsupported, noaccess, unreadable; for a valid answer
-              "checked" while its checks speak for themselves, else what its items say) and
-              "PKG@CHECK" for each check of it that applies; title is the check's title, note its
-              reason (text of the add-on)
+              not applicable and the checks it names that the add-on does not report taken as
+              "unsupported", and its checks with a gap [{id, title, coverage, not_reported?}];
+              for a check, its own coverage when the add-on reports it (with its reason, when
+              it has one), "notapplicable" when the add-on reports it so or a running skip
+              leaves it out, "unsupported" with not_reported True when the add-on does not
+              report it, the add-on's when the add-on cannot be judged
+      keys    {key: (coverage, label, title, note, why)}, what the messages compare: "PKG@" for
+              each expected add-on (missing, unsupported, noaccess, unreadable; for a valid
+              answer "checked" while its own checks speak for themselves, else what its items
+              say) and "PKG@CHECK" for each check of it that applies, a check the profile names
+              that the add-on does not report included; title is the check's title (its id for
+              one not reported), note its reason (text of the add-on), why the reason a message
+              gives (the coverage; "nostatus" for an add-on installed without the status entry,
+              "unreported" for a check the add-on does not report)
       hold    the add-ons whose checks cannot be judged now (not installed, no access,
               unreadable): what was told about their checks stays as it was
 
     As Status Board reads a profile: an entry "PKG/CHECK" makes the add-on PKG expected, and so
-    every check of it, and is no gap of its own when PKG does not report that check; a skip names
-    one check ("PKG/CHECK"; one naming an add-on alone does nothing). This add-on itself counts
-    as checked: it is the one running."""
+    every check of it, and is a gap of its own ("unsupported", hslib.not_reported_checks()) when
+    PKG answers but does not report that check; while PKG cannot be judged, its own gap stands for
+    its checks. A skip names one check ("PKG/CHECK"; one naming an add-on alone does nothing),
+    also one the add-on does not report. An add-on expected alone is judged as before, and no
+    check is made up for it. This add-on itself counts as checked: it is the one running."""
     skips = {s["check"] for s in profile["skip"] if "/" in s["check"] and hslib.skip_active(s, now)}
     keys, hold, judged = {}, set(), {}
     for pkg in dict.fromkeys(e.partition("/")[0] for e in profile["expect"]):
@@ -371,17 +386,23 @@ def profile_coverage(profile, snapshot, now, have=()):
         if a is None or a["kind"] != "ok":
             cov = addon_coverage(a, now) if a else "unsupported" if pkg in have else "missing"
             judged[pkg] = (label, cov, None)
-            keys[pkg + COVERAGE] = (cov, label, None, None)
+            keys[pkg + COVERAGE] = (cov, label, None, None, "nostatus" if cov == "unsupported" else cov)
             hold.add(pkg)
             continue
         skipped = {s.partition("/")[2] for s in skips if s.startswith(pkg + "/")}
-        from_checks = hslib.checks_coverage({"checks": a.get("checks")}, now, skipped)
+        reported = a.get("checks")
+        absent = hslib.not_reported_checks(reported, pkg, profile["expect"])
+        checks = (reported or []) + absent if reported is not None or absent else None
+        from_checks = hslib.checks_coverage({"checks": checks}, now, skipped)
         cov = from_checks["coverage"] if from_checks else a.get("legacy") or "checked"
         judged[pkg] = (label, cov, from_checks)
-        keys[pkg + COVERAGE] = ("checked" if from_checks else cov, label, None, None)
-        for c in a.get("checks") or []:
+        own = "checked" if hslib.checks_coverage({"checks": reported}, now, skipped) else a.get("legacy") or "checked"
+        keys[pkg + COVERAGE] = (own, label, None, None, own)
+        for c in checks or []:
             if c["state"] != "notapplicable" and c["id"] not in skipped:
-                keys[pkg + COVERAGE + c["id"]] = (hslib.check_coverage(c, now)["coverage"], label, c["title"], c["reason"])
+                ccov = hslib.check_coverage(c, now)["coverage"]
+                keys[pkg + COVERAGE + c["id"]] = (ccov, label, c["title"], c["reason"],
+                                                  "unreported" if c.get("not_reported") else ccov)
     report = []
     for item in profile["expect"]:
         pkg, _, check = item.partition("/")
@@ -389,12 +410,20 @@ def profile_coverage(profile, snapshot, now, have=()):
         row = {"id": item, "label": label or pkg, "coverage": cov, "gaps": []}
         report.append(row)
         if not check:
-            row["gaps"] = [{"id": g["id"], "title": g["title"], "coverage": g["coverage"]}
+            row["gaps"] = [dict({"id": g["id"], "title": g["title"], "coverage": g["coverage"]},
+                                **({"not_reported": True} if g.get("not_reported") else {}))
                            for g in (from_checks or {}).get("gaps", [])]
         elif pkg != ADDON and pkg not in hold:
             found = next((c for c in snapshot[pkg].get("checks") or [] if c["id"] == check), None)
-            row["coverage"] = "notapplicable" if found is None or found["state"] == "notapplicable" or item in skips \
-                else hslib.check_coverage(found, now)["coverage"]
+            if item in skips:
+                row["coverage"] = "notapplicable"
+            elif found is None:
+                row.update(coverage="unsupported", not_reported=True)
+            else:
+                row["coverage"] = "notapplicable" if found["state"] == "notapplicable" else \
+                    hslib.check_coverage(found, now)["coverage"]
+                if found["reason"]:
+                    row["reason"] = found["reason"]
     return report, keys, hold
 
 
@@ -425,7 +454,7 @@ def coverage_changes(told, coverage, now):
             if check and pkg in hold and entry:
                 out[key] = entry
             continue
-        cov, label, title, note = keys[key]
+        cov, label, title, note, why = keys[key]
         label = label or entry.get("label") or key.partition(COVERAGE)[0]
         new = "lost" if cov in LOST else "ok" if cov == "checked" else old
         last = entry.get("last") if isinstance(entry.get("last"), dict) else {}
@@ -439,19 +468,21 @@ def coverage_changes(told, coverage, now):
         out[key] = {"level": new, "coverage": cov, "at": now, "last": dict(last, **{change: now}), "label": label}
         if title or entry.get("title"):
             out[key]["title"] = title or entry["title"]
-        events.append(_cevent(key, out[key], note))
+        events.append(_cevent(key, out[key], note, why))
     return events, out
 
 
-def _cevent(key, entry, note):
+def _cevent(key, entry, note, why=None):
     """A change of the coverage of an expected add-on or check: "lost" (no longer possible, a
-    warning) or "regained" (possible again)."""
+    warning) or "regained" (possible again). gap: why it is no longer possible (profile_coverage(),
+    keys), else None."""
     pkg, _, check = key.partition(COVERAGE)
     lost = entry["level"] == "lost"
     return {
         "key": key, "pkg": pkg, "id": "", "check": check, "label": entry["label"], "title": entry.get("title") or check or None,
         "kind": "lost" if lost else "regained", "from": "ok" if lost else "warning", "to": "warning" if lost else "ok",
         "state": "warning" if lost else "ok", "coverage": entry["coverage"], "note": note if lost else None,
+        "gap": (why or entry["coverage"]) if lost else None,
         "value": None, "detail": None, "stale_at": None, "why": None, "addon_kind": None, "reason": None, "code": None,
     }
 
@@ -465,7 +496,8 @@ def _cevent(key, entry, note):
 #   "PKG#ID"       an item; for an item that lists findings only what they do not explain
 #   "PKG#ID/FID"   a finding of an item that lists them
 #   "PKG@"         an add-on the host's profile expects (coverage_changes())
-#   "PKG@CHECK"    a check of it, or a check the profile expects on its own
+#   "PKG@CHECK"    a check of it, or a check the profile expects on its own (also one the add-on
+#                  does not report: unsupported)
 # An entry is {level, at, last: {"FROM>TO": time}, label, title}. A finding's entry also has
 # status (open; accepted: told nothing while accepted; resolved: kept KEEP seconds to tell
 # "again") and item (its item's title); the entry of an item that lists findings has
@@ -892,7 +924,7 @@ def _line(lang, e):
         first = f"{t(lang, 'head.' + e['kind'])} · {e['label']}" + (f" · {e['title']}" if e["title"] else "")
         if e["kind"] == "regained":
             return first
-        return first + "\n" + t(lang, "cov." + e["coverage"]) + (f": {e['note']}" if e.get("note") else "")
+        return first + "\n" + t(lang, "cov." + (e.get("gap") or e["coverage"])) + (f": {e['note']}" if e.get("note") else "")
     resolved = e["kind"] == "resolved"
     head = _head(lang, e)
     if e.get("fid"):

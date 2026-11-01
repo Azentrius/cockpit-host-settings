@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "addon": "security",
+  "label": "Security Monitor",
+  "version": "0.4.0",
+  "checked_at": "2026-10-19T18:50:00Z",
+  "state": "ok",
+  "summary": "Nothing found.",
+  "features": [
+    "checks",
+    "findings"
+  ],
+  "checks": [
+    {
+      "id": "ssh",
+      "state": "checked",
+      "title": "SSH",
+      "item": "ssh",
+      "checked_at": "2026-10-19T18:50:00Z",
+      "stale_after": 3600
+    }
+  ],
+  "items": [
+    {
+      "id": "ssh",
+      "state": "ok",
+      "title": "SSH",
+      "detail": "only keys, no root login",
+      "link": "#/ssh",
+      "checked_at": "2026-10-19T18:50:00Z",
+      "stale_after": 3600
+    }
+  ]
+}

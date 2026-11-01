@@ -316,6 +316,31 @@ t("the target profile: roles, what is expected and why, its coverage, the checks
         assert.ok(deText.includes(s), s + " in: " + deText));
 });
 
+t("the target profile: a check the add-on does not report says so, a check's own reason shows as text", async () => {
+    // security/exposure named in the profile, not reported by the Security Monitor (last.coverage
+    // as hsnotify.profile_coverage() writes it)
+    const unreported = withProfile();
+    unreported.last.coverage = P.COVERAGE.map((r) => (r.id === "security/exposure" ? Object.assign({}, r, { coverage: "unsupported", not_reported: true })
+        : r.id === "security" ? Object.assign({}, r, { coverage: "unsupported", gaps: [{ id: "exposure", title: "exposure", coverage: "unsupported", not_reported: true }] })
+            : r));
+    const page = await open({ view: unreported });
+    const card = page.d.getElementById("hs-profile");
+    const row = (c, what) => text([...c.querySelectorAll("tbody tr")].find((tr) => text(tr).startsWith(what)));
+    assert.strictEqual(row(card, "Security Monitor: exposure"), "Security Monitor: exposure security/exposure Added here Remove Not supported Expected check is not reported");
+    assert.ok(row(card, "Security Monitor security").endsWith("Not supported Not supported exposure Expected check is not reported"), row(card, "Security Monitor security"));
+    assert.ok(text(card.querySelector(".az-card__header")).includes("3 gaps"), "security, image-updates and the check not reported");
+    const de = await open({ view: unreported, language: "de" });
+    assert.ok(row(de.d.getElementById("hs-profile"), "Security Monitor: exposure").endsWith("Nicht unterstützt Erwartete Prüfung wird nicht gemeldet"));
+    // reported as not applicable: the add-on's reason, as text
+    const why = withProfile();
+    why.last.coverage = P.COVERAGE.map((r) => (r.id === "security/exposure" ? Object.assign({}, r, { coverage: "notapplicable", reason: "<b>no packet filter</b>" }) : r));
+    const other = await open({ view: why });
+    const card2 = other.d.getElementById("hs-profile");
+    assert.ok(row(card2, "Security Monitor: exposure").endsWith("Not applicable <b>no packet filter</b>"), row(card2, "Security Monitor: exposure"));
+    assert.strictEqual(card2.querySelector("b"), null, "no markup from the add-on");
+    assert.ok(text(card2.querySelector(".az-card__header")).includes("2 gaps"), "not applicable is no gap");
+});
+
 t("no profile yet: what it is, and a dialog with a switch per role", async () => {
     const page = await open({ view: fresh() });
     const d = page.d;

@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+A check that the target profile names counts only when its add-on reports it, and a check that is
+not supported is no longer possible.
+
+- **Named checks:** where the profile expects a check (`security/exposure`) and its add-on answers
+  without it, that check is a gap of its own: one message "Check no longer possible · Security
+  Monitor · exposure" with "the expected check is not reported", and one "Check possible again"
+  once the add-on reports it checked and in time. Until now such a check was taken as not
+  applicable and told nothing. Two such checks of one add-on are two gaps. A check the add-on
+  reports as not applicable keeps its reason, a skip that runs leaves the check out until its
+  day, and an add-on that is not installed, cannot be read or answers without access keeps its own
+  message, without a second one for its checks. An add-on expected alone is judged as before.
+  Neither message resolves a finding or makes one new.
+- **Not supported is no longer possible:** an expected check the add-on cannot run on this system
+  ("the check is not supported on this system") and an expected add-on installed in a version
+  without the status entry ("this version of the add-on reports no status") are told once as
+  well; up to 0.2.0 they kept what was told. After the update each such gap is told once; nothing
+  told before is told again, and the findings in `last.json` stay as they are.
+- **Page:** the target profile shows below the coverage of a check why it is not checked: "Expected
+  check is not reported", or the add-on's reason.
+- **Tests:** the shared answers of Status Board for named checks (`ext-expect-*.json`), taken over
+  byte for byte into `test/fixtures/board`, run through the notifier for every case.
+
 ## 0.2.0 – 2026-10-26
 
 Each finding is told on its own, a target profile says what a server is expected to check, and an
