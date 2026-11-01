@@ -734,8 +734,9 @@ class Menu(Base):
         self.assertEqual((services["system"], services["user"], services["effective"]["hidden"]), ({"hidden": True}, None, True))
         self.assertEqual(self.entry(view, "tools", "terminal")["effective"], {"label": "Terminal", "order": None, "hidden": False})
         self.assertEqual(self.entry(view, "menu", "index", "storaged")["base"], {"label": "Storage", "order": 31})
-        self.assertEqual(sorted((o["scope"], o["key"], o["phantom"]) for o in view["orphans"]),
-                         [("system", "old", True), ("user", "older", False)])
+        self.assertEqual(sorted((o["scope"], o["key"], o["phantom"], o["value"]) for o in view["orphans"]),
+                         [("system", "old", True, {"order": 3}), ("user", "older", False, {"hidden": True})],
+                         "with their values, so that a plan can keep them")
         files = {(f["scope"], f["dir"]): f for f in view["files"]}
         self.assertEqual(sorted(files), [("system", "nothing-here"), ("system", "systemd"), ("system", "users"),
                                          ("user", "systemd")])

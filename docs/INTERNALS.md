@@ -801,8 +801,9 @@ except that it does not check a manifest's `requires`.
   `user` (what that scope's file does to it: `null` nothing, `{"hidden": true}`, or the `order` and
   `label` it sets, `"other": true` when it holds more), and `effective` (`label`, `order`, `hidden`).
 - `orphans`: a key in an override file that the package does not have (`scope`, `dir`,
-  `section`, `key`). With `phantom` the file holds an object for it, and Cockpit shows an entry
-  without a page; a null for it does nothing.
+  `section`, `key`, and `value` as for an entry's `system` and `user`, so that a plan can keep it).
+  With `phantom` the file holds an object for it, and Cockpit shows an entry without a page; a
+  null for it does nothing.
 - `files`: every override file of both scopes: `scope`, `dir`, `path`, `sha256` of its bytes,
   `valid`, `error` (`unreadable`, `too-large`, `invalid`, `not-an-object`), `foreign` (how many
   things in it the editor does not manage) and `served` (whether a package with that folder is
