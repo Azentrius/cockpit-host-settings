@@ -2,7 +2,8 @@
 /* The page under jsdom with a scripted Cockpit (test/page.js): what it shows on a fresh server
  * and on a set-up one, in English and German; that data from the server stays text; every change
  * goes through the dialog with the right fixed verb; the token goes on standard input only; the
- * menu icon; the summary without administrative access.
+ * menu icon; the summary without administrative access; the Cockpit tab with the editor of
+ * Cockpit's menu (the draft, the dialog, the plan of `menu apply` on standard input).
  * Run with: node test/page.test.js (jsdom from test/node_modules or NODE_PATH) */
 "use strict";
 const assert = require("assert");
@@ -45,7 +46,9 @@ t("a fresh server: nothing set up, the way to set it up", async () => {
     assert.ok(text(d.getElementById("hs-addons")).includes("Not read yet"));
     assert.ok(d.getElementById("hs-loading").hidden);
     assert.strictEqual(d.getElementById("hs-meta").textContent, "Not run yet");
-    assert.ok(d.getElementById("hs-tabs").hidden, "one tab: no tab bar");
+    assert.ok(!d.getElementById("hs-tabs").hidden, "two tabs: the bar shows");
+    assert.ok(d.getElementById("hs-tab-cockpit").hidden);
+    assert.strictEqual(d.getElementById("hs-tab-cockpit").textContent, "", "the menu is read once its tab opens");
     assert.strictEqual(d.getElementById("hs-sig-version").textContent, "Host Settings 0.3.0");
 });
 
@@ -284,7 +287,11 @@ t("without administrative access: the summary", async () => {
     const d = page.d;
     assert.deepStrictEqual(helperCalls(page), [["show", "try"], ["status --lang en", "try"]]);
     assert.ok(!d.getElementById("hs-summary").hidden);
-    assert.ok(d.getElementById("hs-tab-notifications").hidden);
+    // Both tabs: the summary is the Notifications tab.
+    assert.ok(!d.getElementById("hs-tabs").hidden);
+    assert.ok(!d.getElementById("hs-tab-notifications").hidden);
+    assert.ok(d.getElementById("hs-tab-notifications").contains(d.getElementById("hs-summary")));
+    assert.ok(d.getElementById("hs-tab-cockpit").hidden);
     assert.ok(text(d.getElementById("hs-status")).includes("Shown without administrative access"));
     assert.ok(text(d.getElementById("hs-summary")).includes("Needs attention: E-mail."));
 });
@@ -505,8 +512,8 @@ t("without administrative access: the profile from the status, and no button to 
     assert.strictEqual(d.getElementById("hs-sum-profile").textContent, "Target profile: web; 5 add-ons and checks expected.");
     assert.strictEqual(d.getElementById("hs-profile"), null, "the section needs administrative access");
     assert.strictEqual(d.querySelectorAll("[data-action], [id^=hs-profile-]").length, 0, "no button to change it");
-    assert.deepStrictEqual([...d.querySelectorAll("button")].filter((b) => !b.closest("dialog, [hidden]")).map((b) => b.id), ["hs-refresh"],
-        "only Refresh is shown");
+    assert.deepStrictEqual([...d.querySelectorAll("button")].filter((b) => !b.closest("dialog, [hidden]")).map((b) => b.id),
+        ["hs-refresh", "hs-tab-btn-notifications", "hs-tab-btn-cockpit"], "only Refresh and the tabs are shown");
     const none = await open({ admin: false });
     assert.strictEqual(none.d.getElementById("hs-sum-profile").textContent, "No target profile.");
     const de = await open({ admin: false, language: "de", onSpawn: (verb) => (verb.startsWith("status") ? P.proc(JSON.stringify(doc)) : null) });
@@ -641,6 +648,384 @@ t("the watchdog in German", async () => {
     const card = text(page.d.getElementById("hs-beat"));
     ["Wächter", "Gespeichert (nur für root lesbar)", "Unverschlüsselt: privates Netz", "Erfolg, vom Wächter angenommen"]
         .forEach((x) => assert.ok(card.includes(x), x + " in: " + card));
+});
+
+// ---------- the Cockpit tab: Cockpit's menu ----------
+
+function press(page, selector) {
+    const el = page.d.querySelector(selector);
+    assert.ok(el, "nothing matches " + selector);
+    assert.ok(!el.disabled, selector + " is disabled");
+    el.dispatchEvent(new page.w.MouseEvent("click", { bubbles: true }));
+}
+const row = (page, id) => page.d.querySelector(`#hs-menu tr[data-id="${id}"]`);
+const rowText = (page, id) => text(row(page, id));
+const rowButton = (id, kind) => `#hs-menu tr[data-id="${id}"] [data-menu="${kind}"]`;
+const ids = (page, section) => [...page.d.querySelectorAll(`#hs-menu-${section} + .az-table-wrap tbody tr`)].map((tr) => tr.dataset.id);
+const changeList = (page) => [...page.d.querySelectorAll("#hs-menu-changes li")].map((li) => li.textContent);
+// Every call of the menu verbs: the words, the superuser option (null: none) and where errors go.
+function menuCalls(page) {
+    return plain(page.calls.spawn.filter((c) => c.argv[0] === HELPER && c.argv[1] === "menu")
+        .map((c) => [c.argv.slice(1).join(" "), c.opts.superuser === undefined ? null : c.opts.superuser, c.opts.err]));
+}
+const SYSTEM_ORDER = ["systemd/menu/index", "systemd/menu/logs", "storaged/menu/index", "networkmanager/menu/index", "users/menu/index",
+                      "systemd/menu/services", "host-settings/menu/index"];
+
+t("the Cockpit tab: read once it opens, as the user", async () => {
+    const page = await open();
+    const d = page.d;
+    assert.deepStrictEqual(menuCalls(page), [], "nothing before the tab opens");
+    click(page, "hs-tab-btn-cockpit");
+    await settle();
+    assert.deepStrictEqual(plain(page.calls.go), [["cockpit"]], "a link to the tab");
+    assert.deepStrictEqual(menuCalls(page), [["menu show", null, "message"]], "never with administrative access");
+    assert.ok(!d.getElementById("hs-tab-cockpit").hidden && d.getElementById("hs-tab-notifications").hidden);
+    assert.ok(d.getElementById("hs-status").hidden, "the messages of the notifications stay on their tab");
+    assert.strictEqual(d.getElementById("hs-tab-btn-cockpit").getAttribute("aria-selected"), "true");
+    click(page, "hs-tab-btn-notifications");
+    click(page, "hs-tab-btn-cockpit");
+    await settle();
+    assert.strictEqual(menuCalls(page).length, 1, "read once");
+    click(page, "hs-refresh");
+    await settle();
+    assert.strictEqual(menuCalls(page).length, 2, "and again with Refresh");
+    // The link opens the tab, once the page is shown.
+    const hiddenPage = boot({ hidden: true, location: ["cockpit"] });
+    await settle();
+    assert.deepStrictEqual(hiddenPage.calls.spawn, [], "nothing runs while Cockpit keeps the page hidden");
+    hiddenPage.hint(false);
+    await settle();
+    assert.deepStrictEqual(helperCalls(hiddenPage).sort(), [["menu show", null], ["show", "try"]]);
+});
+
+t("the menu: Cockpit's three groups in the navigation's order, with what the override files do", async () => {
+    const page = await open({ location: ["cockpit"] });
+    const d = page.d;
+    const card = text(d.getElementById("hs-menu"));
+    assert.ok(card.includes("Applies to this host: server."), card);
+    assert.ok(card.includes("Apps No entries on this host."), card);
+    assert.deepStrictEqual(ids(page, "menu"), SYSTEM_ORDER, "by order, the overrides for all users taken in");
+    assert.deepStrictEqual(ids(page, "tools"), ["systemd/tools/terminal"]);
+    assert.ok(rowText(page, "systemd/menu/index").includes("Start page after login"));
+    const logs = row(page, "systemd/menu/logs");
+    assert.ok(logs.classList.contains("is-off"), "hidden entries stay listed, greyed");
+    assert.ok(text(logs).includes("Hidden") && text(logs).includes("Changed for all users"), text(logs));
+    assert.ok(logs.querySelector('[data-menu="show"]') && !logs.querySelector('[data-menu="hide"]'));
+    assert.ok(logs.querySelector('[data-menu="up"]').disabled && logs.querySelector('[data-menu="rename"]').disabled);
+    const terminal = rowText(page, "systemd/tools/terminal");
+    ["Shell", "Originally “Terminal”", "systemd · terminal", "Renamed", "Changed for all users"].forEach((s) => assert.ok(terminal.includes(s), s + " in: " + terminal));
+    assert.ok(rowText(page, "systemd/menu/services").includes("“Just for me” overrides this"));
+    assert.ok(!rowText(page, "systemd/menu/services").includes("Changed for all users"));
+    // keyboard: real buttons with names
+    const up = row(page, "systemd/menu/services").querySelector('[data-menu="up"]');
+    assert.strictEqual(up.tagName, "BUTTON");
+    assert.strictEqual(up.getAttribute("aria-label"), "Move Services up");
+    assert.ok(row(page, "systemd/menu/index").querySelector('[data-menu="up"]').disabled, "the first cannot move up");
+    assert.ok(row(page, "host-settings/menu/index").querySelector('[data-menu="down"]').disabled, "the last cannot move down");
+    // a file that is not JSON: a warning, and its package cannot be changed in that scope
+    const storage = row(page, "storaged/menu/index");
+    assert.strictEqual(storage.querySelectorAll("button").length, 0);
+    assert.ok(text(storage).includes("Cannot be changed here while its override file is not valid"), text(storage));
+    assert.ok(card.includes("An override file is not valid /etc/cockpit/storaged.override.json is not JSON. Cockpit ignores it, and the entries of storaged cannot be changed for all users"), card);
+    // more in a file than the editor manages
+    assert.ok(card.includes("/etc/cockpit/systemd.override.json holds 1 more setting the editor does not manage; it stays as it is."), card);
+    // for all users by default; the user's own files can be chosen
+    assert.strictEqual(d.getElementById("hs-menu-scope-system").getAttribute("aria-pressed"), "true");
+    assert.strictEqual(d.getElementById("hs-menu-scope-user").getAttribute("aria-pressed"), "false");
+    assert.ok(text(d.getElementById("hs-menu-scope-note")).includes("Saved in /etc/cockpit with administrative access"));
+    assert.ok(d.getElementById("hs-menu-save").disabled && d.getElementById("hs-menu-discard").disabled, "nothing to save");
+    assert.strictEqual(d.getElementById("hs-menu-count").textContent, "No changes.");
+});
+
+t("the draft: move, rename, hide and show; the dialog lists them and writes for all users, the plan on standard input", async () => {
+    const page = await open({ location: ["cockpit"] });
+    const d = page.d;
+    press(page, rowButton("systemd/menu/services", "up"));
+    assert.deepStrictEqual(ids(page, "menu").slice(3, 6), ["networkmanager/menu/index", "systemd/menu/services", "users/menu/index"]);
+    assert.strictEqual(d.activeElement, row(page, "systemd/menu/services").querySelector('[data-menu="up"]'), "the focus moves with the entry");
+    assert.ok(rowText(page, "systemd/menu/services").includes("Not saved"));
+    assert.ok(d.getElementById("hs-menu-scope-user").disabled, "no switching while changes wait");
+    press(page, rowButton("networkmanager/menu/index", "rename"));
+    assert.ok(d.getElementById("hs-dialog").hasAttribute("open"));
+    assert.strictEqual(d.getElementById("hs-f-label").value, "Networking");
+    assert.ok(text(d.getElementById("hs-dialog-desc")).includes("A name set here is fixed text: Cockpit does not translate it."));
+    assert.strictEqual(d.getElementById("hs-dialog-note").textContent, "Nothing is saved yet: the change is added to the changes of the menu.");
+    d.getElementById("hs-f-label").value = "Network";
+    click(page, "hs-dialog-confirm");
+    assert.ok(!d.getElementById("hs-dialog").hasAttribute("open"), "a change of the draft closes the dialog");
+    assert.ok(rowText(page, "networkmanager/menu/index").includes("Network Originally “Networking”"));
+    press(page, rowButton("users/menu/index", "hide"));
+    assert.ok(row(page, "users/menu/index").classList.contains("is-off"));
+    press(page, rowButton("systemd/menu/logs", "show"));
+    assert.ok(!row(page, "systemd/menu/logs").classList.contains("is-off"));
+    assert.ok(!text(d.querySelector('#hs-menu tr[data-id="system/users/menu/people"]')).includes("Removed"),
+        "the setting for a key without an entry stays in the file of users");
+    assert.deepStrictEqual(menuCalls(page), [["menu show", null, "message"]], "nothing runs before Save");
+    assert.strictEqual(d.getElementById("hs-menu-count").textContent, "4 changes not saved");
+    press(page, "#hs-menu-save");
+    assert.strictEqual(d.getElementById("hs-dialog-title").textContent, "Save the menu for all users");
+    assert.deepStrictEqual(changeList(page), [
+        "Show Logs",
+        "Rename Networking to Network",
+        "Services before Accounts",
+        "Hide Accounts",
+        "Other settings in /etc/cockpit/systemd.override.json stay as they are.",
+    ]);
+    assert.strictEqual(d.getElementById("hs-dialog-note").textContent, "Runs with administrator privileges via Cockpit.");
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(changes(page), [["menu", "apply", "system"]], "for all users with administrative access");
+    assert.deepStrictEqual(menuCalls(page)[1], ["menu apply system", "require", "out"]);
+    assert.strictEqual(page.calls.inputs.length, 1);
+    assert.deepStrictEqual(JSON.parse(page.calls.inputs[0]), {
+        base: { networkmanager: "", systemd: P.MENU_SHA.systemd, users: P.MENU_SHA.users },
+        set: {
+            networkmanager: { menu: { index: { label: "Network" } } },
+            // Logs shown again; the name of Terminal, set before and not touched, stays.
+            systemd: { menu: { services: { order: 55 } }, tools: { terminal: { label: "Shell" } } },
+            // The setting for people, a key without an entry, keeps its value.
+            users: { menu: { index: null, people: { order: 75, label: "People" } } },
+        },
+    });
+    assert.ok(!JSON.stringify(page.calls.spawn.map((c) => c.argv)).includes("Shell"), "the plan never in an argument");
+    assert.strictEqual(d.getElementById("hs-dialog-result").textContent, "Done.");
+    assert.deepStrictEqual(menuCalls(page).map((c) => c[0]), ["menu show", "menu apply system", "menu show"], "read again after saving");
+    assert.strictEqual(helperCalls(page).filter(([v]) => v === "show").length, 1, "the notifications are not read again");
+    assert.strictEqual(d.getElementById("hs-menu-count").textContent, "No changes.");
+    assert.ok(text(d.getElementById("hs-menu-saved")).includes("reload Cockpit (F5) to see the change"));
+    click(page, "hs-dialog-cancel");
+    press(page, "#hs-menu-reload");
+    assert.ok(page.calls.unimplemented.some((m) => /navigation/.test(m)), "the whole page reloads: " + page.calls.unimplemented);
+    // Discard: everything as read.
+    const other = await open({ location: ["cockpit"] });
+    press(other, rowButton("users/menu/index", "hide"));
+    press(other, "#hs-menu-discard");
+    assert.ok(!row(other, "users/menu/index").classList.contains("is-off"));
+    assert.ok(other.d.getElementById("hs-menu-save").disabled);
+});
+
+t("without administrative access: just for me, as the user; what is set for all users only shown", async () => {
+    const page = await open({ admin: false, location: ["cockpit"] });
+    const d = page.d;
+    assert.deepStrictEqual(helperCalls(page).sort(), [["menu show", null], ["show", "try"], ["status --lang en", "try"]]);
+    assert.strictEqual(d.getElementById("hs-menu-scope-system"), null, "only “Just for me”");
+    assert.strictEqual(d.getElementById("hs-menu-scope-user"), null);
+    const card = text(d.getElementById("hs-menu"));
+    assert.ok(card.includes("Who sees the changes Just for me"), card);
+    assert.ok(card.includes("Saved in /home/admin/.config/cockpit of your account (admin): only you see it"), card);
+    assert.ok(card.includes("Changes for all users need administrative access."), card);
+    assert.deepStrictEqual(ids(page, "menu"), ["systemd/menu/index", "systemd/menu/services", "systemd/menu/logs", "storaged/menu/index",
+                                               "networkmanager/menu/index", "users/menu/index", "host-settings/menu/index"], "as this user sees it");
+    assert.ok(rowText(page, "systemd/menu/services").includes("Changed just for you"));
+    const logs = row(page, "systemd/menu/logs");
+    assert.ok(text(logs).includes("Hidden for all users") && text(logs).includes("it can be shown again only there"), text(logs));
+    assert.strictEqual(logs.querySelectorAll("button").length, 0, "hidden for all users: read only");
+    assert.ok(row(page, "storaged/menu/index").querySelector('[data-menu="hide"]'), "the broken file is not this user's");
+    assert.strictEqual(d.querySelector('#hs-menu tr[data-id="system/users/menu/people"] button'), null, "orphans for all users: read only");
+    press(page, rowButton("systemd/menu/services", "up"));
+    assert.ok(rowText(page, "systemd/menu/services").includes("Becomes the start page after login"));
+    assert.ok(!rowText(page, "systemd/menu/index").includes("Start page"));
+    press(page, "#hs-menu-save");
+    assert.strictEqual(d.getElementById("hs-dialog-title").textContent, "Save the menu just for you");
+    assert.strictEqual(d.getElementById("hs-dialog-note").textContent, "Runs as you, without administrative access.");
+    assert.deepStrictEqual(changeList(page), ["Services before Overview: becomes the start page after login"]);
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(menuCalls(page), [["menu show", null, "message"], ["menu apply user", null, "out"], ["menu show", null, "message"]]);
+    assert.ok(page.calls.spawn.every((c) => c.opts.superuser !== "require"), "nothing with administrative access");
+    assert.deepStrictEqual(JSON.parse(page.calls.inputs[0]), {
+        base: { systemd: P.MENU_SHA.mine },
+        // one less than the first; the null for a key that is gone stays
+        set: { systemd: { menu: { services: { order: -3 }, gone: null } } },
+    });
+});
+
+t("for all users or just for me: an administrator chooses, not while changes wait", async () => {
+    const page = await open({ location: ["cockpit"] });
+    const d = page.d;
+    press(page, "#hs-menu-scope-user");
+    assert.strictEqual(d.getElementById("hs-menu-scope-user").getAttribute("aria-pressed"), "true");
+    assert.strictEqual(ids(page, "menu")[1], "systemd/menu/services", "the list as this user sees it");
+    press(page, rowButton("storaged/menu/index", "hide"));
+    assert.ok(d.getElementById("hs-menu-scope-system").disabled);
+    assert.ok(text(d.getElementById("hs-menu")).includes("Save or discard the changes before switching."));
+    press(page, "#hs-menu-save");
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(menuCalls(page)[1], ["menu apply user", null, "out"], "the user's own files without administrative access");
+    assert.deepStrictEqual(JSON.parse(page.calls.inputs[0]), { base: { storaged: "" }, set: { storaged: { menu: { index: null } } } });
+});
+
+t("settings for entries that do not exist: listed, removed on request", async () => {
+    const page = await open({ location: ["cockpit"] });
+    const d = page.d;
+    const people = () => text(d.querySelector('#hs-menu tr[data-id="system/users/menu/people"]'));
+    assert.ok(people().includes("Makes an entry without a page") && people().includes("For all users"), people());
+    const gone = d.querySelector('#hs-menu tr[data-id="user/systemd/menu/gone"]');
+    assert.ok(text(gone).includes("Hides nothing") && text(gone).includes("Just for me"), text(gone));
+    assert.strictEqual(gone.querySelector("button"), null, "not in the scope being changed");
+    press(page, '#hs-menu tr[data-id="system/users/menu/people"] [data-menu="drop"]');
+    assert.ok(people().includes("Removed when saving"), people());
+    assert.ok(!d.getElementById("hs-menu-save").disabled);
+    press(page, "#hs-menu-save");
+    assert.deepStrictEqual(changeList(page), ["Remove the setting for people (users, System)"]);
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(JSON.parse(page.calls.inputs[0]), { base: { users: P.MENU_SHA.users }, set: {} });
+    // A change elsewhere in the file keeps each such setting with its value: null, order and label,
+    // never what else the file holds for it, which stays there anyway. Removed here, it goes.
+    const menu = P.menuShow();
+    menu.orphans.push({ scope: "system", dir: "users", section: "tools", key: "odd", phantom: false, value: { other: true } },
+                      { scope: "system", dir: "users", section: "menu", key: "old", phantom: false, value: { hidden: true } },
+                      { scope: "system", dir: "users", section: "menu", key: "more", phantom: true, value: { order: 4, other: true } });
+    const keep = await open({ location: ["cockpit"], menu });
+    press(keep, rowButton("users/menu/index", "hide"));
+    press(keep, '#hs-menu tr[data-id="system/users/menu/old"] [data-menu="drop"]');
+    press(keep, "#hs-menu-save");
+    assert.deepStrictEqual(changeList(keep), ["Hide Accounts", "Remove the setting for old (users, System)"]);
+    click(keep, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(JSON.parse(keep.calls.inputs[0]), {
+        base: { users: P.MENU_SHA.users },
+        set: { users: { menu: { index: null, people: { order: 75, label: "People" }, more: { order: 4 } } } },
+    });
+    // A key the helper does not take cannot be kept: the dialog says so.
+    const odd = P.menuShow();
+    odd.orphans.push({ scope: "system", dir: "users", section: "menu", key: "a.b", phantom: true, value: { order: 3 } });
+    const lost = await open({ location: ["cockpit"], menu: odd });
+    press(lost, rowButton("users/menu/index", "hide"));
+    assert.ok(text(lost.d.querySelector('#hs-menu tr[data-id="system/users/menu/a.b"]')).includes("Removed with the other changes of this file"));
+    press(lost, "#hs-menu-save");
+    assert.deepStrictEqual(changeList(lost), ["Hide Accounts",
+        "Also removes the setting for a.b (users, System): the editor cannot keep it when it writes this file"]);
+});
+
+t("a menu changed meanwhile: nothing written, read again, the changes kept", async () => {
+    let tries = 0;
+    const page = await open({ location: ["cockpit"], onSpawn: (verb, opts, box) => {
+        if (verb !== "menu apply system" || tries++) return null;
+        box.menu = P.menuShow();
+        box.menu.files[0].sha256 = "e".repeat(64);
+        return P.proc("", { chunks: ["/etc/cockpit/systemd.override.json has changed meanwhile. Reload the menu.\n"], fail: { exit_status: 75 } });
+    } });
+    const d = page.d;
+    press(page, rowButton("systemd/menu/index", "hide"));
+    press(page, "#hs-menu-save");
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.ok(d.getElementById("hs-dialog-result").textContent.startsWith("The menu was changed meanwhile"), d.getElementById("hs-dialog-result").textContent);
+    assert.ok(d.getElementById("hs-dialog-log").textContent.includes("changed meanwhile"));
+    assert.deepStrictEqual(menuCalls(page).map((c) => c[0]), ["menu show", "menu apply system", "menu show"]);
+    assert.strictEqual(d.getElementById("hs-menu-count").textContent, "1 change not saved", "the change waits");
+    click(page, "hs-dialog-cancel");
+    press(page, "#hs-menu-save");
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(JSON.parse(page.calls.inputs[0]).base, { systemd: "e".repeat(64) }, "made from the file as it is now");
+});
+
+t("moving where there is no room: the next whole numbers, as far as needed", async () => {
+    const menu = P.menuShow({ entries: [P.menuEntry("tools", "index", "alpha", "Alpha", null), P.menuEntry("tools", "index", "beta", "Beta", null),
+                                        P.menuEntry("tools", "index", "gamma", "Gamma", null)], orphans: [], files: [] });
+    const page = await open({ location: ["cockpit"], menu });
+    press(page, rowButton("gamma/tools/index", "up"));
+    assert.deepStrictEqual(ids(page, "tools"), ["alpha/tools/index", "gamma/tools/index", "beta/tools/index"]);
+    press(page, "#hs-menu-save");
+    assert.deepStrictEqual(changeList(page), ["Gamma before Beta", "1 more entry gets a new number so that the order holds; it keeps its place."]);
+    assert.ok(text(page.d.getElementById("hs-menu")).includes("No entries on this host."), "System is empty here");
+    click(page, "hs-dialog-confirm");
+    await settle();
+    assert.deepStrictEqual(JSON.parse(page.calls.inputs[0]), {
+        base: { beta: "", gamma: "" },
+        set: { beta: { tools: { index: { order: 1002 } } }, gamma: { tools: { index: { order: 1001 } } } },
+    });
+    // Midway between two neighbours, at most three decimals; too close for that, the next whole numbers.
+    const entries = (b, c) => [P.menuEntry("tools", "index", "alpha", "Alpha", 1), P.menuEntry("tools", "index", "beta", "Beta", b),
+                               P.menuEntry("tools", "index", "gamma", "Gamma", c)];
+    const cases = [[1.25, 1.2555, "alpha", "down", { alpha: { tools: { index: { order: 1.253 } } } }],
+                   [1.001, 2, "gamma", "up", { gamma: { tools: { index: { order: 2 } } }, beta: { tools: { index: { order: 3 } } } }]];
+    for (const [b, c, who, way, want] of cases) {
+        const near = await open({ location: ["cockpit"], menu: P.menuShow({ entries: entries(b, c), orphans: [], files: [] }) });
+        press(near, rowButton(who + "/tools/index", way));
+        press(near, "#hs-menu-save");
+        click(near, "hs-dialog-confirm");
+        await settle();
+        assert.deepStrictEqual(JSON.parse(near.calls.inputs[0]).set, want, who + " " + way);
+    }
+});
+
+t("rename: fixed text, checked, empty is the original name again", async () => {
+    const page = await open({ location: ["cockpit"] });
+    const d = page.d;
+    press(page, rowButton("systemd/tools/terminal", "rename"));
+    assert.strictEqual(d.getElementById("hs-f-label").value, "Shell");
+    assert.ok(text(d.getElementById("hs-dialog-fields")).includes("Empty: the original name, “Terminal”, again."));
+    for (const bad of ["Shell" + String.fromCharCode(0x202E) + "x", "x".repeat(61), "a" + String.fromCharCode(7) + "b"]) {
+        d.getElementById("hs-f-label").value = bad;
+        click(page, "hs-dialog-confirm");
+        assert.ok(d.getElementById("hs-dialog").hasAttribute("open"), JSON.stringify(bad));
+        assert.ok(text(d.getElementById("hs-dialog-error")).includes("At most 60 characters, without control characters."));
+    }
+    d.getElementById("hs-f-label").value = "";
+    click(page, "hs-dialog-confirm");
+    assert.ok(!d.getElementById("hs-dialog").hasAttribute("open"));
+    const terminal = rowText(page, "systemd/tools/terminal");
+    assert.ok(terminal.startsWith("Terminal") && !terminal.includes("Renamed"), terminal);
+    press(page, "#hs-menu-save");
+    assert.deepStrictEqual(changeList(page).slice(0, 1), ["Shell: back to its original name, Terminal"]);
+    click(page, "hs-dialog-confirm");
+    await settle();
+    // Logs stays hidden: the editor's part of the file is written whole.
+    assert.deepStrictEqual(JSON.parse(page.calls.inputs[0]), { base: { systemd: P.MENU_SHA.systemd }, set: { systemd: { menu: { logs: null } } } });
+});
+
+t("the menu's texts stay text; entries the editor does not write have no buttons", async () => {
+    const menu = P.menuShow();
+    menu.entries.push(P.menuEntry("menu", "index", "evil", EVIL, 50), P.menuEntry("menu", "a.b", "odd", "Odd", 60, null, null, { editable: false }));
+    menu.orphans.push({ scope: "system", dir: "systemd", section: "menu", key: EVIL, phantom: true });
+    menu.files.push({ scope: "user", dir: "evil", path: "/home/admin/.config/cockpit/" + EVIL, sha256: "", valid: false, error: EVIL, foreign: 0, served: true });
+    const page = await open({ location: ["cockpit"], menu });
+    const d = page.d;
+    const panel = d.getElementById("hs-tab-cockpit");
+    assert.strictEqual(panel.querySelectorAll("img").length, 0);
+    assert.ok(rowText(page, "evil/menu/index").startsWith(EVIL));
+    assert.ok(text(panel).includes(EVIL + " is not JSON"), "an unknown error is told as not JSON");
+    press(page, rowButton("evil/menu/index", "rename"));
+    assert.ok(text(d.getElementById("hs-dialog-desc")).includes(EVIL));
+    assert.strictEqual(d.querySelectorAll("dialog img").length, 0);
+    click(page, "hs-dialog-cancel");
+    const odd = row(page, "odd/menu/a.b");
+    assert.strictEqual(odd.querySelectorAll("button").length, 0);
+    assert.ok(text(odd).includes("its folder or key has characters the editor does not write"), text(odd));
+    assert.strictEqual(page.w.__pwned, undefined);
+});
+
+t("the menu in German, with the labels as Cockpit translates them", async () => {
+    const page = await open({ location: ["cockpit"], language: "de" });
+    const d = page.d;
+    const scripts = d.querySelectorAll("script");
+    assert.strictEqual(scripts.length, 1, "Cockpit's translations of the manifests, asked for once");
+    assert.strictEqual(scripts[0].getAttribute("src"), "../manifests-i18n.js");
+    assert.ok(rowText(page, "systemd/menu/index").startsWith("Overview"), "the manifest's label until they are there");
+    page.w.cockpit.gettext = (s) => ({ Overview: "Übersicht", Logs: "Protokolle", Terminal: "Terminal", Services: "Dienste" }[s] || s);
+    scripts[0].dispatchEvent(new page.w.Event("load"));
+    assert.ok(rowText(page, "systemd/menu/index").startsWith("Übersicht"));
+    assert.ok(rowText(page, "systemd/tools/terminal").includes("Shell Ursprünglich „Terminal“"), "a name set in an override is not translated");
+    assert.strictEqual(d.getElementById("hs-tab-btn-cockpit").textContent, "Cockpit");
+    const card = text(d.getElementById("hs-menu"));
+    ["Menü", "Gilt für diesen Host: server.", "Wer die Änderungen sieht", "Für alle Benutzer", "Nur für mich", "Werkzeuge",
+     "Startseite nach der Anmeldung", "Für alle geändert", "„Nur für mich“ überdeckt das", "Erzeugt einen Eintrag ohne Seite",
+     "Keine Änderungen."].forEach((s) => assert.ok(card.includes(s), s + " in: " + card));
+    assert.strictEqual(row(page, "systemd/menu/services").querySelector('[data-menu="up"]').getAttribute("aria-label"), "Dienste nach oben");
+    press(page, rowButton("systemd/menu/services", "hide"));
+    press(page, "#hs-menu-save");
+    assert.strictEqual(d.getElementById("hs-dialog-title").textContent, "Menü für alle Benutzer speichern");
+    assert.deepStrictEqual(changeList(page), ["Dienste ausblenden", "Andere Angaben in /etc/cockpit/systemd.override.json bleiben, wie sie sind."]);
+    // Without the translations (an older Cockpit), the manifest's label.
+    const old = await open({ location: ["cockpit"], language: "de" });
+    old.w.cockpit.gettext = () => "nie";
+    old.d.querySelector("script").dispatchEvent(new old.w.Event("error"));
+    assert.ok(rowText(old, "systemd/menu/index").startsWith("Overview"));
 });
 
 // A test that waits forever fails with its name instead of holding up the run.

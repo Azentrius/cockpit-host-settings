@@ -50,6 +50,9 @@ the watchdog's file and the user.
 | `host-settings.py profile skip add ADDON/CHECK [YYYY-MM-DD]` (reason on standard input) | require | "Leave a check out" |
 | `host-settings.py profile skip remove ADDON/CHECK` | require | "Remove" in a row of the checks left out |
 | `host-settings.py profile remove` | require | "Remove the profile" |
+| `host-settings.py menu show` | none | the Cockpit tab, once it is opened, and again after saving and with "Refresh"; as the user who is logged in |
+| `host-settings.py menu apply system` (plan on standard input) | require | "Save changes" for all users, through the dialog |
+| `host-settings.py menu apply user` (plan on standard input) | none | "Save changes" just for me, through the dialog, as the user |
 | watch `/var/lib/cockpit-host-settings/status.json` | (user) | the page loads again when a run wrote it |
 
 Every argument is checked by the helper (the page checks the same patterns first, for a quick
@@ -769,7 +772,7 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
 
 ## Cockpit's menu (`hsmenu.py`)
 
-The verbs for the menu editor of the Cockpit tab. The page does not call them yet.
+The verbs for the menu editor of the Cockpit tab (below, "Page internals").
 
 | Call | Superuser | What |
 |---|---|---|
@@ -798,8 +801,9 @@ except that it does not check a manifest's `requires`.
   `user` (what that scope's file does to it: `null` nothing, `{"hidden": true}`, or the `order` and
   `label` it sets, `"other": true` when it holds more), and `effective` (`label`, `order`, `hidden`).
 - `orphans`: a key in an override file that the package does not have (`scope`, `dir`,
-  `section`, `key`). With `phantom` the file holds an object for it, and Cockpit shows an entry
-  without a page; a null for it does nothing.
+  `section`, `key`, and `value` as for an entry's `system` and `user`, so that a plan can keep it).
+  With `phantom` the file holds an object for it, and Cockpit shows an entry without a page; a
+  null for it does nothing.
 - `files`: every override file of both scopes: `scope`, `dir`, `path`, `sha256` of its bytes,
   `valid`, `error` (`unreadable`, `too-large`, `invalid`, `not-an-object`), `foreign` (how many
   things in it the editor does not manage) and `served` (whether a package with that folder is
@@ -844,7 +848,56 @@ except that it does not check a manifest's `requires`.
   outcome, not for the log. Password fields are cleared once sent.
 - The commands for the ntfy server are built from the topic: user and topic are the same name;
   the reader's pattern replaces the host name in the topic with `*`.
-- Tabs: `TABS` has one entry, so the tab bar stays hidden; the location `#/notifications` selects it.
+- Tabs: `TABS` is Notifications and Cockpit; the location (`#/notifications`, `#/cockpit`) selects one.
+  Both show also without administrative access: Notifications then holds the summary of the status
+  contract, Cockpit the menu editor just for the user. The page messages and the first loading card
+  belong to Notifications.
+- The Cockpit tab holds the card "Menu" (`renderMenu()`). It runs `menu show` the first time the tab
+  opens (never while Cockpit keeps the page hidden), never with administrative access, and adds the
+  one script the page loads itself, `../manifests-i18n.js` (the bridge's translations of every
+  package's manifest); once that has loaded, a label from a manifest is shown as
+  `cockpit.gettext(label)`, as the navigation shows it, and without it (an error, an older Cockpit)
+  as the manifest has it. A name set in an override is fixed text, never translated.
+  - Scope: "For all users" (the default with administrative access) or "Just for me" (the only one
+    without). A list shows what that scope's users see: for all users the package's entry with the
+    override for all users, just for me with the user's own on top. The scope is fixed while
+    changes wait.
+  - Three lists, Apps (`dashboard`), System (`menu`) and Tools (`tools`), in Cockpit's order: by
+    `order` (1000 without one), then by the label shown. Each row: the label, the original under a
+    renamed one, package and key; labels for not saved, the start page (the first entry of System
+    that is shown; "Becomes the start page after login" when the draft changes it), hidden (hidden
+    for all users, just for me), renamed, changed for all users, changed just for you, and "“Just
+    for me” overrides this" (for all users, when the user's own file sets something for the entry).
+    Hidden entries stay in their place, greyed.
+  - Buttons per row: "Move up" and "Move down" (buttons with the entry's name as `aria-label`; the
+    focus stays on the entry), "Rename" (the dialog, which then runs nothing), "Hide" or "Show". None
+    for an entry the helper does not write (`editable` false, or a folder or key outside its
+    patterns), for one whose override file in that scope is not valid, and, just for me, for one
+    hidden for all users. "Hide" is off when the file holds more for that entry (`other`): the
+    helper would refuse to delete it.
+  - The draft (`draft`, in memory): the mark each changed entry should have in the scope. Moving
+    gives only the moved entry a new `order`, midway between its new neighbours (three decimals at
+    most), one less or more at either end; when that leaves no room (equal orders, too close), the
+    entries from its new place on get the next whole numbers, as far as needed. "Show" brings back
+    the mark as saved (or none). A name equal to the original, or empty, removes the name.
+  - Below the lists: a warning for each override file that is not valid, a note for each file of
+    the scope that holds settings the editor does not manage, and the settings for keys a package
+    does not have (`orphans`; for an object: "Makes an entry without a page"), with "Remove" in the
+    scope being changed.
+  - "Save changes" and "Discard" only with a draft. Saving opens the dialog with the changes in
+    words ("Hide Logs", "Services before Overview: becomes the start page after login", how many
+    entries got a new number to make room, the settings removed, the files whose other settings
+    stay), then runs `menu apply system` (administrative access) or `menu apply user` (as the user;
+    the only call of the dialog without administrative access) with the plan on standard input:
+    for each package folder touched, `base` is the `sha256` of the scope's file from `menu show`
+    (empty when there is none) and `set` is the editor's whole part of that file after the draft
+    (every hidden entry, order and name, and those of the keys without an entry, from their `value`,
+    unless removed here), so what the draft did not touch stays. Only a key outside the helper's
+    pattern cannot be kept: the dialog names it as removed. Exit 75: the
+    dialog says the menu changed meanwhile, the page reads it again and keeps the draft. After
+    saving: `menu show` again, the draft cleared, and "Saved" with the hint to reload Cockpit (F5)
+    and the button "Reload Cockpit" (`window.top.location.reload()`; when that throws, the hint
+    alone).
 - The watchdog is a section of the Notifications tab (`renderHeartbeat()`): set up or not, the
   service, "Stored (readable by root only)" instead of the address, "Not encrypted: private
   network" for plain http, the last signal and the last test, the settings that fit the timer.
@@ -915,12 +968,18 @@ except that it does not check a manifest's `requires`.
   format, both channels failing (the summary and a change come again), the watchdog not reached,
   a test while a run holds the lock, the file a test writes; `hschannels` on its own.
 - `test/page.test.js`, `test/files.test.js`, `test/i18n.test.js`: the page under jsdom, its files,
-  its texts.
+  its texts. The menu editor from a `menu show` fixture: read once its tab opens and never while
+  hidden, the lists in Cockpit's order, moving (midway, at either end, without room), renaming,
+  hiding and showing in the draft, the dialog's words and the plan on standard input (`base`, and
+  a setting of the file the draft did not touch kept in `set`), for all users with administrative
+  access and just for me without, the start page, orphans, a file that is not valid, a file changed
+  meanwhile (75), hostile labels as text, the translated labels and German.
 - `tools/check-board-fixtures.sh`: `test/fixtures/board` is unchanged from Status Board
   (`tools/board-fixtures.sha256`).
 - `tools/preview/build.py` and `shoot.py` (job `test`): the page with `tools/preview/cockpit-stub.js`
-  in place of Cockpit and the made-up scenarios `fresh`, `ready`, `open`, `nomta`, the status texts
-  from `lib/hsstatus.py` itself. `shoot.py` opens every scenario in Chromium in both themes, both
+  in place of Cockpit and the made-up scenarios `fresh`, `ready`, `open`, `nomta`, `menu` and
+  `menu-noadmin` (the Cockpit tab, with and without administrative access, German labels from a
+  stand-in `manifests-i18n.js`), the status texts from `lib/hsstatus.py` itself. `shoot.py` opens every scenario in Chromium in both themes, both
   languages, with and without administrative access, fails on a JavaScript error or on sideways
   scrolling at a width of 390 pixels (the dialog as well), and writes the screenshots (artifact
   `screenshots`, the pictures in `docs/img`).

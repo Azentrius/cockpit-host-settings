@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Host Settings, a Cockpit add-on: where messages about the Azentrius add-ons of this
- * server go (ntfy, e-mail or both), and whether the way there is safe.
+ * server go (ntfy, e-mail or both), and whether the way there is safe; and, on the
+ * Cockpit tab, Cockpit's own menu.
  *
  *   show    -> cockpit.spawn(host-settings.py show), superuser "try"   settings, timer, last run, profile (root)
  *   status  -> cockpit.spawn(host-settings.py status --lang xx)        the summary without root
  *   changes -> host-settings.py set|unset|token|check|test|run|install|remove|heartbeat|profile …, through the dialog
  *   watch   -> cockpit.file(/var/lib/cockpit-host-settings/status.json) written by every run
+ *   menu    -> cockpit.spawn(host-settings.py menu show), as the user   Cockpit's menu, read once the tab opens
+ *              host-settings.py menu apply system|user, plan on standard input, through the dialog
+ *              (for all users with administrative access, just for me as the user)
  *
  * menu-status.js runs first: it sets the status icon in Cockpit's menu, also while
  * Cockpit keeps the page loaded hidden, and says when the page is shown; only then
@@ -29,7 +33,7 @@
     const HELPER = "/usr/lib/cockpit-host-settings/host-settings.py";
     const STATUS_PATH = "/var/lib/cockpit-host-settings/status.json";
     const NTFY_DOCS = "https://docs.ntfy.sh/install/";
-    const TABS = ["notifications"];
+    const TABS = ["notifications", "cockpit"];
     const ORDER = { none: 0, ok: 1, info: 2, warning: 3, danger: 4 };
     const ICONS = { none: "ban", ok: "check-circle", info: "info-circle", warning: "exclamation-triangle",
                     danger: "exclamation-circle" };
@@ -65,6 +69,24 @@
     const BEAT_URL_RE = /^https?:\/\/[^\s/?#@]+\/[^\s#]{1,490}$/;
     const BEAT_REASONS = ["accepted", "not-found", "rate-limited", "ambiguous", "invalid-url", "refused", "unexpected",
                           "redirect", "tls", "timeout", "network", "invalid"];
+    // Cockpit's menu (lib/hsmenu.py): its groups, the scopes of the override files, a package folder
+    // and a key the helper writes, the limits of an order and a label, and Cockpit's own order for an
+    // entry without one. What a label may not hold as INVISIBLE_RE of lib/hslib.py, with tab and line
+    // breaks (code points, so this file holds none of them).
+    const MENU_SECTIONS = ["dashboard", "menu", "tools"];
+    const MENU_SCOPES = ["system", "user"];
+    const MENU_FILE_ERRORS = ["unreadable", "too-large", "invalid", "not-an-object"];
+    const DIR_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+    const KEY_RE = /^[A-Za-z0-9_-]{1,64}$/;
+    const MENU_ORDER = 1000;
+    const MENU_ORDER_MIN = -1000;
+    const MENU_ORDER_MAX = 10000;
+    const MENU_LABEL_MAX = 60;
+    const INVISIBLE = [[0x00, 0x1F], [0x7F, 0x9F], [0xAD, 0xAD], [0x61C, 0x61C], [0x180E, 0x180E], [0x200B, 0x200F],
+                       [0x2028, 0x202E], [0x2060, 0x206F], [0xFEFF, 0xFEFF], [0xFFF9, 0xFFFB]];
+    // The translations of every package's manifest (their po.manifest files), served by Cockpit's
+    // bridge; the one script the page adds itself.
+    const MANIFEST_I18N = "../manifests-i18n.js";
 
     // --- i18n --------------------------------------------------------------
     const I18N = window.HostSettingsI18n;
@@ -155,12 +177,13 @@
             h("div", { class: "az-card__header" }, h("h2", { class: "az-card__title", id: id + "-title", text: title }), extra || null),
             h("div", { class: "az-card__body" }, body));
     }
-    // A table that becomes blocks on a phone: one cell per column, labelled.
-    function table(cols, rows) {
+    // A table that becomes blocks on a phone: one cell per column, labelled; rowAttrs (optional)
+    // holds the attributes of each row.
+    function table(cols, rows, rowAttrs) {
         return h("div", { class: "az-table-wrap" },
             h("table", { class: "az-table az-table--stack" },
                 h("thead", null, h("tr", null, cols.map((c) => h("th", { scope: "col", text: c })))),
-                h("tbody", null, rows.map((cells) => h("tr", null,
+                h("tbody", null, rows.map((cells, r) => h("tr", rowAttrs ? rowAttrs[r] : null,
                     cells.map((cell, i) => h("td", { "data-label": cols[i] }, h("span", { class: "hs-v" }, cell))))))));
     }
     function kv(pairs) {
@@ -196,9 +219,12 @@
     }
 
     // --- The system ----------------------------------------------------------
-    function spawn(argv, superuser) {
-        return cockpit.spawn(argv, { superuser, err: superuser === "require" ? "out" : "message",
-                                     environ: ["HOST_SETTINGS_LANG=" + LANG] });
+    // superuser: "require" (a change through the dialog), "try" (show, status) or null (as the user
+    // who is logged in: Cockpit's menu). err "out": the helper's messages go to the dialog's log.
+    function spawn(argv, superuser, err) {
+        const opts = { err: err || (superuser === "require" ? "out" : "message"), environ: ["HOST_SETTINGS_LANG=" + LANG] };
+        if (superuser) opts.superuser = superuser;
+        return cockpit.spawn(argv, opts);
     }
     function isNoAdmin(ex) {
         ex = ex || {};
@@ -210,6 +236,7 @@
     let admin = null;       // true, false, or null while not known
     let loadError = null;
     let loadedOnce = false;
+    let started = false;    // the page is shown: reading from the server may start
     let tab = "notifications";
     let hostName = "";
 
@@ -260,23 +287,30 @@
     }
 
     // --- Tabs --------------------------------------------------------------
+    // Both tabs also without administrative access: Notifications then holds the summary, Cockpit
+    // the menu just for the user. The page messages and the first loading card belong to
+    // Notifications; the Cockpit tab has its own.
     function renderTabs() {
         const nav = $("hs-tabs");
-        nav.hidden = admin === false || TABS.length < 2;
+        nav.hidden = TABS.length < 2;
         nav.querySelectorAll("[role=tab]").forEach((b) => {
             const on = b.dataset.tab === tab;
             b.setAttribute("aria-selected", on ? "true" : "false");
             b.tabIndex = on ? 0 : -1;
         });
-        TABS.forEach((k) => { $("hs-tab-" + k).hidden = admin === false || k !== tab; });
+        TABS.forEach((k) => { $("hs-tab-" + k).hidden = k !== tab; });
         $("hs-summary").hidden = admin !== false;
+        $("hs-status").hidden = tab !== "notifications";
+        $("hs-loading").hidden = loadedOnce || tab !== "notifications";
+    }
+    function showTab(k) {
+        tab = k;
+        renderTabs();
+        if (tab === "cockpit") openMenu();
     }
     function followLocation() {
         const first = ((cockpit.location && cockpit.location.path) || [])[0] || "";
-        if (TABS.indexOf(first) >= 0) {
-            tab = first;
-            renderTabs();
-        }
+        if (TABS.indexOf(first) >= 0) showTab(first);
     }
 
     // --- Summary without administrative access ---------------------------------
@@ -697,7 +731,7 @@
     }
 
     function renderNotifications() {
-        const panel = $("hs-tab-notifications");
+        const panel = $("hs-notifications");
         if (!view) { fill(panel); return; }
         fill(panel, renderOverview(), renderNtfy(), renderMail(), renderHeartbeat(), renderAddons(), renderProfile(), renderLimits());
     }
@@ -708,7 +742,7 @@
         renderTabs();
         renderSummary();
         renderNotifications();
-        $("hs-loading").hidden = loadedOnce;
+        renderMenu();
     }
 
     // --- Signature -----------------------------------------------------------
@@ -721,6 +755,7 @@
                 $("hs-sig-host").textContent = host;
                 $("hs-sig-host").hidden = !host;
                 if (view) renderNotifications();
+                renderMenu();
             })
             .catch(() => { /* no host name: the signature shows the product only */ });
     }
@@ -753,7 +788,7 @@
         b.classList.toggle("is-busy", on);
         b.setAttribute("aria-busy", on ? "true" : "false");
         b.querySelector(".hs-btn-label").textContent = t(on ? "btn.loading" : "btn.refresh");
-        document.querySelectorAll("[role=tabpanel]").forEach((p) => p.classList.toggle("is-busy", on && !!view));
+        $("hs-tab-notifications").classList.toggle("is-busy", on && !!view);
     }
 
     let loading = false;
@@ -790,7 +825,11 @@
     // --- Dialog: every change ----------------------------------------------------------
     // open(spec): spec = { title, desc, confirm, fields: [{ id, label, type, value, help, max, options }],
     //   argv(values) -> [args after HELPER] or { error }, input(values) -> text for stdin,
-    //   outcome(result) -> nodes for a RESULT line of the helper }
+    //   outcome(result) -> nodes for a RESULT line of the helper, extra -> nodes after the fields,
+    //   note -> the line about how it runs, asUser -> run without administrative access (only
+    //   "Just for me" of Cockpit's menu), busy -> the text for exit 75, after(ok, code) -> instead
+    //   of loading the settings again, local(values) -> an error or null: a change of the menu's
+    //   draft that runs nothing }
     const dlg = {
         running: false,
         spec: null,
@@ -798,7 +837,8 @@
             this.spec = spec;
             $("hs-dialog-title").textContent = spec.title;
             fill($("hs-dialog-desc"), rich(spec.desc));
-            fill($("hs-dialog-fields"), (spec.fields || []).map((f) => {
+            $("hs-dialog-note").textContent = spec.note || t("dlg.note");
+            fill($("hs-dialog-fields"), spec.extra || null, (spec.fields || []).map((f) => {
                 // A group of switches (the roles): the values of those switched on.
                 if (f.type === "switches") {
                     return h("fieldset", { id: "hs-f-" + f.id, class: "az-field hs-switches" },
@@ -867,6 +907,11 @@
             if (this.running || !this.spec) return;
             const spec = this.spec;
             const values = this.values();
+            if (spec.local) {
+                const bad = spec.local(values);
+                if (bad) this.error(bad); else this.close();
+                return;
+            }
             const args = spec.argv(values);
             if (!Array.isArray(args)) { this.error(args && args.error); return; }
             this.error(null);
@@ -882,7 +927,7 @@
             $("hs-dialog-cancel").disabled = true;
             let buffer = "";
             let outcome = null;
-            const finish = (text, ok) => {
+            const finish = (text, ok, code) => {
                 this.running = false;
                 b.hidden = true;
                 const cancel = $("hs-dialog-cancel");
@@ -893,11 +938,12 @@
                     $("hs-dialog-outcome").hidden = false;
                 }
                 this.result(text, ok);
-                safeLoad();
+                if (spec.after) spec.after(ok, code); else safeLoad();
             };
             let proc;
             try {
-                proc = spawn([HELPER].concat(args), "require");
+                // With administrative access, except the user's own menu ("Just for me").
+                proc = spawn([HELPER].concat(args), spec.asUser === true ? null : "require", "out");
             } catch (ex) {
                 finish(t("dlg.error", { msg: (ex && ex.message) || String(ex) }), false);
                 return;
@@ -919,13 +965,15 @@
             if (input !== null) proc.input(input);
             proc.then(() => {
                 if (buffer && !buffer.startsWith("RESULT ")) log.textContent += buffer;
-                finish(t("dlg.success"), true);
+                finish(t("dlg.success"), true, 0);
             }).catch((ex) => {
                 ex = ex || {};
-                if (isNoAdmin(ex)) finish(t("dlg.noAdmin"), false);
-                else if (ex.exit_status === 75) finish(t("dlg.busy"), false);
-                else if (typeof ex.exit_status === "number") finish(t("dlg.failed", { code: ex.exit_status }), false);
-                else finish(t("dlg.error", { msg: ex.message || ex.problem || String(ex) }), false);
+                if (buffer && !buffer.startsWith("RESULT ")) log.textContent += buffer;
+                const code = typeof ex.exit_status === "number" ? ex.exit_status : null;
+                if (isNoAdmin(ex)) finish(t("dlg.noAdmin"), false, code);
+                else if (code === 75) finish(spec.busy || t("dlg.busy"), false, code);
+                else if (code !== null) finish(t("dlg.failed", { code }), false, code);
+                else finish(t("dlg.error", { msg: ex.message || ex.problem || String(ex) }), false, code);
             });
         },
     };
@@ -1089,6 +1137,585 @@
         sel.addRange(range);
     }
 
+    // --- The Cockpit tab: Cockpit's menu ------------------------------------------------
+    // `menu show` runs as the user who is logged in, never with administrative access: every entry
+    // of Cockpit's navigation and what the override files of both scopes do to it (lib/hsmenu.py,
+    // view()). Changes go into a draft in memory. "Save changes" lists them in the dialog in words
+    // and writes them with one `menu apply system|user`: the plan holds, for every package folder
+    // touched, the checksum of the scope's file the draft was made from (75 when it changed
+    // meanwhile) and the editor's whole part of that file, so what the draft leaves alone stays.
+    let menuView = null;        // host-settings.py menu show
+    let menuError = null;
+    let menuLoading = false;
+    let menuAsked = false;      // the tab was opened: the menu is read from then on
+    let menuScope = null;       // as chosen; menuScopeNow() is the one that counts
+    let menuSaved = false;      // saved: Cockpit reads its menu when it loads
+    let menuNotice = null;      // a move that could not be made
+    let canReload = true;       // window.top.location.reload() threw: the hint alone
+    let manifestTexts = null;   // the manifests' translations: null not asked, "loading", true, false
+    const draft = new Map();    // entry id -> the mark wanted in the scope being changed
+    const moved = new Set();    // entry ids moved here; the other new orders only make room
+    const dropped = new Set();  // orphan ids removed when saving
+
+    // Without administrative access only the user's own files ("Just for me").
+    function menuScopeNow() {
+        return admin !== true ? "user" : menuScope === "user" ? "user" : "system";
+    }
+    function entryId(e) { return e.dir + "/" + e.section + "/" + e.key; }
+    function orphanId(o) { return o.scope + "/" + o.dir + "/" + o.section + "/" + o.key; }
+    function menuFile(scope, dir) {
+        return menuView.files.find((f) => f.scope === scope && f.dir === dir) || null;
+    }
+    function changeCount() { return draft.size + dropped.size; }
+    // Values put into a translated text that `…` would format.
+    function plainVar(s) { return String(s == null ? "" : s).replace(/`/g, "'"); }
+    function say(key, vars) {
+        const v = {};
+        Object.keys(vars || {}).forEach((k) => { v[k] = typeof vars[k] === "number" ? vars[k] : plainVar(vars[k]); });
+        return t(key, v);
+    }
+
+    // Only what the page needs from `menu show`, each part checked for its shape.
+    function menuData(doc) {
+        const list = (v) => (Array.isArray(v) ? v : []);
+        const text = (v) => typeof v === "string";
+        doc = doc && typeof doc === "object" ? doc : {};
+        return {
+            entries: list(doc.entries).filter((e) => e && MENU_SECTIONS.indexOf(e.section) >= 0 && text(e.key) && text(e.dir))
+                .map((e) => Object.assign({}, e, { base: e.base && typeof e.base === "object" ? e.base : {},
+                                                   package: text(e.package) ? e.package : e.dir })),
+            orphans: list(doc.orphans).filter((o) => o && MENU_SCOPES.indexOf(o.scope) >= 0 && MENU_SECTIONS.indexOf(o.section) >= 0 &&
+                                                     text(o.dir) && text(o.key)),
+            files: list(doc.files).filter((f) => f && MENU_SCOPES.indexOf(f.scope) >= 0 && text(f.dir)),
+            paths: doc.paths && typeof doc.paths === "object" ? doc.paths : {},
+            user: text(doc.user) ? doc.user : "",
+            cut: doc.cut === true,
+        };
+    }
+
+    // Cockpit's bridge serves the translations of every package's manifest; once they are loaded
+    // the labels read as the navigation shows them (cockpit.gettext). Without them (an error, an
+    // older Cockpit) the manifest's own label.
+    function loadManifestTexts() {
+        if (manifestTexts !== null) return;
+        manifestTexts = "loading";
+        const script = document.createElement("script");
+        script.addEventListener("load", () => { manifestTexts = typeof cockpit.gettext === "function"; renderMenu(); });
+        script.addEventListener("error", () => { manifestTexts = false; renderMenu(); });
+        script.src = MANIFEST_I18N;
+        document.head.appendChild(script);
+    }
+    function navText(text) {
+        if (manifestTexts !== true) return text;
+        try {
+            const s = cockpit.gettext(text);
+            return typeof s === "string" && s ? s : text;
+        } catch (e) {
+            return text;
+        }
+    }
+
+    // What one scope's override does to an entry (or an orphan's value), as far as the editor
+    // manages it: {hidden: true}, or the order and label it sets ({} for nothing, or for only what
+    // the editor leaves alone). markOf() has the draft's for the scope being changed.
+    function savedMark(e, scope) {
+        return markFrom(e[scope]);
+    }
+    function markFrom(m) {
+        if (!m || typeof m !== "object") return {};
+        if (m.hidden === true) return { hidden: true };
+        const out = {};
+        if (typeof m.order === "number" && isFinite(m.order)) out.order = m.order;
+        if (typeof m.label === "string") out.label = m.label;
+        return out;
+    }
+    function markOf(e, scope) {
+        const id = entryId(e);
+        return scope === menuScopeNow() && draft.has(id) ? draft.get(id) : savedMark(e, scope);
+    }
+    function hasMark(m) { return !!m.hidden || "order" in m || "label" in m; }
+    function sameMark(a, b) { return !!a.hidden === !!b.hidden && a.order === b.order && a.label === b.label; }
+    // The entry as the navigation shows it for a scope: the package's own, then the override for
+    // all users, then (just for me) the user's own, each later one winning as Cockpit merges them.
+    // Hidden entries keep their order, so they stay in their place in the list.
+    function layer(e, scope, saved) {
+        let label = typeof e.base.label === "string" ? e.base.label : null;
+        let order = typeof e.base.order === "number" ? e.base.order : null;
+        let hidden = false;
+        (scope === "user" ? MENU_SCOPES : ["system"]).forEach((s) => {
+            const m = saved ? savedMark(e, s) : markOf(e, s);
+            if (m.hidden) { hidden = true; return; }
+            if (!hasMark(m)) return;
+            // On an entry an earlier file hid, Cockpit makes a new one of only what this one sets.
+            if (hidden) { hidden = false; label = null; order = null; }
+            if ("order" in m) order = m.order;
+            if ("label" in m) label = m.label;
+        });
+        return { label, order, hidden, renamed: label !== null && label !== e.base.label };
+    }
+    function originalText(e) {
+        return typeof e.base.label === "string" ? navText(e.base.label) : e.key;
+    }
+    // A name set in an override is fixed text; the manifest's own is translated.
+    function shownText(e, l) {
+        return l.renamed ? l.label : originalText(e);
+    }
+    // A group of the navigation in Cockpit's order: by order (1000 without one), then by label.
+    function sectionList(section, scope, saved) {
+        return menuView.entries.map((e, i) => ({ e, i })).filter((x) => x.e.section === section).map((x) => {
+            const l = layer(x.e, scope, saved);
+            return { e: x.e, i: x.i, l, text: shownText(x.e, l), at: l.order === null ? MENU_ORDER : l.order };
+        }).sort((a, b) => (a.at - b.at) || a.text.localeCompare(b.text));
+    }
+    // The page Cockpit opens after the login: the first entry of System it shows.
+    function startOf(scope, saved) {
+        const first = sectionList("menu", scope, saved).find((x) => !x.l.hidden);
+        return first ? first.i : -1;
+    }
+    // Why an entry cannot be changed in a scope, or null.
+    function lockedWhy(e, scope) {
+        if (e.editable !== true || !DIR_RE.test(e.dir) || !KEY_RE.test(e.key)) return t("menu.ro.notEditable");
+        const f = menuFile(scope, e.dir);
+        if (f && f.valid !== true) return t("menu.ro.broken");
+        if (scope === "user" && savedMark(e, "system").hidden) return t("menu.ro.hiddenAll");
+        return null;
+    }
+    // Hiding replaces the entry in that file with null, and with it whatever else the file says of it.
+    function holdsMore(e, scope) {
+        return !!(e[scope] && typeof e[scope] === "object" && e[scope].other === true);
+    }
+    function labelBad(s) {
+        const chars = Array.from(s);
+        return chars.length < 1 || chars.length > MENU_LABEL_MAX || s !== s.trim() || chars.some((c) => {
+            const n = c.codePointAt(0);
+            return INVISIBLE.some(([lo, hi]) => n >= lo && n <= hi);
+        });
+    }
+
+    // --- The draft ---
+    function putDraft(e, mark) {
+        const id = entryId(e);
+        if (sameMark(mark, savedMark(e, menuScopeNow()))) {
+            draft.delete(id);
+            moved.delete(id);
+        } else {
+            draft.set(id, mark);
+        }
+    }
+    function withOrder(e, order) {
+        const m = Object.assign({}, markOf(e, menuScopeNow()));
+        delete m.hidden;
+        m.order = order;
+        return m;
+    }
+    function round3(n) { return Math.round(n * 1000) / 1000; }
+    // Moving gives only the moved entry a new order: midway between its new neighbours, at most
+    // three decimals as the helper takes it, one less or more at either end. Without room there
+    // (equal orders, or too close), the entries from its new place on get the next whole numbers,
+    // as far as needed to keep their order.
+    function moveEntry(i, step) {
+        const scope = menuScopeNow();
+        const e = menuView.entries[i];
+        const list = sectionList(e.section, scope, false);
+        const from = list.findIndex((x) => x.i === i);
+        const to = from + step;
+        if (from < 0 || to < 0 || to >= list.length) return;
+        const seq = list.slice();
+        seq.splice(to, 0, seq.splice(from, 1)[0]);
+        const a = to > 0 ? seq[to - 1].at : null;
+        const b = to < seq.length - 1 ? seq[to + 1].at : null;
+        const o = round3(a === null ? b - 1 : b === null ? Math.floor(a) + 1 : (a + b) / 2);
+        menuNotice = null;
+        if ((a === null || o > a) && (b === null || o < b) && o >= MENU_ORDER_MIN && o <= MENU_ORDER_MAX) {
+            putDraft(e, withOrder(e, o));
+        } else {
+            const changes = [];
+            let prev = a === null ? MENU_ORDER_MIN - 1 : a;
+            for (let k = to; k < seq.length; k++) {
+                const x = seq[k];
+                if (k > to && x.at > prev) break;
+                const v = Math.floor(prev) + 1;
+                if (v > MENU_ORDER_MAX || lockedWhy(x.e, scope) || markOf(x.e, scope).hidden) {
+                    menuNotice = t("menu.err.move");
+                    return;
+                }
+                changes.push([x.e, v]);
+                prev = v;
+            }
+            changes.forEach(([x, v]) => putDraft(x, withOrder(x, v)));
+        }
+        if (draft.has(entryId(e))) moved.add(entryId(e));
+    }
+    function hideEntry(i) {
+        const e = menuView.entries[i];
+        putDraft(e, { hidden: true });
+        moved.delete(entryId(e));
+    }
+    // Shown again: as it was saved, or without anything when it was saved hidden.
+    function showEntry(i) {
+        const e = menuView.entries[i];
+        const saved = savedMark(e, menuScopeNow());
+        putDraft(e, saved.hidden ? {} : saved);
+    }
+    function renameEntry(i) {
+        const scope = menuScopeNow();
+        const e = menuView.entries[i];
+        const now = shownText(e, layer(e, scope, false));
+        const original = originalText(e);
+        dlg.open({
+            title: t("menu.rename.title"),
+            desc: say(scope === "system" ? "menu.rename.descSystem" : "menu.rename.descUser", { label: now }),
+            note: t("menu.note.draft"), confirm: t("menu.rename.ok"),
+            fields: [{ id: "label", label: t("menu.rename.label"), value: now, max: MENU_LABEL_MAX * 2,
+                       help: say("menu.rename.help", { original }) }],
+            // Empty, or the original name: the override sets no name any more.
+            local: (v) => {
+                const text = v.label.normalize("NFC");
+                if (text === now) return null;
+                const m = Object.assign({}, markOf(e, scope));
+                delete m.hidden;
+                if (!text || text === original || text === e.base.label) delete m.label;
+                else if (labelBad(text)) return t("menu.err.label");
+                else m.label = text;
+                putDraft(e, m);
+                renderMenu();
+                return null;
+            },
+        });
+    }
+    function discardDraft() {
+        draft.clear();
+        moved.clear();
+        dropped.clear();
+        menuNotice = null;
+    }
+    // After `menu show` again: what no longer applies leaves the draft.
+    function pruneDraft() {
+        const scope = menuScopeNow();
+        const byId = new Map(menuView.entries.map((e) => [entryId(e), e]));
+        Array.from(draft.keys()).forEach((id) => {
+            const e = byId.get(id);
+            if (!e || lockedWhy(e, scope) || sameMark(draft.get(id), savedMark(e, scope))) {
+                draft.delete(id);
+                moved.delete(id);
+            }
+        });
+        const orphans = new Set(menuView.orphans.map(orphanId));
+        Array.from(dropped).forEach((id) => { if (!orphans.has(id)) dropped.delete(id); });
+    }
+
+    // --- The plan of `menu apply` and the changes in words ---
+    // For every package folder the draft touches: the checksum of the scope's file (empty when there
+    // is none) and the editor's whole part of it after the draft: every null, order and label of its
+    // entries, and of the keys it has no entry for (orphans, with their value from `menu show`)
+    // unless they were removed here. What the plan cannot hold, a key the helper does not take, is
+    // named as lost.
+    function menuPlan(scope) {
+        const touched = new Set();
+        menuView.entries.forEach((e) => { if (draft.has(entryId(e))) touched.add(e.dir); });
+        menuView.orphans.forEach((o) => { if (o.scope === scope && dropped.has(orphanId(o))) touched.add(o.dir); });
+        const base = {};
+        const set = {};
+        const lost = [];
+        Array.from(touched).sort().forEach((dir) => {
+            const f = menuFile(scope, dir);
+            base[dir] = f && typeof f.sha256 === "string" ? f.sha256 : "";
+            const part = {};
+            // Only null, order and label: what else the file says of a key stays there anyway.
+            const put = (x, m) => {
+                if (!hasMark(m)) return;
+                if (!KEY_RE.test(x.key)) { lost.push(x); return; }
+                const value = {};
+                if ("order" in m) value.order = m.order;
+                if ("label" in m) value.label = m.label;
+                (part[x.section] = part[x.section] || {})[x.key] = m.hidden ? null : value;
+            };
+            menuView.entries.filter((e) => e.dir === dir).forEach((e) => put(e, markOf(e, scope)));
+            menuView.orphans.filter((o) => o.scope === scope && o.dir === dir && !dropped.has(orphanId(o)))
+                .forEach((o) => put(o, markFrom(o.value)));
+            if (Object.keys(part).length) set[dir] = part;
+        });
+        return { plan: { base, set }, lost, touched };
+    }
+    function menuChanges(scope, lost, touched) {
+        const out = [];
+        const start = startOf(scope, false);
+        let startSaid = start === startOf(scope, true);
+        let renumbered = 0;
+        MENU_SECTIONS.forEach((section) => {
+            const list = sectionList(section, scope, false);
+            list.forEach((x, k) => {
+                const id = entryId(x.e);
+                if (!draft.has(id)) return;
+                const was = layer(x.e, scope, true);
+                const before = shownText(x.e, was);
+                if (x.l.hidden !== was.hidden) out.push(x.l.hidden ? say("menu.change.hide", { label: before }) : say("menu.change.show", { label: x.text }));
+                if (x.l.hidden) return;
+                if (x.l.label !== was.label) {
+                    out.push(say(x.l.renamed ? "menu.change.rename" : "menu.change.unrename", { from: before, to: x.text }));
+                }
+                if (x.l.order === was.order) return;
+                if (!moved.has(id)) { renumbered++; return; }
+                const next = list[k + 1];
+                const becomes = x.i === start && !startSaid;
+                if (becomes) startSaid = true;
+                out.push(next ? say(becomes ? "menu.change.beforeStart" : "menu.change.before", { label: x.text, other: next.text })
+                    : say("menu.change.after", { label: x.text, other: k > 0 ? list[k - 1].text : "" }));
+            });
+        });
+        if (renumbered) out.push(say("menu.change.renumber", { n: renumbered }));
+        if (!startSaid && start >= 0) {
+            const e = menuView.entries[start];
+            out.push(say("menu.change.startPage", { label: shownText(e, layer(e, scope, false)) }));
+        }
+        const where = (o) => ({ key: o.key, folder: o.dir, section: t("menu.section." + o.section) });
+        menuView.orphans.filter((o) => o.scope === scope && dropped.has(orphanId(o))).forEach((o) => out.push(say("menu.change.removeOrphan", where(o))));
+        lost.forEach((o) => out.push(say("menu.change.lost", where(o))));
+        Array.from(touched).sort().forEach((dir) => {
+            const f = menuFile(scope, dir);
+            if (f && f.valid === true && f.foreign > 0) out.push(say("menu.change.foreign", { path: f.path }));
+        });
+        return out;
+    }
+
+    // --- Load, save, reload ---
+    function openMenu() {
+        if (!started || menuAsked) return;
+        menuAsked = true;
+        loadMenu();
+    }
+    function loadMenu() {
+        if (menuLoading) return;
+        menuLoading = true;
+        loadManifestTexts();
+        renderMenu();
+        spawn([HELPER, "menu", "show"], null).then((out) => {
+            menuView = menuData(JSON.parse(out));
+            menuError = null;
+            pruneDraft();
+        }).catch((ex) => {
+            menuError = String((ex && (ex.message || ex.problem)) || ex);
+        }).finally(() => {
+            menuLoading = false;
+            renderMenu();
+        });
+    }
+    function menuSave() {
+        const scope = menuScopeNow();
+        if (!changeCount() || MENU_SCOPES.indexOf(scope) < 0) return;
+        const { plan, lost, touched } = menuPlan(scope);
+        const lines = menuChanges(scope, lost, touched);
+        dlg.open({
+            title: t(scope === "system" ? "menu.save.titleSystem" : "menu.save.titleUser"),
+            desc: say(scope === "system" ? "menu.save.descSystem" : "menu.save.descUser", { path: menuView.paths[scope] || "" }),
+            extra: h("ul", { class: "hs-plain-list", id: "hs-menu-changes" }, lines.map((line) => h("li", null, rich(line)))),
+            note: scope === "user" ? t("menu.note.user") : null,
+            confirm: t("btn.save"),
+            asUser: scope === "user",
+            argv: () => ["menu", "apply", scope],
+            // The plan goes on standard input, as the token does.
+            input: () => JSON.stringify(plan) + "\n",
+            busy: t("menu.save.changed"),
+            after: (ok, code) => {
+                if (ok) {
+                    discardDraft();
+                    menuSaved = true;
+                }
+                if (ok || code === 75) loadMenu();
+                else renderMenu();
+            },
+        });
+    }
+    // The whole Cockpit page, so that its shell reads the menu again; where that is not allowed
+    // (another origin), the hint alone.
+    function reloadCockpit() {
+        try {
+            window.top.location.reload();
+        } catch (e) {
+            canReload = false;
+            renderMenu();
+        }
+    }
+    function setScope(scope) {
+        if (changeCount() || admin !== true || MENU_SCOPES.indexOf(scope) < 0) return;
+        menuScope = scope;
+        menuNotice = null;
+        renderMenu();
+    }
+    const MENU_ACTIONS = {
+        "hs-menu-scope-system": () => setScope("system"),
+        "hs-menu-scope-user": () => setScope("user"),
+        "hs-menu-save": () => menuSave(),
+        "hs-menu-discard": () => { discardDraft(); renderMenu(); },
+        "hs-menu-reload": () => reloadCockpit(),
+    };
+    // The buttons of a row: data-menu (up, down, rename, hide, show, drop) and the entry's or the
+    // orphan's place in `menu show`. Focus stays on the entry's buttons.
+    function menuClick(el) {
+        if (Object.prototype.hasOwnProperty.call(MENU_ACTIONS, el.id)) { MENU_ACTIONS[el.id](); return; }
+        const kind = el.dataset.menu;
+        const scope = menuScopeNow();
+        if (kind === "drop") {
+            const o = menuView.orphans[Number(el.dataset.orphan)];
+            if (!o || o.scope !== scope || !DIR_RE.test(o.dir)) return;
+            if (dropped.has(orphanId(o))) dropped.delete(orphanId(o)); else dropped.add(orphanId(o));
+            renderMenu();
+            return;
+        }
+        const i = Number(el.dataset.entry);
+        const e = Number.isInteger(i) ? menuView.entries[i] : null;
+        if (!e || lockedWhy(e, scope)) return;
+        if (kind === "rename") { renameEntry(i); return; }
+        if (kind === "up" || kind === "down") moveEntry(i, kind === "up" ? -1 : 1);
+        else if (kind === "hide" && !holdsMore(e, scope)) hideEntry(i);
+        else if (kind === "show") showEntry(i);
+        else return;
+        renderMenu();
+        const again = document.querySelector('[data-entry="' + i + '"][data-menu="' + kind + '"]:not(:disabled)') ||
+            document.querySelector('[data-entry="' + i + '"]:not(:disabled)');
+        if (again) again.focus();
+    }
+
+    // --- Render ---
+    function tag(state, text) {
+        return h("span", { class: LABEL_CLASS[state] || LABEL_CLASS.none, text });
+    }
+    function moveButton(kind, i, text, disabled) {
+        return h("button", { type: "button", class: "az-btn az-btn--plain az-btn--sm hs-" + kind, "data-menu": kind, "data-entry": i,
+                             "aria-label": t("menu.aria." + kind, { label: text }), title: t("menu.btn." + kind), disabled },
+            icon("angle-down"));
+    }
+    function menuRow(x, k, list, scope, start, savedStart) {
+        const e = x.e;
+        const l = x.l;
+        const tags = [];
+        if (draft.has(entryId(e))) tags.push(tag("warning", t("menu.badge.draft")));
+        if (x.i === start) tags.push(tag("ok", t(start === savedStart ? "menu.badge.start" : "menu.badge.startNew")));
+        if (l.hidden) tags.push(tag("none", scope === "user" && savedMark(e, "system").hidden ? t("menu.badge.hiddenAll") : t("menu.badge.hidden")));
+        if (l.renamed) tags.push(tag("info", t("menu.badge.renamed")));
+        if (hasMark(markOf(e, "system"))) tags.push(tag("info", t("menu.badge.system")));
+        if (scope === "user" && hasMark(markOf(e, "user"))) tags.push(tag("info", t("menu.badge.user")));
+        if (scope === "system" && hasMark(savedMark(e, "user"))) tags.push(tag("info", t("menu.badge.userWins")));
+        const why = lockedWhy(e, scope);
+        const hiddenHere = !!markOf(e, scope).hidden;
+        const more = holdsMore(e, scope);
+        const actions = why ? h("span", { class: "hs-sub", text: why }) : [
+            h("span", { class: "hs-menu-btns" },
+                moveButton("up", x.i, x.text, k === 0 || hiddenHere),
+                moveButton("down", x.i, x.text, k === list.length - 1 || hiddenHere),
+                btn("az-btn--link az-btn--sm", null, t("menu.btn.rename"), { "data-menu": "rename", "data-entry": x.i,
+                    "aria-label": t("menu.aria.rename", { label: x.text }), disabled: hiddenHere }),
+                hiddenHere
+                    ? btn("az-btn--link az-btn--sm", null, t("menu.btn.show"), { "data-menu": "show", "data-entry": x.i,
+                        "aria-label": t("menu.aria.show", { label: x.text }) })
+                    : btn("az-btn--link az-btn--sm", null, t("menu.btn.hide"), { "data-menu": "hide", "data-entry": x.i,
+                        "aria-label": t("menu.aria.hide", { label: x.text }), disabled: more })),
+            more && !hiddenHere ? h("span", { class: "hs-sub", text: t("menu.ro.noHide") }) : null,
+        ];
+        return [
+            h("span", null, h("strong", { text: x.text }),
+                l.renamed ? h("span", { class: "hs-sub", text: t("menu.original", { label: originalText(e) }) }) : null,
+                h("span", { class: "hs-sub", text: e.package + " · " + e.key })),
+            tags.length ? h("span", { class: "hs-tags" }, tags) : null,
+            actions,
+        ];
+    }
+    function scopeBlock(scope) {
+        const where = menuView.paths[scope] || "";
+        const note = h("p", { class: "hs-note", id: "hs-menu-scope-note" },
+            rich(say(scope === "system" ? "menu.scope.systemNote" : "menu.scope.userNote", { path: where, user: menuView.user })));
+        if (admin !== true) {
+            return [h("p", { class: "hs-line" }, h("strong", { text: t("menu.scope.label") }), tag("info", t("menu.scope.user"))),
+                    note, h("p", { class: "hs-note", text: t("menu.scope.noAdmin") })];
+        }
+        const locked = changeCount() > 0;
+        return [
+            h("div", { class: "hs-line", role: "group", "aria-labelledby": "hs-menu-scope-label" },
+                h("strong", { id: "hs-menu-scope-label", text: t("menu.scope.label") }),
+                MENU_SCOPES.map((s) => h("button", { type: "button", id: "hs-menu-scope-" + s, text: t("menu.scope." + s),
+                                                     class: "az-btn az-btn--sm " + (s === scope ? "az-btn--secondary" : "az-btn--plain"),
+                                                     "aria-pressed": s === scope ? "true" : "false", disabled: locked && s !== scope }))),
+            note,
+            locked ? h("p", { class: "hs-note", text: t("menu.scope.locked") }) : null,
+        ];
+    }
+    function orphanBlock(scope, lost) {
+        const orphans = menuView.orphans;
+        if (!orphans.length) return null;
+        const gone = new Set(lost.filter((o) => "phantom" in o).map(orphanId));
+        return [
+            h("h3", { class: "hs-sub-title", text: t("menu.orphans.title") }),
+            h("p", { class: "hs-intro", text: t("menu.orphans.intro") }),
+            table([t("menu.col.setting"), t("menu.col.notes"), t("menu.col.actions")], orphans.map((o, n) => {
+                const id = orphanId(o);
+                const tags = [tag(o.phantom === true ? "warning" : "none", t(o.phantom === true ? "menu.orphan.phantom" : "menu.orphan.null")),
+                              tag("info", t("menu.scope." + o.scope))];
+                if (dropped.has(id)) tags.unshift(tag("warning", t("menu.orphan.removing")));
+                else if (gone.has(id)) tags.unshift(tag("warning", t("menu.orphan.lost")));
+                const f = menuFile(o.scope, o.dir);
+                const can = o.scope === scope && DIR_RE.test(o.dir) && !(f && f.valid !== true);
+                return [
+                    h("span", null, h("strong", { text: o.key }), h("span", { class: "hs-sub", text: o.dir + " · " + t("menu.section." + o.section) })),
+                    h("span", { class: "hs-tags" }, tags),
+                    can ? btn("az-btn--link az-btn--sm", null, dropped.has(id) ? t("menu.btn.keep") : t("btn.remove"),
+                              { "data-menu": "drop", "data-orphan": n,
+                                "aria-label": t(dropped.has(id) ? "menu.aria.keep" : "menu.aria.remove", { key: o.key }) }) : null,
+                ];
+            }), orphans.map((o) => ({ "data-id": orphanId(o) }))),
+        ];
+    }
+    function renderMenu() {
+        const panel = $("hs-tab-cockpit");
+        if (!menuAsked) { fill(panel); return; }
+        if (!menuView || !loadedOnce) {
+            fill(panel, menuError && !menuView ? alertBox("danger", t("menu.loadError"), menuError)
+                : h("section", { class: "az-card hs-loading", id: "hs-menu-loading", "aria-live": "polite" },
+                    h("span", { class: "hs-spinner", "aria-hidden": "true" }), h("span", { class: "hs-loading-title", text: t("menu.loading") })));
+            return;
+        }
+        const scope = menuScopeNow();
+        const start = startOf(scope, false);
+        const savedStart = startOf(scope, true);
+        const { lost } = menuPlan(scope);
+        const n = changeCount();
+        const body = [
+            h("p", { class: "hs-intro", text: t("menu.intro") }),
+            h("p", { class: "hs-line", id: "hs-menu-host" }, hostName ? t("menu.host", { host: hostName }) : t("menu.hostUnknown")),
+            scopeBlock(scope),
+        ];
+        if (menuError) body.push(alertBox("danger", t("menu.loadError"), menuError));
+        if (menuSaved) {
+            const box = alertBox("success", t("menu.savedTitle"), t("menu.saved"));
+            box.id = "hs-menu-saved";
+            if (canReload) add(box, h("div", { class: "az-alert__actions" }, btn("az-btn--secondary az-btn--sm", "redo", t("menu.btn.reload"), { id: "hs-menu-reload" })));
+            body.push(box);
+        }
+        if (menuNotice) body.push(alertBox("warning", menuNotice, null));
+        if (menuView.cut) body.push(alertBox("info", t("menu.cut"), null));
+        menuView.files.filter((f) => f.valid !== true).forEach((f) => body.push(alertBox("warning", t("menu.file.invalidTitle"),
+            rich(say(f.scope === "system" ? "menu.file.invalidSystem" : "menu.file.invalidUser",
+                     { path: f.path, folder: f.dir, why: t(MENU_FILE_ERRORS.indexOf(f.error) >= 0 ? "menu.err." + f.error : "menu.err.invalid") })))));
+        MENU_SECTIONS.forEach((section) => {
+            const list = sectionList(section, scope, false);
+            body.push(h("h3", { class: "hs-sub-title", id: "hs-menu-" + section, text: t("menu.section." + section) }));
+            body.push(list.length
+                ? table([t("menu.col.entry"), t("menu.col.notes"), t("menu.col.actions")], list.map((x, k) => menuRow(x, k, list, scope, start, savedStart)),
+                        list.map((x) => ({ "data-id": entryId(x.e), class: x.l.hidden ? "is-off" : null })))
+                : h("p", { class: "hs-sub", text: t("menu.empty") }));
+        });
+        const foreign = menuView.files.filter((f) => f.scope === scope && f.valid === true && f.foreign > 0 && f.served === true);
+        if (foreign.length) {
+            body.push(h("ul", { class: "hs-plain-list hs-note", id: "hs-menu-foreign" },
+                foreign.map((f) => h("li", null, rich(say("menu.file.foreign", { path: f.path, n: Number(f.foreign) }))))));
+        }
+        body.push(orphanBlock(scope, lost));
+        body.push(h("div", { class: "hs-actions hs-menu-bar" },
+            btn("az-btn--secondary", "check", t("menu.btn.save"), { id: "hs-menu-save", disabled: !n }),
+            btn("az-btn--link", null, t("menu.btn.discard"), { id: "hs-menu-discard", disabled: !n }),
+            h("span", { class: "hs-note", id: "hs-menu-count", text: n ? t("menu.draft", { n }) : t("menu.noDraft") })));
+        fill(panel, card("hs-menu", t("menu.title"), n ? tag("warning", t("menu.draft", { n })) : null, body));
+    }
+
     // --- Init ------------------------------------------------------------------
     function applyStaticTexts() {
         document.documentElement.lang = LANG;
@@ -1098,19 +1725,26 @@
     }
 
     applyStaticTexts();
-    $("hs-refresh").addEventListener("click", () => safeLoad());
+    $("hs-refresh").addEventListener("click", () => {
+        safeLoad();
+        if (menuAsked) loadMenu();
+    });
     $("hs-tabs").addEventListener("click", (e) => {
         const b = e.target instanceof Element ? e.target.closest("[role=tab]") : null;
         if (!b || TABS.indexOf(b.dataset.tab) < 0) return;
         if (typeof cockpit.location.go === "function") cockpit.location.go([b.dataset.tab]);
-        tab = b.dataset.tab;
-        renderTabs();
+        showTab(b.dataset.tab);
     });
     document.addEventListener("click", (e) => {
         const target = e.target instanceof Element ? e.target : null;
         const el = target && target.closest("button");
         if (!el || el.closest("dialog")) return;
         if (el.id === "hs-copy") { copyCommands(); return; }
+        // Cockpit's menu: its own buttons, also without administrative access.
+        if (el.dataset.menu || Object.prototype.hasOwnProperty.call(MENU_ACTIONS, el.id)) {
+            if (!el.disabled && menuView && !dlg.running) menuClick(el);
+            return;
+        }
         const row = el.dataset.action && Object.prototype.hasOwnProperty.call(ROW_ACTIONS, el.dataset.action) ? ROW_ACTIONS[el.dataset.action] : null;
         const valid = el.dataset.action === "skip-remove" ? SKIP_RE : EXPECT_RE;
         if (row && !el.disabled && view && valid.test(el.dataset.value || "")) { row(el.dataset.value); return; }
@@ -1133,9 +1767,11 @@
     // its menu (menu-status.js). What reads or runs on the server, the root helper
     // above all, starts only once the page is shown.
     function start() {
+        started = true;
         renderSignature();
         reloadOnChange(cockpit.file(STATUS_PATH, { syntax: JSON }));
         safeLoad();
+        if (tab === "cockpit") openMenu();
     }
     const menu = window.HostSettingsMenuStatus;
     if (menu) menu.shown.then(start);
