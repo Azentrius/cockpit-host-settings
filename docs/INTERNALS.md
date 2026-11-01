@@ -927,7 +927,7 @@ head.
 
 **The released combination** (`suite-manifest.json`): for each product its repository, tag, full
 commit and, for now informational, the package of the release (name, version, `.deb` and its
-SHA-256), and `required_scenarios` (below). At present Status Board 0.3.0, Host Settings 0.2.0 and
+SHA-256), and `required_scenarios` (below). At present Status Board 0.4.0, Host Settings 0.3.0 and
 Security Monitor 0.4.0, the commits of their tags. After a release: change the manifest in a pull
 request of Host Settings, then move the pin in the callers of Status Board and Security Monitor
 to the merged commit, each in a pull request of its own.
@@ -979,8 +979,8 @@ gap of `suite-unreported` as a task and in the coverage line.
 
 Steps 12 and 13 and the board's part of H1 need products with those rules (`hslib.not_reported_checks`,
 `hschannels.py`, `notReportedChecks` in Status Board's `lib/status.js`). Without them each notes
-that it did not check the rule. Once the releases with the rules are in the manifest, its
-`required_scenarios` lists `h1` and `h5`, and a candidate without them fails.
+that it did not check the rule. Status Board 0.4.0 and Host Settings 0.3.0 have them, so the
+manifest's `required_scenarios` lists `h1` and `h5`, and a candidate without them fails.
 
 **The artifact** `e2e-suite` (no credential: the job looks for the test's tokens and passwords in
 it and fails on a find): `plan.json`; `manifest.json` and `manifest.md` with the commit of the

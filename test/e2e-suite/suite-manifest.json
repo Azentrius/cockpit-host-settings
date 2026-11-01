@@ -1,8 +1,11 @@
 {
  "schema": 1,
  "about": "The released combination of the shared suite (E2E-1, .github/workflows/suite.yml). A candidate replaces its own component; the others are built from the commits here. Change it in a pull request after a release, then move the pin of suite.yml in the callers of Status Board and Security Monitor to the merged commit. package is informational for now: the suite builds every component from its commit and records whether the .deb has the bytes of the release.",
- "combination": "M1: Status Board 0.3.0, Host Settings 0.2.0, Security Monitor 0.4.0",
- "required_scenarios": [],
+ "combination": "M1: Status Board 0.4.0, Host Settings 0.3.0, Security Monitor 0.4.0",
+ "required_scenarios": [
+  "h1",
+  "h5"
+ ],
  "components": {
   "security-monitor": {
    "repository": "Azentrius/cockpit-security-monitor",
@@ -17,24 +20,24 @@
   },
   "host-settings": {
    "repository": "Azentrius/cockpit-host-settings",
-   "tag": "v0.2.0",
-   "commit": "abf42ee6bb1e793580a855818c7ea1542f43264b",
+   "tag": "v0.3.0",
+   "commit": "daf10073bff665d745d320d21c3329c39d26bd87",
    "package": {
     "name": "cockpit-host-settings",
-    "version": "0.2.0-1",
-    "deb": "cockpit-host-settings_0.2.0-1_all.deb",
-    "sha256": "01ed3858d4bd1302a222517a030ea4643e8fc2be4adec42c9ea5a1540656980a"
+    "version": "0.3.0-1",
+    "deb": "cockpit-host-settings_0.3.0-1_all.deb",
+    "sha256": "e8769eddf43e2d47f76a37c5ca1b5494259ede68af61897d872cd6097466c640"
    }
   },
   "status-board": {
    "repository": "Azentrius/cockpit-status-board",
-   "tag": "v0.3.0",
-   "commit": "fb6a8a7a2478449b4ff1c7d26a5b5f65d0ec7c2e",
+   "tag": "v0.4.0",
+   "commit": "04d49d1b9ef03f5327b18572e5799975dcf30cc3",
    "package": {
     "name": "cockpit-status-board",
-    "version": "0.3.0-1",
-    "deb": "cockpit-status-board_0.3.0-1_all.deb",
-    "sha256": "5d360722f77451a7ec1bb5c5376fdf81f77a8d5186332523ab104e6746bc0fd1"
+    "version": "0.4.0-1",
+    "deb": "cockpit-status-board_0.4.0-1_all.deb",
+    "sha256": "7175fb7273d3eca90b39b0979b3d7c3af66ca32b156ea088be760b95db431d17"
    }
   }
  }
