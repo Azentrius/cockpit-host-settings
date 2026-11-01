@@ -719,7 +719,19 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   with `KUMA_IMAGE` the same against a real Uptime Kuma, switching off, and looks for the token
   and the watchdog's address in every file, the journal and every process's arguments. It also checks that
   Cockpit lists the page (`cockpit-bridge --packages`).
-- Job `e2e-el` (`tools/vm.sh` and `test/e2e/run.sh` with the `.rpm`): the same test in a Rocky
+- Job `upgrade` (`test/e2e/upgrade.sh`): the update from a release a server may run, with ntfy
+  and the stand-in add-on as in job `e2e`. The `.deb` of the release named in the workflow
+  (`PREVIOUS_*`: 0.1.0, downloaded by `test/e2e/release-asset.sh`, which checks it against the
+  SHA-256 pinned there and the release's `SHA256SUMS`) is set up as an admin does (ntfy, the token
+  on standard input, the timer on) and tells the stand-in's warning; then the package of this
+  build goes over it with apt. `notify.conf`, the token and the timer stay, `heartbeat.conf` is
+  there and empty (root, 0600), systemd runs the new units; the next run reads the old `last.json`
+  on (no message, no "OK again", no new summary); findings of the item told are taken as told
+  when no more severe, a danger among them is told once; a target profile set afterwards states
+  its gaps in one message and appears in the status as nobody; removing the package keeps
+  `/etc/cockpit-host-settings` and removes the state; the token is in no other file and no log.
+- Job `e2e-el` (`tools/vm.sh` and `test/e2e/run.sh` with the `.rpm`, suite `e2e`; suite `upgrade`
+  runs `test/e2e/upgrade.sh` with the `.rpm` of the previous release first): the same tests in a Rocky
   Linux 9 or 10 VM under KVM on the runner, from a cloud image pinned by name and SHA-256, with
   SELinux enforcing and auditd running (both checked), ntfy in Podman with `podman-docker`, postfix
   from the distribution. `vm.sh avc-mark` marks the audit log after the set-up, `vm.sh avc-check`
@@ -727,7 +739,7 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   when it cannot read the log or finds no records at all). Before that, `vm.sh avc-selftest`
   causes a denial on purpose (root entering `httpd_t` with `/usr/bin/true`) and fails unless the
   check catches it. Report, journal, audit log and console
-  are in the artifacts `e2e-rocky-9` and `e2e-rocky-10`.
+  are in the artifacts `e2e-rocky-9`, `e2e-rocky-10`, `upgrade-rocky-9` and `upgrade-rocky-10`.
 - Workflow `e2e-suite` (E2E-1, `test/e2e-suite/`): the suite with its real packages on the runner.
   Security Monitor, Host Settings and Status Board are built from one exact commit each (inputs
   with defaults; `manifest.py` writes the version manifest), installed with apt, then
