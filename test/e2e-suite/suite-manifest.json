@@ -1,7 +1,7 @@
 {
  "schema": 1,
  "about": "The released combination of the shared suite (E2E-1, .github/workflows/suite.yml). A candidate replaces its own component; the others are built from the commits here. Change it in a pull request after a release, then move the pin of suite.yml in the callers of Status Board and Security Monitor to the merged commit. package is informational for now: the suite builds every component from its commit and records whether the .deb has the bytes of the release.",
- "combination": "M1: Status Board 0.4.0, Host Settings 0.3.0, Security Monitor 0.4.0",
+ "combination": "M1: Status Board 0.4.0, Host Settings 0.3.0, Security Monitor 0.4.1",
  "required_scenarios": [
   "h1",
   "h5"
@@ -9,13 +9,13 @@
  "components": {
   "security-monitor": {
    "repository": "Azentrius/cockpit-security-monitor",
-   "tag": "v0.4.0",
-   "commit": "3759df203d6bfcdb2c84debe394d78cf24c363b0",
+   "tag": "v0.4.1",
+   "commit": "55e6aa1fe08b1634c9572a4fa5d7dacf5f008717",
    "package": {
     "name": "cockpit-security-monitor",
-    "version": "0.4.0-1",
-    "deb": "cockpit-security-monitor_0.4.0-1_all.deb",
-    "sha256": "a5f4121cf8b7ff0d4d24e8cd95100ae4fd1d272cbdf0b66a81b6d3e70aa4ab20"
+    "version": "0.4.1-1",
+    "deb": "cockpit-security-monitor_0.4.1-1_all.deb",
+    "sha256": "d7e23f8ce9f8f59e0ce8d20be33660c50e92a535c9c864b126e741c569b883ab"
    }
   },
   "host-settings": {
