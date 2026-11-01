@@ -903,18 +903,96 @@ board's `validateProfile()`) keep every part of it, also at the limits (`ext_dro
   causes a denial on purpose (root entering `httpd_t` with `/usr/bin/true`) and fails unless the
   check catches it. Report, journal, audit log and console
   are in the artifacts `e2e-rocky-9`, `e2e-rocky-10`, `upgrade-rocky-9` and `upgrade-rocky-10`.
-- Workflow `e2e-suite` (E2E-1, `test/e2e-suite/`): the suite with its real packages on the runner.
-  Security Monitor, Host Settings and Status Board are built from one exact commit each (inputs
-  with defaults; `manifest.py` writes the version manifest), installed with apt, then
-  `setup.sh` adds Cockpit with an administrator and a user without administrative access, ntfy,
-  UFW with 5432/tcp and 6379/tcp allowed, a public address on a dummy interface and a second host
-  for the board (a container with SSH and Host Settings, whose profile expects Security Monitor).
-  `core.py` (steps 1 to 9) opens real listeners the scan rates a danger from the internet and
-  checks the messages, `last.json` and the coverage through two findings, a repeat in German and
-  in another order, a resolved finding, a packet filter listing that fails inside the scan's unit
-  (partial, nothing resolved), the hour against flapping (by moving a time in `last.json`, test
-  only) and two broken answers of a stand-in for Security Monitor's status verb. `ui.py` (step 10)
-  checks the board's tasks per host, the jump to the port in Security Monitor's open frame, the
-  expected gap with "Only what needs attention", and that a user without administrative access
-  sees no details. Pull requests run it only when the workflow or `test/e2e-suite/` changes; the
-  artifact `e2e-suite` holds the manifest, status answers, messages, assertions and screenshots.
+- E2E-1, the shared suite (`test/e2e-suite/`, below): Security Monitor, Host Settings and Status
+  Board with their real packages on the runner, for every candidate of each of them and before
+  every release.
+
+### The shared suite (E2E-1)
+
+**Who runs it.** The reusable workflow `.github/workflows/suite.yml` is the suite. Each of the
+three product repositories calls it from a workflow of its own, `e2e-suite.yml`, on every pull
+request, on every push to `main` and by hand:
+
+| Repository | Caller | Which `suite.yml` |
+|---|---|---|
+| Host Settings | `.github/workflows/e2e-suite.yml` | `uses: ./.github/workflows/suite.yml`, the commit of the run |
+| Status Board, Security Monitor | `.github/workflows/e2e-suite.yml` | `uses: Azentrius/cockpit-host-settings/.github/workflows/suite.yml@COMMIT` and `suite: COMMIT`, the same full commit |
+
+The commit passed as `suite` gives the test (`test/e2e-suite/`) and the released combination
+(`test/e2e-suite/suite-manifest.json`). For a caller other than Host Settings, job `plan` reads the
+caller's workflow file at the run's commit and fails unless it pins `suite.yml` at exactly that
+commit. On a pull request of Host Settings, `suite` is the pull request's head: GitHub loads
+`suite.yml` itself from its test merge commit, the test, the manifest and the product from the
+head.
+
+**The released combination** (`suite-manifest.json`): for each product its repository, tag, full
+commit and, for now informational, the package of the release (name, version, `.deb` and its
+SHA-256), and `required_scenarios` (below). At present Status Board 0.3.0, Host Settings 0.2.0 and
+Security Monitor 0.4.0, the commits of their tags. After a release: change the manifest in a pull
+request of Host Settings, then move the pin in the callers of Status Board and Security Monitor
+to the merged commit, each in a pull request of its own.
+
+**The plan** (job `plan`, `plan.py`) is made once, before anything is built. Each product's
+commit is, in this order: the commit given as input (`workflow_dispatch` of Host Settings'
+`e2e-suite.yml`, or `with:` of a caller), the calling repository's own candidate, or the commit of
+the released combination. The candidate of a pull request is its **head commit**, not GitHub's
+test merge commit (which nobody can build again later); whether it still fits `main` after other
+merges is what the push run on `main` checks after the squash merge. On a push or a manual run the
+candidate is the commit of the run. No job resolves a branch: job `suite` checks out exactly the
+three commits of the plan, and `manifest.py` fails when a checkout is not the commit the plan
+named.
+
+A pull request whose changed files are all text (`*.md` except `docs/STATUS-CONTRACT.md`,
+`docs/img/`, `LICENSE`, `NOTICE`) does not need the suite: `plan` says so and job `suite` is
+skipped. Everything else runs it: producer, parser, profile, notifier, contract, units, packaging
+and the workflows. A push to `main` and a manual run always run it.
+
+**An explicit combination.** Candidates that belong together, such as pull requests in two
+repositories, are tested together by hand: Actions › e2e-suite › Run workflow in Host Settings,
+on the branch whose test should run, with a full commit for each product that is not to come from
+the manifest; an empty Host Settings input means the commit of the run.
+
+**Job `gate`** always runs and is the check to require (`e2e-suite / gate`): it passes when job
+`suite` passed, or when the plan skipped it for a pull request that changes only text; it fails
+when the plan failed, or the suite failed, was cancelled or was skipped for any other reason.
+
+**The steps.** `setup.sh` installs the three packages with apt and adds Cockpit with an
+administrator and a user without administrative access, ntfy, UFW with 5432/tcp, 6379/tcp and
+3306/tcp allowed, a public address on a dummy interface and a second host for the board (a
+container with SSH and Host Settings, whose profile expects Security Monitor). `core.py` (steps 1
+to 9) opens real listeners the scan rates a danger from the internet and checks the messages,
+`last.json` and the coverage through two findings, a repeat in German and in another order, a
+resolved finding, a packet filter listing that fails inside the scan's unit (partial, nothing
+resolved), the hour against flapping (by moving a time in `last.json`, test only) and two broken
+answers of a stand-in for Security Monitor's status verb. Then step 11: the stand-in ends with
+exit 77 (no access), one "Check no longer possible", nothing resolved, and one "Check possible
+again" with the real answer. Step 12 (H1): the profile expects `security/suite-unreported`, which
+Security Monitor never reports: one message "the expected check is not reported", the gap with its
+check id in `last.json`, nothing more on an unchanged run. Step 13 (H5): e-mail set up next to
+ntfy with no mail server; a new finding (3306/tcp) reaches ntfy once and fails on e-mail; the
+failure stays in `last.json`, in the status item `mail` and in the run's outcome through a run
+with nothing to send; a mail server (`smtp_sink.py`) and "Send a test message" end it once; the
+next run sends nothing to either channel. `ui.py` (step 10, last) checks the board's tasks per
+host, the jump to the port in Security Monitor's open frame, the expected gap with "Only what
+needs attention", that a user without administrative access sees no details and, with H1, the
+gap of `suite-unreported` as a task and in the coverage line.
+
+Steps 12 and 13 and the board's part of H1 need products with those rules (`hslib.not_reported_checks`,
+`hschannels.py`, `notReportedChecks` in Status Board's `lib/status.js`). Without them each notes
+that it did not check the rule. Once the releases with the rules are in the manifest, its
+`required_scenarios` lists `h1` and `h5`, and a candidate without them fails.
+
+**The artifact** `e2e-suite` (no credential: the job looks for the test's tokens and passwords in
+it and fails on a find): `plan.json`; `manifest.json` and `manifest.md` with the commit of the
+test and its combination, the run, and for each product its source (`candidate`, `input` or
+`manifest` with the tag), the commit asked for and the one checked out, the package built
+(name, version, file, SHA-256) and, for a released commit, whether the `.deb` has the bytes of the
+release; `result.json` and `result.md` (the combination, each part's checks and failures, the
+scenarios); `core/` and `ui/` with the assertions, the status answers, the messages, `last.json`
+at each step and the screenshots; `logs/`.
+
+**Releases.** The release workflow of each of the three repositories requires the push run of
+`e2e-suite` on the commit it releases: completed with success, its jobs `e2e-suite / E2E-1 (real
+components)` and `e2e-suite / gate` successful, and the version manifest in its artifact naming
+this repository at exactly that commit as the candidate, without a problem. A test before the
+version bump is no proof for the commit with the bump.

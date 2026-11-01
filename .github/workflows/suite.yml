@@ -1,0 +1,297 @@
+name: suite
+
+# E2E-1, the shared suite of Security Monitor, Host Settings and Status Board with their real
+# packages, as a reusable workflow. Each product repository calls it from its workflow
+# e2e-suite.yml: Host Settings with uses: ./ (the suite is part of its candidate), Status Board and
+# Security Monitor pinned to a full commit of this repository, which they also pass as the input
+# suite. That one commit gives the test (test/e2e-suite/) and the released combination
+# (test/e2e-suite/suite-manifest.json).
+#
+# Job plan (test/e2e-suite/plan.py) decides once which commit of each product is built: a commit
+# given as input (an explicit combination of candidates), else the calling repository's own
+# candidate (the head commit of a pull request, not GitHub's test merge commit; on a push or a
+# manual run the commit of the run), else the commit of the released combination. Nothing later
+# asks for a branch. A pull request that changes only text (Markdown other than the status
+# contract, docs/img, LICENSE, NOTICE) skips the suite; every other event runs it.
+#
+# Job suite builds the three commits, installs the packages on this throw-away runner (never a
+# server) and runs the steps of test/e2e-suite/core.py (1 to 9, 11 to 13) and ui.py (10). Its
+# artifact e2e-suite holds the version manifest (each product's source, commit and package), the
+# plan, the status answers, the messages, last.json at each step, the assertions, result.json and
+# the screenshots; no credential.
+#
+# Job gate always runs and is the check to require: it passes when the suite passed, or when the
+# plan skipped it for a pull request that changes only text; it fails when the plan failed or the
+# suite failed, was cancelled or did not run for another reason.
+#
+# No secrets and read-only contents: a pull request from a fork runs it as it is.
+on:
+  workflow_call:
+    inputs:
+      suite:
+        description: The commit of Azentrius/cockpit-host-settings this workflow was called at (all 40 hex digits); its test and manifest are used
+        type: string
+        required: true
+      security_monitor:
+        description: A commit of Azentrius/cockpit-security-monitor to build instead (empty - candidate or manifest)
+        type: string
+        default: ""
+      host_settings:
+        description: A commit of Azentrius/cockpit-host-settings to build instead (empty - candidate or manifest)
+        type: string
+        default: ""
+      status_board:
+        description: A commit of Azentrius/cockpit-status-board to build instead (empty - candidate or manifest)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      why: ${{ steps.plan.outputs.why }}
+      security_monitor: ${{ steps.plan.outputs.security_monitor }}
+      host_settings: ${{ steps.plan.outputs.host_settings }}
+      status_board: ${{ steps.plan.outputs.status_board }}
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      # A caller other than Host Settings pins this workflow by a full commit and passes the same
+      # commit as suite: the test and the manifest must be those of the workflow that runs.
+      - name: The commit of the suite, and the one the caller pins
+        env:
+          SUITE: ${{ inputs.suite }}
+          CALLER: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! printf '%s\n' "$SUITE" | grep -Eqx '[0-9a-f]{40}'; then
+            echo "::error::suite is not a full commit id: $SUITE"
+            exit 1
+          fi
+          echo "suite (test and manifest): Azentrius/cockpit-host-settings at $SUITE"
+          echo "caller: $WORKFLOW_REF at $WORKFLOW_SHA; job_workflow_sha: ${JOB_WORKFLOW_SHA:-not given}"
+          if [ "$CALLER" = Azentrius/cockpit-host-settings ]; then
+            echo "Host Settings calls its own copy (uses: ./.github/workflows/suite.yml)."
+            exit 0
+          fi
+          if [ -n "$JOB_WORKFLOW_SHA" ] && [ "$JOB_WORKFLOW_SHA" != "$SUITE" ]; then
+            echo "::error::the caller runs suite.yml at $JOB_WORKFLOW_SHA but passes suite $SUITE"
+            exit 1
+          fi
+          path=${WORKFLOW_REF#"$CALLER"/}
+          path=${path%%@*}
+          gh api "repos/$CALLER/contents/$path?ref=$WORKFLOW_SHA" --jq .content | base64 -d > "$RUNNER_TEMP/caller.yml"
+          pins=$(grep -Eo 'Azentrius/cockpit-host-settings/\.github/workflows/suite\.yml@[0-9a-f]{40}' "$RUNNER_TEMP/caller.yml" |
+            sed 's/.*@//' | sort -u)
+          if [ "$pins" != "$SUITE" ]; then
+            echo "::error::$path pins suite.yml at ${pins:-no full commit} but passes suite $SUITE: keep both the same"
+            exit 1
+          fi
+          echo "$path pins suite.yml at $SUITE, as it passes."
+      - name: The test and the released combination, from the suite's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Azentrius/cockpit-host-settings
+          ref: ${{ inputs.suite }}
+          path: suite
+          persist-credentials: false
+      # The comparison API lists at most 300 files; with more, or when it fails, the list stays
+      # empty and the suite runs.
+      - name: The files the pull request changes
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          list="$RUNNER_TEMP/changed.txt"
+          gh api "repos/$CALLER/compare/$BASE...$HEAD" --jq '.files[].filename' > "$list" || : > "$list"
+          if [ "$(wc -l < "$list")" -ge 300 ]; then : > "$list"; fi
+          cat "$list"
+      - name: The plan (test/e2e-suite/plan.py)
+        id: plan
+        env:
+          CALLER: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          SECURITY_MONITOR: ${{ inputs.security_monitor }}
+          HOST_SETTINGS: ${{ inputs.host_settings }}
+          STATUS_BOARD: ${{ inputs.status_board }}
+        run: python3 suite/test/e2e-suite/plan.py suite/test/e2e-suite/suite-manifest.json "$RUNNER_TEMP/changed.txt"
+
+  suite:
+    name: E2E-1 (real components)
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SECURITY_MONITOR_SHA: ${{ needs.plan.outputs.security_monitor }}
+      HOST_SETTINGS_SHA: ${{ needs.plan.outputs.host_settings }}
+      STATUS_BOARD_SHA: ${{ needs.plan.outputs.status_board }}
+      SUITE_SHA: ${{ inputs.suite }}
+      PLAN: ${{ needs.plan.outputs.plan }}
+      OUT: ${{ github.workspace }}/e2e-suite
+    steps:
+      - name: The commits of the plan are full commit ids
+        run: |
+          for sha in "$SECURITY_MONITOR_SHA" "$HOST_SETTINGS_SHA" "$STATUS_BOARD_SHA" "$SUITE_SHA"; do
+            if ! printf '%s\n' "$sha" | grep -Eqx '[0-9a-f]{40}'; then
+              echo "::error::not a full commit id: $sha"
+              exit 1
+            fi
+          done
+      # The test, from the suite's commit (not from the calling repository).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Azentrius/cockpit-host-settings
+          ref: ${{ inputs.suite }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Azentrius/cockpit-security-monitor
+          ref: ${{ env.SECURITY_MONITOR_SHA }}
+          path: products/cockpit-security-monitor
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Azentrius/cockpit-host-settings
+          ref: ${{ env.HOST_SETTINGS_SHA }}
+          path: products/cockpit-host-settings
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Azentrius/cockpit-status-board
+          ref: ${{ env.STATUS_BOARD_SHA }}
+          path: products/cockpit-status-board
+          persist-credentials: false
+      - name: The test is the suite's commit
+        run: test "$(git rev-parse HEAD)" = "$SUITE_SHA"
+      - name: The packages of the three commits
+        run: |
+          sudo sh tools/apt-update.sh
+          sudo apt-get install -y -qq --no-install-recommends rpm > /dev/null
+          mkdir -p "$RUNNER_TEMP/debs"
+          for d in products/cockpit-security-monitor products/cockpit-host-settings products/cockpit-status-board; do
+            make -C "$d" packages > /dev/null
+            cp "$d"/dist/*.deb "$RUNNER_TEMP/debs/"
+          done
+          ls -l "$RUNNER_TEMP/debs"
+      - name: Version manifest (source, repository, commit, package, version)
+        env:
+          SUITE_MANIFEST: test/e2e-suite/suite-manifest.json
+        run: |
+          mkdir -p "$OUT"
+          printf '%s\n' "$PLAN" > "$OUT/plan.json"
+          python3 test/e2e-suite/manifest.py "$OUT" \
+            "products/cockpit-security-monitor=$SECURITY_MONITOR_SHA" \
+            "products/cockpit-host-settings=$HOST_SETTINGS_SHA" \
+            "products/cockpit-status-board=$STATUS_BOARD_SHA"
+      - name: The machine (test/e2e-suite/setup.sh)
+        id: setup
+        run: |
+          admin_pw=$(openssl rand -hex 16)
+          plain_pw=$(openssl rand -hex 16)
+          echo "::add-mask::$admin_pw"
+          echo "::add-mask::$plain_pw"
+          printf 'ADMIN_USER=suiteadmin\nADMIN_PW=%s\nPLAIN_USER=suiteplain\nPLAIN_PW=%s\n' "$admin_pw" "$plain_pw" >> "$GITHUB_ENV"
+          sudo env ADMIN_USER=suiteadmin ADMIN_PW="$admin_pw" PLAIN_USER=suiteplain PLAIN_PW="$plain_pw" \
+            DEBS="$RUNNER_TEMP/debs" sh test/e2e-suite/setup.sh
+      - name: Steps 1 to 9 and 11 to 13, the core path (test/e2e-suite/core.py)
+        run: sudo env MANIFEST="$OUT/manifest.json" GITHUB_ACTIONS=true python3 -B test/e2e-suite/core.py "$OUT/core"
+      # Step 10 runs after a failed core path as well, as long as the machine is set up: it checks
+      # its own prerequisite (the finding of step 8 open) and fails without it.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: always() && steps.setup.outcome == 'success'
+        with:
+          python-version: "3.12"
+      # Only the browser, two tries of four minutes (see the job test in test.yml).
+      - name: Playwright and its Chromium
+        if: always() && steps.setup.outcome == 'success'
+        timeout-minutes: 10
+        run: |
+          pip install -q "$(grep '^playwright==' test/requirements.txt)"
+          for try in 1 2; do
+            timeout --kill-after=10s 4m python -m playwright install chromium > /dev/null && exit 0
+            echo "::warning::playwright install failed or hung (try $try)"
+          done
+          exit 1
+      - name: Step 10 in a real Cockpit (test/e2e-suite/ui.py)
+        if: always() && steps.setup.outcome == 'success'
+        run: MANIFEST="$OUT/manifest.json" python test/e2e-suite/ui.py "$OUT/ui"
+      - name: Logs
+        if: always()
+        run: |
+          sudo mkdir -p "$OUT/logs"
+          sudo sh -c 'journalctl --no-pager -n 4000 -u "cockpit-security-scan*" -u "cockpit-host-settings*" -u "e2e-suite-*" > "$1/logs/journal.txt"' sh "$OUT" || true
+          sudo sh -c 'docker logs ntfy > "$1/logs/ntfy.log" 2>&1' sh "$OUT" || true
+          sudo sh -c 'ufw status verbose > "$1/logs/ufw.txt" 2>&1; ss -Htlnp > "$1/logs/listening.txt" 2>&1' sh "$OUT" || true
+          sudo sh -c 'cat /etc/cockpit-host-settings/profile.conf > "$1/logs/profile.conf" 2>&1' sh "$OUT" || true
+          sudo sh -c 'journalctl --no-pager -n 3000 -u "cockpit*" -t cockpit-ws -t cockpit-session -t cockpit-bridge > "$1/logs/cockpit.txt" 2>&1' sh "$OUT" || true
+          sudo sh -c 'docker exec e2e-peer cat /var/log/sshd-e2e.log > "$1/logs/e2e-peer-sshd.log" 2>&1' sh "$OUT" || true
+          sudo chown -R "$(id -u)" "$OUT"
+          tail -n 40 "$OUT/logs/cockpit.txt" "$OUT/logs/e2e-peer-sshd.log" || true
+      - name: No credential in the artifact (the test's tokens and passwords)
+        if: always()
+        run: |
+          found=0
+          for f in /run/e2e-suite/writer.token /run/e2e-suite/reader.token; do
+            t=$(sudo cat "$f" 2> /dev/null || true)
+            [ -n "$t" ] || continue
+            echo "::add-mask::$t"
+            if grep -rqF -- "$t" "$OUT"; then echo "::error::a token of the test is in the artifact"; found=1; fi
+          done
+          for s in "${ADMIN_PW:-}" "${PLAIN_PW:-}"; do
+            [ -n "$s" ] || continue
+            if grep -rqF -- "$s" "$OUT"; then echo "::error::a password of the test is in the artifact"; found=1; fi
+          done
+          exit "$found"
+      - name: Report (test/e2e-suite/result.py)
+        if: always()
+        run: |
+          python3 test/e2e-suite/result.py "$OUT" > /dev/null || true
+          for f in "$OUT/result.md" "$OUT/manifest.md" "$OUT/core/assertions.md" "$OUT/ui/assertions.md"; do
+            if [ -f "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; echo >> "$GITHUB_STEP_SUMMARY"; fi
+          done
+      - name: Keep the artifact
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-suite
+          path: e2e-suite/
+
+  gate:
+    name: gate
+    needs: [plan, suite]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: The suite passed, or a pull request changed only text
+        env:
+          PLAN: ${{ needs.plan.result }}
+          SUITE: ${{ needs.suite.result }}
+          RUN: ${{ needs.plan.outputs.run }}
+          WHY: ${{ needs.plan.outputs.why }}
+        run: |
+          echo "plan: $PLAN (run: ${RUN:-unknown}; $WHY); suite: $SUITE"
+          if [ "$PLAN" = success ] && [ "$RUN" = true ] && [ "$SUITE" = success ]; then
+            echo "E2E-1 passed."
+            exit 0
+          fi
+          if [ "$PLAN" = success ] && [ "$RUN" = false ] && [ "$SUITE" = skipped ]; then
+            printf '## E2E-1 not run\n\n%s\n' "$WHY" >> "$GITHUB_STEP_SUMMARY"
+            echo "E2E-1 not needed: $WHY"
+            exit 0
+          fi
+          echo "::error::E2E-1 did not pass (plan: $PLAN, suite: $SUITE)"
+          exit 1
