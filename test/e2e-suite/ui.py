@@ -473,9 +473,10 @@ def nav_shown(page, timeout=60):
 
 
 def open_editor(page):
-    """Host Settings at its Cockpit tab (/host-settings/cockpit) once the menu editor lists
+    """Host Settings at its Cockpit tab (/host-settings#/cockpit: the shell takes a path after the
+    package for a page of its own, the tab is a location of index.html) once the menu editor lists
     Cockpit's Services: its frame."""
-    page.goto(URL + "/host-settings/cockpit")
+    page.goto(URL + "/host-settings#/cockpit")
     f = shell_frame(page, HS_FRAME)
     if f is None:
         shot(page, "no-host-settings")

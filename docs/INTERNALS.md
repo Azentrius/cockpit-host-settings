@@ -1135,7 +1135,7 @@ gap of `suite-unreported` as a task and in the coverage line.
 Then, with a browser of its own and also when the board's part could not run, `ui.py` tests the
 menu editor in that Cockpit (scenario `menu`), against Cockpit's own pages from `cockpit-system`
 (the backports' Cockpit). The administrator, in English, with administrative access: the
-navigation has Logs and Services; the Cockpit tab (`/host-settings/cockpit`) is on "For all
+navigation has Logs and Services; the Cockpit tab (`/host-settings#/cockpit`) is on "For all
 users" and lists each entry of the navigation under the name the navigation shows; Logs hidden
 (greyed in its place), Services renamed and moved past the entry next to it, saved through the
 dialog (`menu apply system`): `/etc/cockpit/systemd.override.json` holds exactly that. "Reload
