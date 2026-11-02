@@ -23,8 +23,11 @@
 The package's `configure` script creates the user (`systemd-sysusers`, else `useradd`), the
 state folder with that owner, `/etc/cockpit-host-settings`, an empty token file and an empty
 watchdog file: the units hand both over with `LoadCredential=`, which fails when a file is
-missing. Removing the package removes the state and the units, and keeps the settings, the token,
-the watchdog's file and the user.
+missing. Removing the package removes the state (with the menu's backups in `backup/`) and the
+units, and keeps the settings, the token, the watchdog's file and the user. Cockpit's override
+files in `/etc/cockpit` and `~/.config/cockpit` stay as they are: they are Cockpit's own, and the
+menu set there is the administrator's choice (reset it in the Cockpit tab before uninstalling to
+give Cockpit its own menu back). An update keeps the backups.
 
 ## Calls from the page
 
@@ -791,7 +794,9 @@ name. Of several packages with one name it serves the one with the highest prior
 conditions (`path-exists`, `path-not-exists`, `any`; others hold) are met. A file that is not a
 JSON object is ignored. The bridge loads all this when the session starts and again whenever the
 Shell starts anew, so reloading Cockpit in the browser is enough. `hsmenu.load()` does the same,
-except that it does not check a manifest's `requires`.
+except that it does not check a manifest's `requires`. What a real bridge serves after the
+helper's changes, and what the shell's navigation then shows, the end-to-end tests check (below,
+"Tests": job `e2e`, job `e2e-el`, E2E-1).
 
 **`menu show`** prints one object:
 
@@ -1005,7 +1010,22 @@ except that it does not check a manifest's `requires`.
   recovery (in the stand-in watchdog and in the journal), with `KUMA_IMAGE` the same against a real
   Uptime Kuma, switching off, and looks for the token and the watchdog's address in every file,
   the journal and every process's arguments. It also checks that
-  Cockpit lists the page (`cockpit-bridge --packages`).
+  Cockpit lists the page (`cockpit-bridge --packages`). Then Cockpit's menu, with the
+  distribution's `cockpit-system` (on the runner the Cockpit of Ubuntu 24.04's archive, 314, the
+  oldest of the tested systems) and what its bridge serves (`cockpit-bridge --packages`: the
+  labels of the menu and the tools of the package `system`, after the overrides) to root and to a
+  user of the test, `hsmenu`: `menu show` names what the bridge serves, as root and as `hsmenu`;
+  `menu apply system` from a plan (Logs hidden, Services renamed and given an order) writes
+  `/etc/cockpit/systemd.override.json` with exactly that (root, 0644), and the bridge serves it to
+  both; refused and nothing written: that plan once more after the change (75), `apply system` as
+  `hsmenu` (77), `apply user` as root (64); `menu apply user` run as `hsmenu` writes its own file
+  (0644, `hsmenu`'s), whose name wins over the one for all users for `hsmenu` and does not reach
+  root; an empty plan for all users removes the file, the backup folder holds the version before
+  (0700, the file 0600), and the bridge serves root Cockpit's own menu again, `hsmenu` still its
+  own name; an empty plan of `hsmenu` gives it Cockpit's own menu as well. The order of an entry
+  is not in that listing: E2E-1 shows it in the navigation. Removing the package at the end
+  takes the backups with the state folder, and an override file for all users set just before
+  stays as it was.
 - Job `upgrade` (`test/e2e/upgrade.sh`, once from each release named in the workflow): the
   update from a release a server may run, with ntfy and the stand-in add-on as in job `e2e`. The
   `.deb` of that release (`PREVIOUS_*`: 0.1.0, `LATEST_*`: 0.2.0, downloaded by
@@ -1034,7 +1054,9 @@ except that it does not check a manifest's `requires`.
   fails on any `AVC`, `USER_AVC`, `SELINUX_ERR` or `USER_SELINUX_ERR` record after the mark (and
   when it cannot read the log or finds no records at all). Before that, `vm.sh avc-selftest`
   causes a denial on purpose (root entering `httpd_t` with `/usr/bin/true`) and fails unless the
-  check catches it. Report, journal, audit log and console
+  check catches it. The override file for all users of the menu step has the context SELinux gives
+  its path (`restorecon -n -v` would change nothing), and the bridge reads it without a denial.
+  Report, journal, audit log and console
   are in the artifacts `e2e-rocky-9`, `e2e-rocky-10`, `upgrade-rocky-9` and `upgrade-rocky-10`.
 - E2E-1, the shared suite (`test/e2e-suite/`, below): Security Monitor, Host Settings and Status
   Board with their real packages on the runner, for every candidate of each of them and before
@@ -1110,10 +1132,32 @@ host, the jump to the port in Security Monitor's open frame, the expected gap wi
 needs attention", that a user without administrative access sees no details and, with H1, the
 gap of `suite-unreported` as a task and in the coverage line.
 
+Then, with a browser of its own and also when the board's part could not run, `ui.py` tests the
+menu editor in that Cockpit (scenario `menu`), against Cockpit's own pages from `cockpit-system`
+(the backports' Cockpit). The administrator, in English, with administrative access: the
+navigation has Logs and Services; the Cockpit tab (`/host-settings#/cockpit`) is on "For all
+users" and lists each entry of the navigation under the name the navigation shows; Logs hidden
+(greyed in its place), Services renamed and moved past the entry next to it, saved through the
+dialog (`menu apply system`): `/etc/cockpit/systemd.override.json` holds exactly that. "Reload
+Cockpit" reloads the whole shell from the page's frame (`window.top`), and the navigation has no
+Logs and Services under its new name in its new place. The user without administrative access,
+in German: the navigation shows the change for all users; the tab has no choice of scope ("Nur für
+mich"), shows Cockpit's own labels translated exactly as the navigation does, with
+`../manifests-i18n.js` answering the page's frame with 200, and Logs without a button; Services
+renamed just for this user and saved (`menu apply user`, as the user): the user's own file
+(0644, the user's) holds only that, and after "Reload Cockpit" the user's navigation shows that
+name. The administrator again: still the name for all users. Empty plans of the helper remove
+both files (at the end also after a failure), and after a reload the navigation is the one from
+before. No JavaScript error and no failed request of Host Settings' files.
+
 Steps 12 and 13 and the board's part of H1 need products with those rules (`hslib.not_reported_checks`,
 `hschannels.py`, `notReportedChecks` in Status Board's `lib/status.js`). Without them each notes
 that it did not check the rule. Status Board 0.4.0 and Host Settings 0.3.0 have them, so the
-manifest's `required_scenarios` lists `h1` and `h5`, and a candidate without them fails.
+manifest's `required_scenarios` lists `h1` and `h5`, and a candidate without them fails. The same
+holds for the menu editor (`hsmenu.py` and the Cockpit tab): Host Settings 0.3.0 does not have it,
+so the scenario `menu` runs for a candidate of Host Settings that has it and is noted for the
+released combination; once a release with the editor is in the manifest, `required_scenarios`
+can list `menu`.
 
 **The artifact** `e2e-suite` (no credential: the job looks for the test's tokens and passwords in
 it and fails on a find): `plan.json`; `manifest.json` and `manifest.md` with the commit of the
