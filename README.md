@@ -17,8 +17,9 @@ Host Settings is installed on every server. Its notifier runs as a user of its o
 root. The page sets up the channels, the target profile and the watchdog, shows what the ntfy
 server needs for this server and checks that the topic is closed to anyone without a login. A
 channel that accepted a message, or a quiet watchdog, shows that the notifier works, not that
-someone read the message (see [Messages](#messages)). It has one tab so far, Notifications; a
-second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
+someone read the message (see [Messages](#messages)). A second tab, Cockpit, arranges Cockpit's
+own menu for all users or just for yourself (see [Cockpit's menu](#cockpits-menu)); Cockpit's
+other settings (`/etc/cockpit/cockpit.conf`) are to follow there.
 
 ![Overview with the regular check and the last message, ntfy with the channel's state and the last check of the connection](docs/img/overview.png)
 
@@ -31,6 +32,7 @@ second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
 - [What it does](#what-it-does)
 - [What it does not do](#what-it-does-not-do)
 - [Messages](#messages)
+- [Cockpit's menu](#cockpits-menu)
 - [How it works](#how-it-works)
 - [Security model](#security-model)
 - [Requirements](#requirements)
@@ -98,6 +100,9 @@ second one for Cockpit's own settings (`/etc/cockpit/cockpit.conf`) is planned.
   a given time, or it is not confirmed yet), whether the topic is closed, whether the watchdog
   took the last signal and when the notifier last ran, and reads the server's target profile from
   it; Cockpit's menu shows it as an icon.
+- **Arranges Cockpit's menu** (tab Cockpit): the order and the names of the entries in Cockpit's
+  navigation and which of them it shows, for all users or just for yourself, through Cockpit's own
+  override files. See [Cockpit's menu](#cockpits-menu).
 
 ## What it does not do
 
@@ -137,6 +142,53 @@ has accepted a message when the ntfy server or the mail server of this server to
 anyone read it, neither Host Settings nor the watchdog can tell: a quiet watchdog says that the
 notifier runs and its channels accept messages, not that someone took note.
 
+## Cockpit's menu
+
+The tab **Cockpit** arranges the menu on the left of Cockpit, its navigation, on this server: the
+order of the entries, their names, and which of them it shows. Every page has its entry there,
+Cockpit's own (Overview, Logs, Services, Terminal and so on) and those of the add-ons, in Cockpit's
+three groups Apps, System and Tools. The tab lists them under the names the navigation shows,
+translated as there (with Cockpit 314 and older in English, see [Known limits](#known-limits)).
+
+- **For all users, or just for me.** "For all users" needs administrative access and writes
+  `/etc/cockpit/<folder>.override.json`: everyone on this server sees the change, unless their
+  own setting says otherwise. "Just for me" writes `~/.config/cockpit/<folder>.override.json` in
+  your own account and runs as you, without administrative access. A user without administrative
+  access has only this choice and sees what is set for all users without being able to change
+  it. Your own setting wins over the one for all users. `<folder>` is the page's folder below
+  `/usr/share/cockpit`, which is not always its name: Overview, Logs, Services and Terminal are
+  in `systemd`.
+- **Only Cockpit's own override files.** Cockpit reads these files itself
+  ([manifest overrides](https://cockpit-project.org/guide/latest/packages.html)). The tab writes
+  into them only the order, the name and "hidden" of the entries in `menu`, `tools` and
+  `dashboard`, and keeps everything else in a file as it is, also what an administrator or
+  another tool wrote there. Nothing else of Cockpit changes.
+- **Collected, then saved together.** "Move up" and "Move down" (buttons, also with the keyboard),
+  "Rename", "Hide" and "Show" collect changes; "Save changes" lists them in words and writes them
+  in one go. When a file was changed meanwhile, nothing is written and the tab reads the menu
+  again. A file that is not valid JSON is shown and left alone. Settings for entries that no
+  longer exist (an update renamed one, a page was removed) are listed and can be removed.
+- **Backups.** Before a change for all users, the file as it was is kept in
+  `/var/lib/cockpit-host-settings/backup/menu/<time>/` (root only), the last five times. A file
+  that a change leaves empty is removed.
+- **Reload.** Cockpit reads its menu when it loads: after saving, "Reload Cockpit" (or F5) shows
+  the change. Nothing restarts, and logging in to Cockpit is not affected.
+- Moving an entry before Overview makes it the page Cockpit opens after the login; the tab says
+  so. A name set here is fixed text: Cockpit does not translate it.
+
+What it cannot do:
+
+- Change what Cockpit's own pages show: only their entries in the menu.
+- Make headings or groups of its own: Cockpit has its three groups, and an entry stays in its
+  group. Entries next to each other are a group only by their order.
+- Show for one user what is hidden for all users.
+- Change the menu of another server from here: the settings apply to the server the tab runs on.
+  Open the tab on the other server (through Cockpit's host switcher, say) to change its menu.
+
+The same on the console, for the scripts of an administrator: `host-settings.py menu show` as the
+user whose menu it is, `sudo … menu apply system` and `… menu apply user` with the changes on
+standard input ([docs/INTERNALS.md](docs/INTERNALS.md), "Cockpit's menu").
+
 ## How it works
 
 - `cockpit-host-settings-notify.timer` starts the notifier every 5 minutes. It finds the add-ons in
@@ -155,6 +207,10 @@ notifier runs and its channels accept messages, not that someone took note.
 - The page calls only the fixed verbs of `/usr/lib/cockpit-host-settings/host-settings.py`: the
   settings in `/etc/cockpit-host-settings/notify.conf`, the token, the watchdog, the timer, a run
   now, the checks, the target profile in `/etc/cockpit-host-settings/profile.conf`.
+- The Cockpit tab runs `host-settings.py menu show` as the user who is logged in: it reads the
+  pages' manifests and the override files of both scopes the way Cockpit's bridge does. Saving
+  runs `menu apply system` (through the dialog, with administrative access) or `menu apply user`
+  (as the user), with the changes on standard input.
 - Paths, verbs, formats and every step in detail: [docs/INTERNALS.md](docs/INTERNALS.md).
 
 ## Security model
@@ -184,6 +240,12 @@ notifier runs and its channels accept messages, not that someone took note.
 - **The target profile** is readable by everyone (0644): Status Board and the status verb read it
   without root. It holds roles, add-on and check names and the reasons you write, nothing secret.
   Only root changes it, through the helper's fixed verbs; the page does so only through its dialog.
+- **Cockpit's menu:** an override file can do more than the menu. Through `bridges` it can start
+  programs in every Cockpit session, through `content-security-policy` loosen a page's
+  protection. The helper therefore writes only the order, the name and "hidden" of menu entries,
+  checks every folder, key, number and name, and refuses a plan that holds anything else. "For all
+  users" goes only through the dialog with administrative access; "Just for me" runs as the user,
+  changes only that user's own files, and follows the same rules.
 
 ## Requirements
 
@@ -201,8 +263,9 @@ system by itself.
 
 | | Systems | What is checked |
 |---|---|---|
-| **Tested** | Ubuntu 24.04 (GitHub runner) with systemd, ntfy 2.32 in Docker and postfix | the package with its real units, listed by Cockpit (job `e2e`): the page's commands on the ntfy server as shown, "Check connection" against a topic closed without a login and an open one, the first run's summary through ntfy and e-mail, a change told once, a run without a change silent, a target profile's gaps and an expected add-on that goes away told once each, e-mail failing while ntfy takes a message and staying a failure until a test message, the status as `nobody` with the profile, switching off, the token in no file but its own and in no log, removing the package; the update from 0.1.0 and 0.2.0 and back to 0.2.0 (job `upgrade`) |
+| **Tested** | Ubuntu 24.04 (GitHub runner) with systemd, ntfy 2.32 in Docker and postfix | the package with its real units, listed by Cockpit (job `e2e`): the page's commands on the ntfy server as shown, "Check connection" against a topic closed without a login and an open one, the first run's summary through ntfy and e-mail, a change told once, a run without a change silent, a target profile's gaps and an expected add-on that goes away told once each, e-mail failing while ntfy takes a message and staying a failure until a test message, the status as `nobody` with the profile, switching off, the token in no file but its own and in no log, Cockpit's menu as the bridge of Ubuntu's Cockpit 314 serves it after changes for all users and for one user, removing the package; the update from 0.1.0 and 0.2.0 and back to 0.2.0 (job `upgrade`) |
 | **Tested** | Rocky Linux 9.8 and 10.2 (for RHEL 9 and 10) in a VM with SELinux enforcing, ntfy 2.32 in Podman and postfix | the same as job `e2e`, with the `.rpm` and the distribution's Cockpit, and no SELinux denial from before the install to after the removal (job `e2e-el`, `tools/vm.sh`) |
+| **Tested** | Ubuntu 24.04 (GitHub runner) with Cockpit from the backports, Security Monitor and Status Board, in Chromium | the notifier with the real findings of Security Monitor, and the Cockpit tab in a real Cockpit: as an administrator in English and as a user without administrative access in German, the changes in Cockpit's navigation after "Reload Cockpit", a change just for one user only in that user's navigation (workflow `e2e-suite`) |
 | **Tested** | Python 3.8 and 3.12 | the notifier, the helper and the status against Status Board's own test answers (job `python-min` and `make check`) |
 | **Checked** | four Ubuntu servers (24.04 and 26.04) | the status verbs of Cron Jobs, Image Update Monitor, Update Gaps and Security Monitor answer as an unprivileged user without network |
 | **Package installs** | Debian 13 (`.deb`), Fedora 43 (`.rpm`) (job `test`); Rocky Linux and AlmaLinux 9 and 10 (`.rpm`, for RHEL 9 and 10; job `install`) | the package installs with the distribution's own dependencies, creates its user, runs the notifier as that user, answers the status as `nobody` and removes cleanly. No Cockpit or systemd runs there. |
@@ -253,7 +316,11 @@ The package creates the user `cockpit-host-settings`, an empty token file and th
 the regular check stays off until it is set up on the page.
 
 **Uninstall:** `sudo apt remove cockpit-host-settings` or `sudo dnf remove cockpit-host-settings`.
-Removing the package removes its state and keeps the settings, the token and the user.
+Removing the package removes its state, the backups of Cockpit's menu among it, and keeps the
+settings, the token and the user. Cockpit's menu stays as it was set: the override files in
+`/etc/cockpit` and `~/.config/cockpit` are Cockpit's own. To give Cockpit its own menu back, undo
+the changes in the Cockpit tab before uninstalling, for all users and in each user's "Just for
+me".
 
 ## Setting up
 
@@ -413,7 +480,11 @@ The screenshots in `docs/img` come from the CI artifact `screenshots` of the tes
 - A message that one channel accepted is not sent again to a channel that failed (there is no
   queue per channel): that channel misses it, and stays failing until it accepts a message or a
   test. Retries, grouping of alarms, quiet times for maintenance and escalation are not there.
-- The tab for Cockpit's own settings is not there yet.
+- The Cockpit tab has only the menu so far: Cockpit's settings in `cockpit.conf` and its branding
+  are not there yet.
+- With Cockpit 314 (Ubuntu 24.04 without the backports) and older, the Cockpit tab lists the
+  entries under the English names of their manifests: such a Cockpit does not hand a page the
+  translations of the menu. The navigation itself is translated.
 
 ## License
 

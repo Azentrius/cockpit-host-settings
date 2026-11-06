@@ -58,6 +58,8 @@ def main():
         pg.screenshot(path=os.path.join(OUT, "check-dialog.png"))
         pg = page(1440, 900, "scenario=fresh&lang=en")
         pg.screenshot(path=os.path.join(OUT, "fresh.png"))
+        pg = page(1440, 1000, "scenario=menu&lang=en")
+        pg.screenshot(path=os.path.join(OUT, "menu.png"))
 
         for scheme in ("light", "dark"):
             for sc in SCENARIOS:

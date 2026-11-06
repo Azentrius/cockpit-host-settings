@@ -30,7 +30,14 @@
 #     ends it, and the next run is exactly one recovery (ntfy the same way, through "Check
 #     connection" after its address was set back);
 #   - the token and the watchdog's address are in no file but their own, in no log and in no
-#     process's arguments.
+#     process's arguments;
+#   - Cockpit's menu (the distribution's cockpit-system): what `menu apply system` writes to
+#     /etc/cockpit/systemd.override.json, and only that, is what Cockpit's bridge serves root and
+#     another user (cockpit-bridge --packages); `menu apply user`, run as that user, wins over it
+#     for that user only; `menu show` reads what the bridge serves; a plan made before a change is
+#     refused (75); empty plans remove both files, and the backup holds the version before. With
+#     SELinux the file has the context of its path. Removing the package takes the backups with
+#     the state and leaves Cockpit's override files.
 # Writes OUT/report.md and the raw answers. Exit 1 at the first step that fails.
 set -eu
 pkg=${1:?usage: run.sh PACKAGE.deb|PACKAGE.rpm}
@@ -134,6 +141,48 @@ run_notifier() {
     systemctl reset-failed cockpit-host-settings-notify.service 2> /dev/null || true
     "$helper" run > "$out/$1.txt" 2>&1 || { cat "$out/$1.txt"; fail "run of the notifier ($1)"; }
 }
+# Cockpit's menu: a command as the test's user hsmenu (never root), from /, with Cockpit's default
+# XDG folders.
+as_menu_user() {
+    (cd / && runuser -u hsmenu -- env -u XDG_CONFIG_HOME -u XDG_CONFIG_DIRS -u XDG_DATA_HOME -u XDG_DATA_DIRS "$@")
+}
+# The labels Cockpit's bridge serves in the menu and the tools of its package "system" (the folder
+# systemd: Overview, Logs, Services, Terminal), one per line, to OUT/NAME.txt. cockpit-bridge
+# --packages prints each package's name, those labels after the overrides, and its folder. As
+# root, or as hsmenu with: served NAME as_menu_user.
+served() {
+    name=$1
+    shift
+    "$@" cockpit-bridge --packages > "$out/$name.packages.txt" 2> "$out/$name.packages.err" ||
+        { cat "$out/$name.packages.err"; fail "cockpit-bridge --packages ($name)"; }
+    python3 -c '
+import sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    if line.split()[:1] == ["system"]:
+        print("\n".join(x.strip() for x in line[20:].rsplit(None, 1)[0].split(", ") if x.strip()))' \
+        "$out/$name.packages.txt" > "$out/$name.txt"
+    [ -s "$out/$name.txt" ] || fail "Cockpit's bridge serves no package system ($name): $(cat "$out/$name.packages.txt")"
+}
+# The labels of OUT/NAME.txt in one line.
+labels() { paste -s -d '|' "$out/$1.txt"; }
+# Whether OUT/NAME.txt has the label.
+has_label() { grep -qxF -- "$2" "$out/$1.txt"; }
+# Whether the helper's `menu show` (OUT/SHOW.json) says the same as the bridge (OUT/NAME.txt): the
+# labels of the menu and the tools of the package system that are not hidden.
+agrees() {
+    python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+mine = sorted(e["effective"]["label"] for e in d["entries"] if e["package"] == "system" and e["section"] in ("menu", "tools")
+              and not e["effective"]["hidden"] and e["effective"]["label"] is not None)
+bridge = sorted(x for x in open(sys.argv[2], encoding="utf-8").read().splitlines() if x)
+sys.exit(0 if mine == bridge else "the helper reads %s, the bridge serves %s" % (mine, bridge))' "$out/$1.json" "$out/$2.txt"
+}
+# The sha256 `menu show` (OUT/SHOW.json) names for a scope's override file of systemd, or nothing.
+menu_sha() { field "([f['sha256'] for f in d['files'] if f['scope'] == '$2' and f['dir'] == 'systemd'] + [''])[0]" < "$out/$1.json"; }
+# Whether a JSON file holds exactly the JSON given.
+json_is() { python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1], encoding="utf-8")) != json.loads(sys.argv[2]))' "$1" "$2"; }
+sha() { sha256sum < "$1" | cut -d' ' -f1; }
 
 next "ntfy: deny-all, a user with write access to its topic only, a reader"
 # The server's databases live in /var/lib/ntfy, which the image does not have: a folder of the host.
@@ -593,13 +642,119 @@ done
 [ "$(runuser -u nobody -- "$helper" status | field "d['summary']")" = "The regular check is off." ] || fail "switched off"
 ok "the token only in /etc/cockpit-host-settings/ntfy.token, the watchdog's address only in heartbeat.conf while set; the status says the check is off"
 
+next "Cockpit's menu: what the helper writes for all users and for one user is what Cockpit's bridge serves"
+# Cockpit's own pages from the distribution (the package needs only the bridge): the folder systemd
+# with Overview, Logs, Services and Terminal, Cockpit's package "system".
+if [ "$kind" = deb ]; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends cockpit-system > /dev/null
+    note "$(dpkg-query -W -f '${Package} ${Version}, ' cockpit-bridge cockpit-system)"
+else
+    dnf install -y -q --setopt=install_weak_deps=False cockpit-system > /dev/null
+    note "$(rpm -q cockpit-bridge cockpit-system | tr '\n' ' ')"
+fi
+# The bridge and the helper read the same XDG folders. The runner's /etc/environment names its own
+# for everyone (see test/e2e-suite/setup.sh), so both run with Cockpit's defaults here.
+unset XDG_CONFIG_HOME XDG_CONFIG_DIRS XDG_DATA_HOME XDG_DATA_DIRS
+useradd --create-home hsmenu 2> /dev/null || true
+sysfile=/etc/cockpit/systemd.override.json
+userfile=$(getent passwd hsmenu | cut -d: -f6)/.config/cockpit/systemd.override.json
+menu_backup=/var/lib/cockpit-host-settings/backup/menu
+[ ! -e "$sysfile" ] && [ ! -e "$userfile" ] || fail "an override file of systemd before the test"
+"$helper" menu show > "$out/menu-show-0.json"
+served menu-root-0
+note "Cockpit's own, root: $(labels menu-root-0)"
+has_label menu-root-0 Logs && has_label menu-root-0 Services || fail "Cockpit does not serve Logs and Services"
+agrees menu-show-0 menu-root-0 || fail "menu show reads Cockpit's menu otherwise than its bridge"
+# For all users, as root: Logs hidden, Services renamed and moved before it.
+plan_old='{"base": {"systemd": "'"$(menu_sha menu-show-0 system)"'"}, "set": {"systemd": {"menu": {"logs": null, "services": {"order": 15, "label": "Units for all"}}}}}'
+printf '%s\n' "$plan_old" | "$helper" menu apply system > "$out/menu-apply-system.txt" 2>&1 ||
+    { cat "$out/menu-apply-system.txt"; fail "menu apply system"; }
+note "$(tr '\n' ' ' < "$out/menu-apply-system.txt")"
+test "$(stat -c '%a %U' "$sysfile")" = "644 root" || fail "mode of $sysfile"
+json_is "$sysfile" '{"menu": {"logs": null, "services": {"order": 15, "label": "Units for all"}}}' ||
+    fail "$sysfile holds more or less than the plan set: $(cat "$sysfile")"
+cp "$sysfile" "$out/menu-system-file.json"
+if command -v selinuxenabled > /dev/null && selinuxenabled; then
+    note "$sysfile: SELinux context $(stat -c %C "$sysfile")"
+    relabel=$(restorecon -n -v "$sysfile")
+    [ -z "$relabel" ] || fail "$sysfile does not have the context SELinux gives its path: $relabel"
+fi
+[ -z "$(ls -A "$menu_backup" 2> /dev/null)" ] || fail "a backup of a file that was not there: $(ls -A "$menu_backup")"
+served menu-root-1
+served menu-user-1 as_menu_user
+as_menu_user "$helper" menu show > "$out/menu-show-user-1.json"
+note "for all users, root: $(labels menu-root-1); hsmenu: $(labels menu-user-1)"
+for n in menu-root-1 menu-user-1; do
+    has_label "$n" "Units for all" && ! has_label "$n" Logs && ! has_label "$n" Services ||
+        fail "the bridge does not serve the change for all users ($n)"
+done
+agrees menu-show-user-1 menu-user-1 || fail "menu show as hsmenu reads Cockpit's menu otherwise than its bridge"
+"$helper" menu show > "$out/menu-show-1.json"
+[ "$(menu_sha menu-show-1 system)" = "$(sha "$sysfile")" ] || fail "menu show does not name the checksum of $sysfile"
+# Refused, nothing written: a plan made before that change (75), for all users as a user (77),
+# just for me as root (64).
+code=0
+printf '%s\n' "$plan_old" | sed 's/Units for all/Too late/' | "$helper" menu apply system > "$out/menu-apply-stale.txt" 2>&1 || code=$?
+note "a plan made before the change: exit $code (expected 75): $(cat "$out/menu-apply-stale.txt")"
+[ "$code" = 75 ] && [ "$(sha "$sysfile")" = "$(sha "$out/menu-system-file.json")" ] || fail "a plan made before the change was not refused"
+code=0
+printf '%s\n' "$plan_old" | as_menu_user "$helper" menu apply system > /dev/null 2>&1 || code=$?
+[ "$code" = 77 ] || fail "menu apply system as hsmenu: exit $code, not 77"
+code=0
+printf '%s\n' '{"base": {"systemd": ""}, "set": {}}' | "$helper" menu apply user > /dev/null 2>&1 || code=$?
+[ "$code" = 64 ] || fail "menu apply user as root: exit $code, not 64"
+[ "$(sha "$sysfile")" = "$(sha "$out/menu-system-file.json")" ] || fail "a refused plan changed $sysfile"
+# Just for hsmenu, as hsmenu: Services renamed once more, over the name for all users.
+printf '%s\n' '{"base": {"systemd": "'"$(menu_sha menu-show-user-1 user)"'"}, "set": {"systemd": {"menu": {"services": {"label": "My units"}}}}}' |
+    as_menu_user "$helper" menu apply user > "$out/menu-apply-user.txt" 2>&1 || { cat "$out/menu-apply-user.txt"; fail "menu apply user as hsmenu"; }
+test "$(stat -c '%a %U' "$userfile")" = "644 hsmenu" || fail "mode of $userfile"
+json_is "$userfile" '{"menu": {"services": {"label": "My units"}}}' || fail "$userfile holds more or less than the plan set: $(cat "$userfile")"
+served menu-root-2
+served menu-user-2 as_menu_user
+note "just for hsmenu, root: $(labels menu-root-2); hsmenu: $(labels menu-user-2)"
+has_label menu-user-2 "My units" && ! has_label menu-user-2 "Units for all" && ! has_label menu-user-2 Logs ||
+    fail "the bridge does not serve hsmenu its own name over the one for all users"
+has_label menu-root-2 "Units for all" && ! has_label menu-root-2 "My units" || fail "hsmenu's own name reached root"
+# An empty plan for all users removes the file; the previous version stays in a backup.
+"$helper" menu show > "$out/menu-show-2.json"
+printf '{"base": {"systemd": "%s"}, "set": {}}\n' "$(menu_sha menu-show-2 system)" | "$helper" menu apply system > "$out/menu-reset-system.txt" 2>&1 ||
+    { cat "$out/menu-reset-system.txt"; fail "an empty plan for all users"; }
+[ ! -e "$sysfile" ] || fail "an empty plan left $sysfile"
+set -- "$menu_backup"/*/
+[ "$#" = 1 ] && [ -d "$1" ] || fail "not one backup in $menu_backup: $*"
+kept=${1%/}
+note "backup: $kept ($(stat -c '%a %U' "$menu_backup" "$kept" "$kept/systemd.override.json" | tr '\n' ' '))"
+test "$(stat -c '%a %U' "$menu_backup")" = "700 root" && test "$(stat -c '%a %U' "$kept")" = "700 root" &&
+    test "$(stat -c '%a %U' "$kept/systemd.override.json")" = "600 root" || fail "modes of the backup"
+[ "$(sha "$kept/systemd.override.json")" = "$(sha "$out/menu-system-file.json")" ] || fail "the backup is not the version before"
+served menu-root-3
+served menu-user-3 as_menu_user
+note "nothing for all users, root: $(labels menu-root-3); hsmenu: $(labels menu-user-3)"
+[ "$(sha "$out/menu-root-3.txt")" = "$(sha "$out/menu-root-0.txt")" ] || fail "the bridge does not serve root Cockpit's own menu again"
+has_label menu-user-3 "My units" && has_label menu-user-3 Logs || fail "the bridge does not serve hsmenu Logs again with its own name"
+# And just for hsmenu: Cockpit's own again.
+as_menu_user "$helper" menu show > "$out/menu-show-user-3.json"
+printf '{"base": {"systemd": "%s"}, "set": {}}\n' "$(menu_sha menu-show-user-3 user)" | as_menu_user "$helper" menu apply user > "$out/menu-reset-user.txt" 2>&1 ||
+    { cat "$out/menu-reset-user.txt"; fail "an empty plan just for hsmenu"; }
+[ ! -e "$userfile" ] || fail "an empty plan left $userfile"
+served menu-user-4 as_menu_user
+[ "$(sha "$out/menu-user-4.txt")" = "$(sha "$out/menu-root-0.txt")" ] || fail "the bridge does not serve hsmenu Cockpit's own menu again"
+ok "for all users and just for hsmenu, Cockpit's bridge serves what the helper wrote, hsmenu's own name over the one for all users and only to hsmenu; a plan made before a change refused (75); empty plans remove both files; the backup holds the version before (0700, 0600)"
+
 next "remove the package"
+# The menu's backups of the step before go with the state. Cockpit's override files stay: one for
+# all users, set again here, is still there afterwards.
+[ -d "$menu_backup" ] || fail "no backup of the menu before the removal"
+"$helper" menu show > "$out/menu-show-5.json"
+printf '{"base": {"systemd": "%s"}, "set": {"systemd": {"menu": {"logs": null}}}}\n' "$(menu_sha menu-show-5 system)" |
+    "$helper" menu apply system > "$out/menu-apply-last.txt" 2>&1 || { cat "$out/menu-apply-last.txt"; fail "menu apply system before the removal"; }
 if [ "$kind" = deb ]; then
     apt-get remove -y -qq cockpit-host-settings > /dev/null
 else
     dnf remove -y -q cockpit-host-settings > /dev/null
 fi
-[ ! -e /var/lib/cockpit-host-settings ] || fail "the state stayed"
+[ ! -e /var/lib/cockpit-host-settings ] || fail "the state stayed: $(find /var/lib/cockpit-host-settings | tr '\n' ' ')"
 [ -e /etc/cockpit-host-settings/ntfy.token ] || fail "the settings went with the package"
-ok "state gone, settings kept"
+json_is "$sysfile" '{"menu": {"logs": null}}' || fail "Cockpit's override file did not stay as it was"
+ok "state gone, the menu's backups with it; settings and Cockpit's override file kept"
 echo "ALL STEPS PASSED" | tee -a "$report"

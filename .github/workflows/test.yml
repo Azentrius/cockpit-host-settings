@@ -150,8 +150,9 @@ jobs:
   # commands the page shows run on the server as shown; "Check connection" against a closed and an
   # open topic; the first run's summary, a change, no message without one; the status verb as
   # nobody; the watchdog against a stand-in for both protocols and against a real Uptime Kuma
-  # (below); the token and the watchdog's address in no file but their own and in no log. The
-  # steps and the raw answers are in the artifact e2e-session.
+  # (below); the token and the watchdog's address in no file but their own and in no log; Cockpit's
+  # menu as the distribution's Cockpit bridge serves it after the helper's changes, for all users
+  # and for one user. The steps and the raw answers are in the artifact e2e-session.
   e2e:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
