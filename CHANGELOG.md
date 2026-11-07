@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.4.0 – 2026-11-07
+
+A second tab, Cockpit, arranges Cockpit's own menu: the order and the names of its entries and
+which of them it shows, for all users or just for yourself.
+
+- **The Cockpit tab** (`#/cockpit`) lists the entries of Apps, System and Tools in the order and
+  under the names Cockpit's navigation shows, translated as there. "Move up", "Move down",
+  "Rename", "Hide" and "Show" collect changes; "Save changes" lists them in words and writes them
+  in one go, and "Reload Cockpit" shows them. An entry moved before Overview becomes the page
+  Cockpit opens after the login, and the tab says so. The tab bar shows now; without
+  administrative access both tabs show, Cockpit with "Just for me" only.
+- **For all users or just for me:** "For all users" needs administrative access and writes
+  `/etc/cockpit/<folder>.override.json`. "Just for me" writes the user's own
+  `~/.config/cockpit/<folder>.override.json`, as that user, and wins over the one for all users.
+- **Only Cockpit's own override files**, and in them only the order, the name and "hidden" of the
+  entries; everything else in a file stays as it is, also what an administrator or another tool
+  wrote there. A file changed meanwhile is not written, and the tab reads the menu again; a file
+  that is not valid JSON is shown and left alone; settings for entries that no longer exist are
+  listed and can be removed.
+- **Helper:** `host-settings.py menu show` (no root, as the user whose menu it is) reads the menu
+  as Cockpit's bridge does. `menu apply system` (root) and `menu apply user` (never as root) take
+  a plan on standard input and refuse it whole, writing nothing, when it holds anything else: an
+  override file can also start programs in every Cockpit session (`bridges`) or loosen a page's
+  protection (`content-security-policy`).
+- **Backups:** before a change for all users, the files as they were are kept in
+  `/var/lib/cockpit-host-settings/backup/menu/` (root only), the last five times. Removing the
+  package removes them with its state. Cockpit's override files stay, as Cockpit's own: to give
+  Cockpit its own menu back, undo the changes in the tab before uninstalling.
+- **Limits:** the tab changes the entries of the menu, not what Cockpit's own pages show, and
+  makes no headings or groups of its own: Cockpit has its three groups, and an entry stays in its
+  group. With a Cockpit older than 332, such as Ubuntu 24.04's own (314) without the backports,
+  it lists the entries under the names of their manifests, in English: only from 332 on does
+  Cockpit's bridge serve the translations of the menu. Debian 13 (337), Ubuntu 26.04 (360), the
+  RHEL family (356) and the backports show them translated. Cockpit's settings in `cockpit.conf`
+  are not there yet.
+- **Tested** with the bridge of Ubuntu's Cockpit 314 (job `e2e`) and of Rocky Linux 9 and 10 with
+  SELinux enforcing (job `e2e-el`): what it serves after changes for all users and for one user,
+  and an override file that stays when the package is removed. In the shared suite (workflow
+  `e2e-suite`), with Cockpit from the backports in Chromium: the tab as an administrator in
+  English and as a user without administrative access in German, and the navigation after
+  "Reload Cockpit".
+- **Update:** nothing to do. The notifier, `last.json` (format 1) and the status are as in 0.3.0,
+  and Cockpit's menu stays as it is until it is changed in the tab. Going back to 0.3.0 leaves the
+  menu as set, without the tab to change it.
+- **README, AppStream and package description:** they name the Cockpit tab, and the README
+  explains it in a section of its own, "Cockpit's menu".
+
 ## 0.3.0 – 2026-11-01
 
 A check that the target profile names counts only when its add-on reports it, a check that is not

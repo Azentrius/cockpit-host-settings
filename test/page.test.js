@@ -49,7 +49,7 @@ t("a fresh server: nothing set up, the way to set it up", async () => {
     assert.ok(!d.getElementById("hs-tabs").hidden, "two tabs: the bar shows");
     assert.ok(d.getElementById("hs-tab-cockpit").hidden);
     assert.strictEqual(d.getElementById("hs-tab-cockpit").textContent, "", "the menu is read once its tab opens");
-    assert.strictEqual(d.getElementById("hs-sig-version").textContent, "Host Settings 0.3.0");
+    assert.strictEqual(d.getElementById("hs-sig-version").textContent, "Host Settings 0.4.0");
 });
 
 t("a set-up server: channels, timer, last run and message, the check, the commands", async () => {
