@@ -150,6 +150,8 @@ Cockpit's own (Overview, Logs, Services, Terminal and so on) and those of the ad
 three groups Apps, System and Tools. The tab lists them under the names the navigation shows,
 translated as there (with a Cockpit older than 332 in English, see [Known limits](#known-limits)).
 
+![The Cockpit tab: who sees the changes, a broken override file named, and the entries of System with their state and the buttons to move, rename and hide them](docs/img/menu.png)
+
 - **For all users, or just for me.** "For all users" needs administrative access and writes
   `/etc/cockpit/<folder>.override.json`: everyone on this server sees the change, unless their
   own setting says otherwise. "Just for me" writes `~/.config/cockpit/<folder>.override.json` in
