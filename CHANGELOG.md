@@ -45,7 +45,8 @@ which of them it shows, for all users or just for yourself.
   and Cockpit's menu stays as it is until it is changed in the tab. Going back to 0.3.0 leaves the
   menu as set, without the tab to change it.
 - **README, AppStream and package description:** they name the Cockpit tab, and the README
-  explains it in a section of its own, "Cockpit's menu".
+  explains it in a section of its own, "Cockpit's menu". The pictures show this version, the tab
+  bar and the Cockpit tab among them.
 
 ## 0.3.0 – 2026-11-01
 

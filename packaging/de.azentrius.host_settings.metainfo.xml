@@ -80,5 +80,10 @@
       <caption xml:lang="de">Dieselbe Seite im dunklen Design</caption>
       <image type="source" width="1440" height="1000">https://raw.githubusercontent.com/Azentrius/cockpit-host-settings/main/docs/img/overview-dark.png</image>
     </screenshot>
+    <screenshot>
+      <caption>The Cockpit tab: the order, the names and the visibility of Cockpit's menu entries</caption>
+      <caption xml:lang="de">Der Bereich Cockpit: Reihenfolge, Namen und Sichtbarkeit der Einträge in Cockpits Menü</caption>
+      <image type="source" width="1440" height="1000">https://raw.githubusercontent.com/Azentrius/cockpit-host-settings/main/docs/img/menu.png</image>
+    </screenshot>
   </screenshots>
 </component>
