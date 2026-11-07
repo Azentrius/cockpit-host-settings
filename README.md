@@ -148,7 +148,7 @@ The tab **Cockpit** arranges the menu on the left of Cockpit, its navigation, on
 order of the entries, their names, and which of them it shows. Every page has its entry there,
 Cockpit's own (Overview, Logs, Services, Terminal and so on) and those of the add-ons, in Cockpit's
 three groups Apps, System and Tools. The tab lists them under the names the navigation shows,
-translated as there (with Cockpit 314 and older in English, see [Known limits](#known-limits)).
+translated as there (with a Cockpit older than 332 in English, see [Known limits](#known-limits)).
 
 - **For all users, or just for me.** "For all users" needs administrative access and writes
   `/etc/cockpit/<folder>.override.json`: everyone on this server sees the change, unless their
@@ -482,9 +482,11 @@ The screenshots in `docs/img` come from the CI artifact `screenshots` of the tes
   test. Retries, grouping of alarms, quiet times for maintenance and escalation are not there.
 - The Cockpit tab has only the menu so far: Cockpit's settings in `cockpit.conf` and its branding
   are not there yet.
-- With Cockpit 314 (Ubuntu 24.04 without the backports) and older, the Cockpit tab lists the
-  entries under the English names of their manifests: such a Cockpit does not hand a page the
-  translations of the menu. The navigation itself is translated.
+- With a Cockpit older than 332, such as Ubuntu 24.04's own (314) without the backports, the
+  Cockpit tab lists the entries under the names of their manifests, in English: only from 332 on
+  does Cockpit's bridge serve a page the translations of the menu (`../manifests-i18n.js`). The
+  navigation itself is translated. Debian 13 (337), Ubuntu 26.04 (360), the RHEL family (356) and
+  Ubuntu 24.04 with the backports show the entries in the tab translated as well.
 
 ## License
 

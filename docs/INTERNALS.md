@@ -861,8 +861,9 @@ helper's changes, and what the shell's navigation then shows, the end-to-end tes
   opens (never while Cockpit keeps the page hidden), never with administrative access, and adds the
   one script the page loads itself, `../manifests-i18n.js` (the bridge's translations of every
   package's manifest); once that has loaded, a label from a manifest is shown as
-  `cockpit.gettext(label)`, as the navigation shows it, and without it (an error, an older Cockpit)
-  as the manifest has it. A name set in an override is fixed text, never translated.
+  `cockpit.gettext(label)`, as the navigation shows it, and without it (an error, or a Cockpit
+  older than 332, whose bridge does not serve it) as the manifest has it. A name set in an
+  override is fixed text, never translated.
   - Scope: "For all users" (the default with administrative access) or "Just for me" (the only one
     without). A list shows what that scope's users see: for all users the package's entry with the
     override for all users, just for me with the user's own on top. The scope is fixed while

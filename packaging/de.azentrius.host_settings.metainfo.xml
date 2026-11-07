@@ -38,6 +38,18 @@
       gelesen hat, können weder der Wächter noch ein Kanal sagen. Der Notifier läuft als eigener
       Benutzer, nie als root.
     </p>
+    <p>
+      A second tab, Cockpit, arranges Cockpit's own menu on the server: the order and the names of
+      its entries and which of them it shows, for all users or just for yourself. It writes only
+      that into Cockpit's own override files and keeps everything else in them as it is; what
+      Cockpit's own pages show, it does not change.
+    </p>
+    <p xml:lang="de">
+      Ein zweiter Bereich, Cockpit, ordnet Cockpits eigenes Menü auf dem Server: Reihenfolge und
+      Namen der Einträge und welche davon es zeigt, für alle Benutzer oder nur für Sie selbst. Er
+      schreibt nur diese Angaben in Cockpits eigene Override-Dateien und lässt alles andere darin,
+      wie es ist; was Cockpits eigene Seiten zeigen, ändert er nicht.
+    </p>
   </description>
   <extends>org.cockpit_project.cockpit</extends>
   <launchable type="cockpit-manifest">host-settings</launchable>
